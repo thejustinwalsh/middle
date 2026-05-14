@@ -1,0 +1,19 @@
+{
+  "name": "middle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "middle-management — autonomous GitHub issue dispatch",
+  "workspaces": [
+    "packages/*",
+    "packages/adapters/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^6.0.3"
+  }
+}
