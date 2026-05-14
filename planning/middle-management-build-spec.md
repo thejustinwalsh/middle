@@ -852,7 +852,7 @@ CREATE TABLE workflows (
   epic_number INTEGER,          -- the dispatched Epic or standalone issue; null for recommender
   adapter TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN (
-    'pending', 'running', 'waiting-human', 'rate-limited',
+    'pending', 'launching', 'running', 'waiting-human', 'rate-limited',
     'completed', 'compensated', 'failed', 'cancelled'
   )),
   created_at INTEGER NOT NULL,
@@ -861,6 +861,9 @@ CREATE TABLE workflows (
   worktree_path TEXT,
   session_name TEXT,
   session_token TEXT,
+  session_id TEXT,              -- the CLI's own session id, from the SessionStart hook
+  transcript_path TEXT,         -- on-disk JSONL transcript; retained after the tmux session ends so --resume stays available
+  controlled_by TEXT NOT NULL DEFAULT 'middle' CHECK (controlled_by IN ('middle', 'human')),
   current_sub_issue INTEGER,    -- which sub-issue/phase the agent is on; null for standalone
   pr_number INTEGER,            -- the one PR for this Epic
   pr_branch TEXT,
