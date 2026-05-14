@@ -1201,8 +1201,8 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 │  │  1. #247 OAuth refresh · claude · 4 sub-issues           │   │
 │  │  2. #253 cache-warm tests · codex · 1 sub-issue          │   │
 │  │ IN FLIGHT:                                                │   │
-│  │  #247 · claude · sub-issue 2/4 · 14s ago  [tmux attach] │   │
-│  │  #253 · codex · running · 41s ago         [tmux attach] │   │
+│  │  #247 · claude · sub-issue 2/4 · 14s ago  [watch][take] │   │
+│  │  #253 · codex · running · 41s ago         [watch][take] │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  three-flatland   claude 1/2  codex 0/1  total 1/2   auto ✗    │
@@ -1216,9 +1216,19 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 1. **Needs You** (the primary surface): aggregated from `needsHumanInput` across all repos, plus `Ready for review` Epic PRs.
 2. **Per-repo header** with slot pills and auto-dispatch toggle.
 3. **Per-repo expansion**: NEXT UP (top 2 ready Epics) + IN FLIGHT (all running, with sub-issue progress) + recent history (collapsed).
-4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree + tmux command.
+4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree. Includes a **per-runner panel**: workflow state, `controlled_by`, tmux session name + liveness, last heartbeat, context-token usage, transcript path, and the attach affordances (see "Attaching to a live session").
 5. **History** (collapsed by default): completed workflows from the last 7 days.
 6. **Settings**: per-repo config editor, global config, manual rate-limit override buttons.
+
+### Attaching to a live session
+
+A live tmux session is joinable. The inspector exposes three affordances per runner:
+
+- **Watch** — a read-only attach (`tmux attach -r`). Always safe; never collides with middle's `send-keys` driving.
+- **Take control** — flips `controlled_by` to `human` (middle suspends driving; watchdog idle-kill suspends), then a read-write attach. Release is an explicit action; see "Dispatch lifecycle" → human takeover.
+- **Copy command** — the raw `tmux attach -r -t <session>` (and the read-write variant) as copyable text — the guaranteed-portable fallback.
+
+Watch / Take control POST to `POST /api/sessions/:session/attach`; the dispatcher (a local process) spawns the operator's terminal directly (e.g. `ghostty -e tmux attach …`). The exact spawn invocation is a small empirical detail; the copy-command path always works.
 
 ### SSE channels
 
@@ -1237,7 +1247,9 @@ POST /api/repos/:repo/resume
 POST /api/repos/:repo/dispatch             # manual dispatch a specific Epic
 POST /api/rate-limits/:adapter/clear       # manual override
 GET  /api/sessions/:session/events         # paginated event history
-GET  /api/sessions/:session/log            # tmux log file content (streamed)
+GET  /api/sessions/:session/transcript     # on-disk JSONL transcript content (streamed)
+POST /api/sessions/:session/attach         # spawn the operator's terminal; body: { mode: "watch" | "control" }
+POST /api/sessions/:session/release        # return control to middle (controlled_by → middle)
 ```
 
 ### Optional windowed mode
