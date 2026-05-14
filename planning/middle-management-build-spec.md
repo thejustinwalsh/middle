@@ -27,10 +27,11 @@ This document is the build spec. It's designed to be handed to an agent (or a de
 
 1. **Not a multi-tenant SaaS.** Local only. One user. The user is logged into each CLI subscription themselves.
 2. **No cross-repo intelligence.** One recommender per repo. Humans coordinate batches across repos.
-3. **Not a chat UI for agents.** Agents run headlessly in tmux. The dashboard is read-only on agent state.
+3. **Not a chat UI for agents.** Agents run as interactive CLI sessions inside tmux, driven by the dispatcher via `tmux send-keys`. The dashboard is read-only on agent state, but the operator can attach to a live session (see "Dispatch lifecycle" → human takeover).
 4. **Not a code reviewer.** Mechanical verification gates only. Humans review and merge PRs.
 5. **No private storage of work data.** GitHub is the source of truth for issues, plans, decisions, evidence. middle's SQLite holds operational state only — agent heartbeats, workflow executions, rate-limit reactions. Wiping middle's SQLite must not lose anything important.
 6. **No undocumented APIs for rate limits.** GitHub's `rate_limit` endpoint is fair game. For CLI subscriptions: reactive detection only (catch the error, extract the reset, wait).
+7. **No headless dispatch mode.** middle dispatches agents as interactive tmux sessions only. A headless CLI flag (`claude -p` and the like) is a vendor-removable rug — middle does not depend on one and keeps no headless fallback path.
 
 ---
 
@@ -689,6 +690,8 @@ diff comment via `gh issue comment`.
 
 ## Adapter interface
 
+middle dispatches every agent as an **interactive CLI session inside tmux**. There is no headless mode. The adapter abstracts the per-CLI launch command, the prompt-delivery text, how to enter auto mode, how to locate and read the on-disk transcript, and how to classify a turn boundary.
+
 ```ts
 // packages/core/src/adapter.ts
 
@@ -698,21 +701,43 @@ export interface AgentAdapter {
   /** Write hook config + any per-CLI setup into the worktree. */
   installHooks(opts: InstallHookOpts): Promise<void>;
 
-  /** Build the headless invocation. tmux runs this. */
-  buildCommand(opts: SpawnOpts): {
+  /** Build the INTERACTIVE launch command. tmux runs this; it takes no prompt. */
+  buildLaunchCommand(opts: LaunchOpts): {
     argv: string[];
     env: Record<string, string>;
   };
 
-  /** Classify an exit + log tail. */
-  classifyExit(opts: {
-    exitCode: number;
-    logTail: string;
-    sentinelPresent: boolean;
-  }): ExitClassification;
+  /** The literal text to send-keys into the session to start or continue the
+   *  agent — includes the `@`-reference to the on-disk prompt file. */
+  buildPromptText(opts: {
+    promptFile: string;              // path, relative to the worktree
+    kind: 'initial' | 'resume' | 'answer';
+  }): string;
 
-  /** Optional: detect rate-limit message in a Stop-hook payload. */
-  detectRateLimit?(payload: HookPayload): RateLimitDetection | null;
+  /** Put the ready session into auto mode — a launch flag or post-ready keystrokes. */
+  enterAutoMode(opts: { sessionName: string }): Promise<void>;
+
+  /** The normalized event that signals the CLI is ready for input. */
+  readonly readyEvent: NormalizedEvent;
+
+  /** Locate the on-disk session transcript from the ready/session hook payload. */
+  resolveTranscriptPath(payload: HookPayload): string;
+
+  /** Read activity, state, and context/token usage from the transcript. */
+  readTranscriptState(transcriptPath: string): TranscriptState;
+
+  /** Classify the agent's state at a Stop hook. */
+  classifyStop(opts: {
+    payload: HookPayload;
+    transcriptPath: string;
+    sentinelPresent: boolean;
+  }): StopClassification;
+
+  /** Optional: detect a rate-limit message in a Stop-hook payload or transcript. */
+  detectRateLimit?(opts: {
+    payload: HookPayload;
+    transcriptPath: string;
+  }): RateLimitDetection | null;
 }
 
 export type InstallHookOpts = {
@@ -724,45 +749,56 @@ export type InstallHookOpts = {
   epicNumber: number;           // the Epic (or standalone issue) being dispatched
 };
 
-export type SpawnOpts = {
+export type LaunchOpts = {
   worktree: string;
-  promptFile: string;           // path on disk containing the agent prompt
   sessionName: string;
   sessionToken: string;
   envOverrides?: Record<string, string>;
 };
 
-export type ExitClassification =
-  | { kind: 'done' }
+export type TranscriptState = {
+  lastActivity: string;         // ISO
+  contextTokens: number;        // for the context-overflow monitor
+  turnCount: number;
+  lastToolUse: string | null;
+};
+
+export type StopClassification =
+  | { kind: 'done' }                                   // agent marked the PR ready
   | { kind: 'asked-question'; sentinelPath: string }
   | { kind: 'rate-limited'; resetAt: string /* ISO */ }
-  | { kind: 'failed'; reason: string }
-  | { kind: 'idle-timeout' };
+  | { kind: 'bare-stop' }                              // stopped, no sentinel, not done
+  | { kind: 'failed'; reason: string };
 
 export type RateLimitDetection = {
   resetAt: string;
-  source: 'exit' | 'stop-hook' | 'transcript';
+  source: 'stop-hook' | 'transcript';
 };
 ```
 
 ### `ClaudeAdapter` specifics
 
-- `buildCommand`: `["claude", "-p", "--permission-mode=auto", "--output-format=stream-json", "--prompt-file", promptFile]` plus a redirect to the logfile.
-- `installHooks`: writes `<worktree>/.claude/settings.json` with hooks for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStop`, `SessionEnd`. Each entry runs `hook.sh <EventName>` and forwards stdin.
-- `classifyExit`: matches log tail against `/You've hit your usage limit\. Resets at (.+?)\./` for rate limits. Checks `<worktree>/.middle/blocked.json` for question sentinel. Auto mode termination after 3 consecutive denials → `failed` with reason from the message.
-- `detectRateLimit`: same regex applied to the `Stop` hook's transcript text.
+- `buildLaunchCommand`: `["claude"]` — interactive, no `-p`, no prompt. Env (`MIDDLE_*`) injected by tmux at spawn time.
+- `buildPromptText`: returns a one-line `@`-reference that force-includes the on-disk prompt — `@.middle/prompt.md` (a single `@` prefixing the whole relative path). `kind: 'resume'` points additionally at `@planning/issues/<n>/plan.md` and `@.../decisions.md`; `kind: 'answer'` frames the human's reply.
+- `enterAutoMode`: brings the session up in auto mode (the old `permission_mode = "auto"`). Mechanism is empirical — a launch flag if one is honored in interactive mode, otherwise `tmux send-keys S-Tab S-Tab`. The keystroke path is the guaranteed fallback.
+- `readyEvent`: `session.started` (from the `SessionStart` hook).
+- `resolveTranscriptPath`: reads `transcript_path` directly from the `SessionStart` hook payload.
+- `readTranscriptState`: parses the JSONL transcript for last activity, turn count, last tool use, and cumulative context tokens.
+- `classifyStop`: checks `<worktree>/.middle/blocked.json` for the question sentinel; matches the transcript tail against `/You've hit your usage limit\. Resets at (.+?)\./` for rate limits; reads PR state for `done`; otherwise `bare-stop`. Auto-mode termination after 3 consecutive denials → `failed` with the message reason.
+- `detectRateLimit`: same usage-limit regex applied to the `Stop` hook transcript text.
 
 ### `CodexAdapter` specifics
 
-- `buildCommand`: `["codex", "exec", "--json", "--sandbox=workspace-write", "--cd", worktree, "--", promptText]` — passes prompt as argv, not file (Codex prefers it). The `approval_policy = "never"` lives in `.codex/config.toml`, not the command line.
-- `installHooks`: writes `<worktree>/.codex/config.toml` with a `[hooks]` block. Codex's hook event names differ; the adapter maps them to normalized events (see "Normalized events" below).
-- `classifyExit`: matches Codex's rate-limit message (TBD — observe and add patterns as encountered; start with a generous `/rate.?limit|429|too many requests/i` and tighten).
+- `buildLaunchCommand`: the interactive `codex` invocation (no `exec`). `approval_policy = "never"` and `sandbox = "workspace-write"` live in `.codex/config.toml`, not the command line.
+- `buildPromptText`: Codex's force-include syntax for the on-disk prompt file (observed during the Codex phase).
+- `enterAutoMode`, `readyEvent`, `resolveTranscriptPath`, `readTranscriptState`: Codex's launch flag / keystrokes, ready hook, and transcript location/format differ from Claude's and are filled in during Phase 10.
+- `classifyStop`: matches Codex's rate-limit message (start with a generous `/rate.?limit|429|too many requests/i` and tighten as patterns are observed).
 
 ---
 
 ## Normalized event taxonomy
 
-All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to the dispatcher.
+All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to the dispatcher. Hooks are the **fast-path notification**; the authoritative state is the on-disk transcript, reconciled by a cron (see "Dispatch lifecycle").
 
 | Event | Trigger (Claude) | Trigger (Codex) |
 |---|---|---|
@@ -775,6 +811,11 @@ All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to
 | `agent.stopped` | Stop / SubagentStop | turn-end hook |
 | `session.ended` | SessionEnd | shutdown hook |
 | `rate-limit.detected` | (synthetic from Stop) | (synthetic from Stop) |
+
+Two events are **load-bearing for dispatch**, not merely observational:
+
+- `session.started` carries `session_id` and `transcript_path` in its payload. It is how the dispatcher discovers the on-disk transcript at all, and it triggers the launch→drive transition (enter auto mode, confirm readiness, send the prompt).
+- `agent.stopped` is the turn boundary the workflow reacts to. Because the interactive process does not exit between turns, this — not a process exit — is the signal the dispatcher classifies (`classifyStop`).
 
 The hook script is uniform across both:
 
@@ -811,7 +852,7 @@ CREATE TABLE workflows (
   epic_number INTEGER,          -- the dispatched Epic or standalone issue; null for recommender
   adapter TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN (
-    'pending', 'running', 'waiting-human', 'rate-limited',
+    'pending', 'launching', 'running', 'waiting-human', 'rate-limited',
     'completed', 'compensated', 'failed', 'cancelled'
   )),
   created_at INTEGER NOT NULL,
@@ -820,6 +861,9 @@ CREATE TABLE workflows (
   worktree_path TEXT,
   session_name TEXT,
   session_token TEXT,
+  session_id TEXT,              -- the CLI's own session id, from the SessionStart hook
+  transcript_path TEXT,         -- on-disk JSONL transcript; retained after the tmux session ends so --resume stays available
+  controlled_by TEXT NOT NULL DEFAULT 'middle' CHECK (controlled_by IN ('middle', 'human')),
   current_sub_issue INTEGER,    -- which sub-issue/phase the agent is on; null for standalone
   pr_number INTEGER,            -- the one PR for this Epic
   pr_branch TEXT,
@@ -880,6 +924,70 @@ Retention: `events` older than 14 days are deleted on a daily cron. Completed `w
 
 ---
 
+## Dispatch lifecycle
+
+Every dispatch is **launch → drive → observe**. There is no headless mode and no exit code to read.
+
+1. **Launch.** `tmux new-session -d` runs the interactive CLI (`claude`, no prompt) at a generous fixed size. Workflow state: `launching`.
+2. **Drive.** The `SessionStart` hook fires — its payload yields `session_id` and `transcript_path`, recorded on the workflow row. The dispatcher runs `enterAutoMode`, tails the transcript to confirm the session is live and idle-ready (`capture-pane` is a thin fallback), then `send-keys` the adapter's prompt text (`@.middle/prompt.md`) followed by `Enter`. Workflow state: `running`.
+3. **Observe.** The agent works; the process does not exit between turns. Each `Stop` hook is a turn boundary; the dispatcher runs `classifyStop` against the transcript + `.middle/blocked.json` sentinel + PR state.
+
+### Transcript as the state channel
+
+Interactive tmux gives no captured stdout. The CLI's on-disk JSONL **transcript** replaces it: `readTranscriptState` reads activity, turn boundaries, tool use, and context/token usage. Hooks are the fast-path notification; **crons and durable workers reconciling against the transcript are the source of truth** — a reconciler cron corrects any drift between what hooks reported and what the transcript shows.
+
+### Sessions are slot-expensive
+
+A live interactive session holds a concurrency slot; parallelism is scoped on active interactive sessions. So:
+
+> **A session exists only while an agent is actively working. Any wait on something external — a human, a rate-limit reset — ends the session and frees the slot. Resume is a fresh session.**
+
+```
+[launching] ──launch timeout──▶ respawn (bounded)
+   │ SessionStart hook → capture session_id + transcript_path
+   ▼
+[ready] ── enterAutoMode ── transcript confirms ──▶ send-keys "@.middle/prompt.md" + Enter
+   ▼
+[running] ◀── send-keys "continue" ──┐  ← only same-session continuation; preserves the
+   │ Stop hook → classifyStop         │    session vs. a respawn. retry to a max, then kill.
+   ├─ bare stop ──────────────────────┘
+   ├─ asked-question ──▶ END SESSION (free slot) ▶ waiting-human ▶ resume
+   ├─ done / PR ready ─▶ END SESSION (free slot) ▶ verification
+   ├─ rate-limited ────▶ END SESSION (free slot) ▶ resume after reset
+   ├─ context-overflow ▶ END SESSION (free slot) ▶ resume (fresh, always)
+   └─ non-responsive ──▶ KILL SESSION ▶ resume (fresh, bounded)
+
+   At any point in [running]:
+   human takes control ─▶ controlled_by=human  (middle stops send-keys; watchdog
+                          idle-kill suspended; slot still held)
+                          └─ release ─▶ middle re-orients from transcript + PR ─▶ keeps driving
+```
+
+Slots count sessions in `launching` / `ready` / `running`. `END SESSION` decrements the slot immediately — that is what lets the auto-dispatch loop launch the next agent.
+
+### Continuation mechanisms (cost-ordered)
+
+Ending a tmux session frees the slot but does **not** burn the session: `session_id` and `transcript_path` stay on the workflow row, so `--resume` remains available. Resuming work picks the cheapest mechanism that preserves enough state:
+
+1. **send-keys into the live session** — free. Only when no external wait occurred (the bare-stop nudge). Its value is session preservation: a cheap nudge before paying for a new session. Bounded retry, then kill + fresh respawn.
+2. **Fresh session + reconstruction** — cheap. A new session re-primed from the workstream's own artifacts (`@planning/issues/<n>/plan.md`, `@.../decisions.md`, PR state). The default for resuming after any wait.
+3. **`<cli> --resume <session-id>`** — costs tokens; rehydrates the transcript into context. The deliberate exception — used only when in-flight reasoning is honestly worth the tokens (verification "pump-to-finish" bounce-backs; quick-answered questions mid-reasoning). Never for context-overflow (rehydrates the bloat) or non-responsive recovery (the context may be the problem) — those always go fresh.
+
+### Human takeover
+
+A live session is something the operator can join (the dashboard surfaces the attach affordances — see "Dashboard"). The `workflows.controlled_by` column (`middle` | `human`) governs who drives:
+
+- **Watch** — a read-only attach (`tmux attach -r`). No ownership change; middle keeps driving. Always safe — a read-only client cannot send input, so it never collides with `send-keys`.
+- **Take control** — `controlled_by` flips to `human`. middle suspends `send-keys` driving for that session and the watchdog suspends idle-kill; the session keeps its slot. This is a pause, not an end.
+- **Release** — an explicit operator action. A plain detach does not release (the operator may reattach). On release, middle re-reads the transcript + PR to re-orient, then resumes driving.
+- If the operator ends the session while `controlled_by = human`, middle treats it as a deliberate manual conclusion — a human-decided terminal state, not `failed`/respawn.
+
+The empirical unknown — whether `enterAutoMode` uses a launch flag or `S-Tab S-Tab` keystrokes — is abstracted behind the adapter and resolved during implementation; the keystroke path is the guaranteed fallback.
+
+Full design rationale: `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md`.
+
+---
+
 ## bunqueue workflows
 
 ### `implementation` workflow
@@ -919,7 +1027,7 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
       .waitFor((ctx) => `epic-${ctx.input.epicNumber}-answered`, {
         timeout: 7 * 24 * 3600 * 1000,  // 1 week
       })
-      .step('resume-with-answer', resumeAgent)   // re-spawn; agent continues from the paused sub-issue
+      .step('resume-with-answer', resumeAgent)   // fresh session re-primed from plan.md/decisions.md/PR, or --resume when in-flight context is worth the tokens (see "Dispatch lifecycle")
       // and loop back via re-enqueue
     )
     .path('rate-limited', (w) => w
@@ -928,7 +1036,7 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
   .step('finalize', finalizeAndCleanup);
 ```
 
-Each step is small, well-named, and individually testable. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause` — the agent pauses at the current sub-issue, the Epic's other completed sub-issues stay done on the branch, and a human reply resumes the same workstream.
+Each step is small, well-named, and individually testable. The agent-spawning steps (`plan`, `implement-loop`) follow the launch → drive → observe model from "Dispatch lifecycle" — launch the interactive CLI, await readiness, `enterAutoMode`, `send-keys` the prompt, then react to `Stop` via `classifyStop`. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause`: the agent pauses at the current sub-issue, the session **ends to free its slot**, the Epic's completed sub-issues stay done on the branch, and a human reply resumes the workstream as a fresh session (or `--resume`, per "Dispatch lifecycle").
 
 ### `recommender` workflow
 
@@ -947,7 +1055,7 @@ export const recommenderWorkflow = new Workflow<RecommenderInput>('recommender')
   .step('cleanup-worktree', cleanupWorktree);
 ```
 
-Recommender uses its own dedicated slot (not counted against `maxConcurrent`).
+The `spawn-recommender-agent` step is an interactive launch like any other (the recommender is still a short one-shot — it just runs interactively now). Recommender uses its own dedicated slot (not counted against `maxConcurrent`).
 
 ---
 
@@ -980,28 +1088,32 @@ These three gates do not interfere with the agent's reasoning — they react to 
 
 ## Watchdog
 
-Bunqueue cron, runs every 30 seconds, reconciles three signals per `running` workflow:
+Bunqueue cron, runs every 30 seconds, reconciles per `launching` and `running` workflow:
 
-1. **tmux liveness** — `tmux has-session -t <name>` and pane count. Dead session whose workflow is `running` → mark `failed` with reason `tmux session disappeared`. Trigger compensation.
+1. **Launch timeout** — a `launching` workflow whose `readyEvent` has not arrived within the launch timeout, or whose transcript never confirmed the prompt landed, is marked `failed` (reason `stuck-launching` or `prompt-not-accepted`). bunqueue retry decides whether to re-launch.
 
-2. **Heartbeat freshness** — `now - last_heartbeat`:
+2. **tmux liveness** — `tmux has-session -t <name>` and pane count. A dead session whose workflow is `running` → mark `failed` with reason `tmux session disappeared`. Trigger compensation.
+
+3. **Activity freshness** — `now - last_heartbeat`, cross-checked against transcript staleness (the interactive process never self-terminates, so staleness is the primary stuck-agent detector). **Skipped while `controlled_by = 'human'`** — a human-controlled session is not idle, it is being driven by the operator.
    - < `IDLE_THRESHOLD` (default 5 min): healthy
    - ≥ `IDLE_THRESHOLD`, < `IDLE_KILL_THRESHOLD` (default 15 min): mark `idle` in events; dashboard shows yellow
-   - ≥ `IDLE_KILL_THRESHOLD`: `tmux kill-session`, mark workflow `failed` with reason `idle-timeout`. bunqueue retry decides whether to re-spawn.
+   - ≥ `IDLE_KILL_THRESHOLD`: `tmux kill-session`, mark workflow `failed` with reason `idle-timeout`. Resume is a fresh session.
 
-3. **Sentinel files** — `<worktree>/.middle/blocked.json` exists but no `waitFor` signal armed for this workflow → re-arm the signal (handles a race where the agent wrote the sentinel after the workflow advanced).
+4. **Sentinel files** — `<worktree>/.middle/blocked.json` exists but no `waitFor` signal armed for this workflow → re-arm the signal (handles a race where the agent wrote the sentinel after the workflow advanced).
 
-The watchdog NEVER overrides "in progress" decisions made by hooks. Hooks update heartbeat first; watchdog only acts on staleness.
+A companion **reconciler cron** re-reads each `running` workflow's transcript and corrects any drift between what hooks reported and what the transcript shows — the transcript is the source of truth, hooks are the fast path.
+
+The watchdog NEVER overrides "in progress" decisions made by hooks. Hooks and the transcript update activity first; the watchdog only acts on staleness.
 
 ---
 
 ## Rate-limit detection (reactive, per the constraint)
 
-Two sources, both reactive:
+Two sources, both reactive, both at the `Stop` boundary (there is no process exit to classify):
 
-1. **Exit classifier** — adapter's `classifyExit` matches the log tail. On match, returns `{kind: 'rate-limited', resetAt}`. The workflow transitions to `rate-limited`; bunqueue re-enqueues with `delay: resetAt - now`.
+1. **Stop classifier** — adapter's `classifyStop` matches the transcript tail. On match, returns `{kind: 'rate-limited', resetAt}`. The workflow ends the session, transitions to `rate-limited`, and bunqueue re-enqueues with `delay: resetAt - now`.
 
-2. **Stop-hook detector** — adapter's `detectRateLimit` runs against every Stop hook payload. If matched, fires a `rate-limit.detected` synthetic event with `resetAt`. The dispatcher updates `rate_limit_state` immediately even though the agent technically exited 0.
+2. **Stop-hook detector** — adapter's `detectRateLimit` runs against every `Stop` hook payload + transcript. If matched, fires a `rate-limit.detected` synthetic event with `resetAt`; the dispatcher updates `rate_limit_state` immediately.
 
 On detection:
 - `rate_limit_state[adapter]` set to `{ status: 'RATE_LIMITED', reset_at, source }`
@@ -1089,8 +1201,8 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 │  │  1. #247 OAuth refresh · claude · 4 sub-issues           │   │
 │  │  2. #253 cache-warm tests · codex · 1 sub-issue          │   │
 │  │ IN FLIGHT:                                                │   │
-│  │  #247 · claude · sub-issue 2/4 · 14s ago  [tmux attach] │   │
-│  │  #253 · codex · running · 41s ago         [tmux attach] │   │
+│  │  #247 · claude · sub-issue 2/4 · 14s ago  [watch][take] │   │
+│  │  #253 · codex · running · 41s ago         [watch][take] │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  three-flatland   claude 1/2  codex 0/1  total 1/2   auto ✗    │
@@ -1104,9 +1216,19 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 1. **Needs You** (the primary surface): aggregated from `needsHumanInput` across all repos, plus `Ready for review` Epic PRs.
 2. **Per-repo header** with slot pills and auto-dispatch toggle.
 3. **Per-repo expansion**: NEXT UP (top 2 ready Epics) + IN FLIGHT (all running, with sub-issue progress) + recent history (collapsed).
-4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree + tmux command.
+4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree. Includes a **per-runner panel**: workflow state, `controlled_by`, tmux session name + liveness, last heartbeat, context-token usage, transcript path, and the attach affordances (see "Attaching to a live session").
 5. **History** (collapsed by default): completed workflows from the last 7 days.
 6. **Settings**: per-repo config editor, global config, manual rate-limit override buttons.
+
+### Attaching to a live session
+
+A live tmux session is joinable. The inspector exposes three affordances per runner:
+
+- **Watch** — a read-only attach (`tmux attach -r`). Always safe; never collides with middle's `send-keys` driving.
+- **Take control** — flips `controlled_by` to `human` (middle suspends driving; watchdog idle-kill suspends), then a read-write attach. Release is an explicit action; see "Dispatch lifecycle" → human takeover.
+- **Copy command** — the raw `tmux attach -r -t <session>` (and the read-write variant) as copyable text — the guaranteed-portable fallback.
+
+Watch / Take control POST to `POST /api/sessions/:session/attach`; the dispatcher (a local process) spawns the operator's terminal directly (e.g. `ghostty -e tmux attach …`). The exact spawn invocation is a small empirical detail; the copy-command path always works.
 
 ### SSE channels
 
@@ -1125,7 +1247,9 @@ POST /api/repos/:repo/resume
 POST /api/repos/:repo/dispatch             # manual dispatch a specific Epic
 POST /api/rate-limits/:adapter/clear       # manual override
 GET  /api/sessions/:session/events         # paginated event history
-GET  /api/sessions/:session/log            # tmux log file content (streamed)
+GET  /api/sessions/:session/transcript     # on-disk JSONL transcript content (streamed)
+POST /api/sessions/:session/attach         # spawn the operator's terminal; body: { mode: "watch" | "control" }
+POST /api/sessions/:session/release        # return control to middle (controlled_by → middle)
 ```
 
 ### Optional windowed mode
@@ -1174,24 +1298,26 @@ Phased for dogfooding — by phase 3, middle is dispatching its own work.
 
 5. SQLite migrations + db wrapper.
 6. Config loader (global + per-repo, TOML).
-7. `AgentAdapter` interface + `ClaudeAdapter` (only). Hooks NOT yet writing — just spawn + classify.
-8. tmux helpers (spawn, has-session, kill, status).
+7. `AgentAdapter` interface + `ClaudeAdapter` (only): `buildLaunchCommand`, `buildPromptText`, `enterAutoMode`, `classifyStop`, `resolveTranscriptPath`, `readTranscriptState`. Full `installHooks` is Phase 2 — Phase 1 ships a minimal `SessionStart`-only receiver (next item).
+8. tmux helpers: `newSession` (interactive launch), `sendText` (`send-keys -l`), `sendEnter`, `capturePane`, `hasSession`, `killSession`, `status`.
 9. Worktree helpers (create, destroy, list).
-10. One bunqueue workflow: `implementation` with just 3 steps (worktree-prepare → spawn-agent → cleanup). No skill enforcement yet, no hooks.
-11. `mm start`, `mm stop`, `mm status` CLI commands.
+10. Minimal `SessionStart` hook receiver — enough to capture `session_id` + `transcript_path` and signal readiness. (Full taxonomy + HMAC + events table is Phase 2.)
+11. One bunqueue workflow: `implementation` with just 3 steps (worktree-prepare → launch-and-drive → cleanup). `launch-and-drive` runs the launch → drive → observe loop; no skill enforcement yet.
+12. `mm start`, `mm stop`, `mm status` CLI commands.
 
-**Acceptance:** `mm dispatch <test-repo> <epic>` spawns Claude in tmux, agent runs, exits, workflow finalizes, worktree cleaned up.
+**Acceptance:** `mm dispatch <test-repo> <epic>` launches Claude as an interactive tmux session; the dispatcher discovers the transcript via `SessionStart`, enters auto mode, `send-keys` the prompt; the agent works and hits a `Stop`; `classifyStop` runs; the workflow finalizes and the worktree is cleaned up.
 
 ### Phase 2 — Hooks + watchdog
 
-12. Hook server (Bun.serve, /hooks/:event endpoint with HMAC validation).
-13. `installHooks` for ClaudeAdapter writes `.claude/settings.json` referencing the universal `hook.sh`.
-14. Universal `hook.sh` curl script.
-15. Events table populated from incoming hooks. Heartbeats from `tool.pre`/`tool.post`.
-16. Watchdog cron: tmux liveness + idle detection + sentinel check.
-17. Reactive rate-limit detection in `classifyExit`.
+13. Full hook server (Bun.serve, `/hooks/:event` endpoint with HMAC validation) — expands the Phase 1 minimal receiver to the whole taxonomy.
+14. `installHooks` for ClaudeAdapter writes `.claude/settings.json` for the full event set.
+15. Universal `hook.sh` curl script.
+16. Events table populated from incoming hooks. Activity tracked from `tool.pre`/`tool.post` and cross-checked against transcript staleness.
+17. Transcript reconciler cron — re-reads each `running` workflow's transcript, corrects drift; the transcript is the source of truth.
+18. Watchdog cron: launch-timeout + tmux liveness + activity freshness + sentinel check.
+19. Reactive rate-limit detection in `classifyStop` and `detectRateLimit`.
 
-**Acceptance:** Spawn an agent, watch hook events flow into SQLite. Kill the tmux session; watchdog catches it within 30s. Force a rate-limit error; dispatcher records reset_at correctly.
+**Acceptance:** Spawn an agent, watch hook events flow into SQLite and the transcript reconciler keep state honest. Kill the tmux session; watchdog catches it within 30s. Force a rate-limit message; the dispatcher records `reset_at` correctly.
 
 ### Phase 3 — Bootstrap + skills + state issue
 
@@ -1216,7 +1342,7 @@ From here forward, middle's remaining work is dispatched by middle.
 ### Phase 5 — Human-in-loop
 
 26. `waitFor` signal integration in the implementation workflow.
-27. Sentinel-file detection in `classifyExit`.
+27. Sentinel-file detection in `classifyStop`.
 28. GitHub comment poller (looks for human replies on issues with active wait signals).
 29. Resume logic — re-spawn agent with the answer fed into the prompt.
 
