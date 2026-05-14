@@ -27,10 +27,11 @@ This document is the build spec. It's designed to be handed to an agent (or a de
 
 1. **Not a multi-tenant SaaS.** Local only. One user. The user is logged into each CLI subscription themselves.
 2. **No cross-repo intelligence.** One recommender per repo. Humans coordinate batches across repos.
-3. **Not a chat UI for agents.** Agents run headlessly in tmux. The dashboard is read-only on agent state.
+3. **Not a chat UI for agents.** Agents run as interactive CLI sessions inside tmux, driven by the dispatcher via `tmux send-keys`. The dashboard is read-only on agent state, but the operator can attach to a live session (see "Dispatch lifecycle" → human takeover).
 4. **Not a code reviewer.** Mechanical verification gates only. Humans review and merge PRs.
 5. **No private storage of work data.** GitHub is the source of truth for issues, plans, decisions, evidence. middle's SQLite holds operational state only — agent heartbeats, workflow executions, rate-limit reactions. Wiping middle's SQLite must not lose anything important.
 6. **No undocumented APIs for rate limits.** GitHub's `rate_limit` endpoint is fair game. For CLI subscriptions: reactive detection only (catch the error, extract the reset, wait).
+7. **No headless dispatch mode.** middle dispatches agents as interactive tmux sessions only. A headless CLI flag (`claude -p` and the like) is a vendor-removable rug — middle does not depend on one and keeps no headless fallback path.
 
 ---
 
