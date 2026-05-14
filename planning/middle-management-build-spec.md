@@ -1298,24 +1298,26 @@ Phased for dogfooding — by phase 3, middle is dispatching its own work.
 
 5. SQLite migrations + db wrapper.
 6. Config loader (global + per-repo, TOML).
-7. `AgentAdapter` interface + `ClaudeAdapter` (only). Hooks NOT yet writing — just spawn + classify.
-8. tmux helpers (spawn, has-session, kill, status).
+7. `AgentAdapter` interface + `ClaudeAdapter` (only): `buildLaunchCommand`, `buildPromptText`, `enterAutoMode`, `classifyStop`, `resolveTranscriptPath`, `readTranscriptState`. Full `installHooks` is Phase 2 — Phase 1 ships a minimal `SessionStart`-only receiver (next item).
+8. tmux helpers: `newSession` (interactive launch), `sendText` (`send-keys -l`), `sendEnter`, `capturePane`, `hasSession`, `killSession`, `status`.
 9. Worktree helpers (create, destroy, list).
-10. One bunqueue workflow: `implementation` with just 3 steps (worktree-prepare → spawn-agent → cleanup). No skill enforcement yet, no hooks.
-11. `mm start`, `mm stop`, `mm status` CLI commands.
+10. Minimal `SessionStart` hook receiver — enough to capture `session_id` + `transcript_path` and signal readiness. (Full taxonomy + HMAC + events table is Phase 2.)
+11. One bunqueue workflow: `implementation` with just 3 steps (worktree-prepare → launch-and-drive → cleanup). `launch-and-drive` runs the launch → drive → observe loop; no skill enforcement yet.
+12. `mm start`, `mm stop`, `mm status` CLI commands.
 
-**Acceptance:** `mm dispatch <test-repo> <epic>` spawns Claude in tmux, agent runs, exits, workflow finalizes, worktree cleaned up.
+**Acceptance:** `mm dispatch <test-repo> <epic>` launches Claude as an interactive tmux session; the dispatcher discovers the transcript via `SessionStart`, enters auto mode, `send-keys` the prompt; the agent works and hits a `Stop`; `classifyStop` runs; the workflow finalizes and the worktree is cleaned up.
 
 ### Phase 2 — Hooks + watchdog
 
-12. Hook server (Bun.serve, /hooks/:event endpoint with HMAC validation).
-13. `installHooks` for ClaudeAdapter writes `.claude/settings.json` referencing the universal `hook.sh`.
-14. Universal `hook.sh` curl script.
-15. Events table populated from incoming hooks. Heartbeats from `tool.pre`/`tool.post`.
-16. Watchdog cron: tmux liveness + idle detection + sentinel check.
-17. Reactive rate-limit detection in `classifyExit`.
+13. Full hook server (Bun.serve, `/hooks/:event` endpoint with HMAC validation) — expands the Phase 1 minimal receiver to the whole taxonomy.
+14. `installHooks` for ClaudeAdapter writes `.claude/settings.json` for the full event set.
+15. Universal `hook.sh` curl script.
+16. Events table populated from incoming hooks. Activity tracked from `tool.pre`/`tool.post` and cross-checked against transcript staleness.
+17. Transcript reconciler cron — re-reads each `running` workflow's transcript, corrects drift; the transcript is the source of truth.
+18. Watchdog cron: launch-timeout + tmux liveness + activity freshness + sentinel check.
+19. Reactive rate-limit detection in `classifyStop` and `detectRateLimit`.
 
-**Acceptance:** Spawn an agent, watch hook events flow into SQLite. Kill the tmux session; watchdog catches it within 30s. Force a rate-limit error; dispatcher records reset_at correctly.
+**Acceptance:** Spawn an agent, watch hook events flow into SQLite and the transcript reconciler keep state honest. Kill the tmux session; watchdog catches it within 30s. Force a rate-limit message; the dispatcher records `reset_at` correctly.
 
 ### Phase 3 — Bootstrap + skills + state issue
 
@@ -1340,7 +1342,7 @@ From here forward, middle's remaining work is dispatched by middle.
 ### Phase 5 — Human-in-loop
 
 26. `waitFor` signal integration in the implementation workflow.
-27. Sentinel-file detection in `classifyExit`.
+27. Sentinel-file detection in `classifyStop`.
 28. GitHub comment poller (looks for human replies on issues with active wait signals).
 29. Resume logic — re-spawn agent with the answer fed into the prompt.
 
