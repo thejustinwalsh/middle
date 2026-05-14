@@ -55,6 +55,14 @@
 **Why:** Phase 0's job is a parser that conforms to the schema and round-trips byte-identically — not an ergonomic API for the dispatcher/dashboard (those are later phases). Raw strings round-trip trivially and avoid guessing at decompositions the doc doesn't specify. `validate()` still regex-checks the `#N` shape of `epic`/`blocker` for rule 4. Downstream consumers can decompose further when their needs are concrete.
 **Evidence:** Schema doc per-section formats; issue #3 scope ("parser conforms to schema").
 
+## Fuzz test uses a per-iteration seeded PRNG
+**File(s):** `packages/state-issue/test/fuzz.test.ts`
+**Date:** 2026-05-14
+
+**Decision:** Each of the 10,000 fuzz iterations builds its state from a fresh `mulberry32` PRNG seeded with `BASE_SEED + i`. Failures throw with the exact seed. The generator's text alphabet excludes every structural separator (`|`, newline, `·`, `**`, `—`, `]`), so generated values round-trip in any field. The test also asserts coverage of both the all-empty and all-populated regimes, and checks structural deep-equality in addition to #4's required byte-identity.
+**Why:** A per-iteration seed makes any failure reproducible from a single integer (vs. replaying a continuous stream). Excluding separators by construction keeps generated states *valid* per the schema rather than testing the parser against inputs it's not contracted to accept. The deep-equality check is cheap insurance against a lossy renderer that byte-identity alone wouldn't catch.
+**Evidence:** Issue #4 acceptance criteria; `test-driven-development` skill (reproducible, systematic tests).
+
 ## typecheck via `tsc --noEmit`, not `tsc --build`
 **File(s):** `package.json`
 **Date:** 2026-05-14
