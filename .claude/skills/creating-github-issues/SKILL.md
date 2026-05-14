@@ -428,6 +428,7 @@ Middle's controlled labels (applied manually by the user, NOT by this skill — 
 | "I'll skip the Out of scope / References section, this issue is tiny" | All four section *headers* are mandatory. Small tasks have scope creep; almost every issue is informed by a spec section, a doc, or code. |
 | "No skill or doc applies here, I'll write 'Suggested skills: none'" | Filler is noise. Omit the line — but look first: Spec is nearly always citable, and "nothing informs this" usually means you didn't look. |
 | "I'll cite the sibling issue I'm about to file" | You can't reference a number that doesn't exist. Pass 1 writes no forward-references; the Phase 9 second pass wires real `#N`. No `#PENDING` placeholders. |
+| "I'll write `task #13` / `step #4` to point at the spec" | `#N` is a GitHub *issue* reference. Spec task/step numbers collide with issue numbers and silently link to the wrong issue — and the recommender validates that every `#N` resolves. Never put `#` before a non-issue number. Use prose ("the config-loader task") or a real `#N` from the second pass. |
 | "Let me start implementing the first one to see how it goes" | This skill files issues. It does not implement. Stop. |
 | "I'll create labels to organize this better" | Create labels the *plan* requires. Don't invent labels the plan and user never asked for. |
 | "I should ask the user to confirm before filing" | No bulk confirmation gate. A well-defined spec proceeds. Announce the plan (Phase 5) and keep going. |
@@ -462,6 +463,8 @@ Middle's controlled labels (applied manually by the user, NOT by this skill — 
 **Writing forward-references in pass 1.** `#PENDING`, "the sibling sub-issue", "see the parser issue (TBD)" — all of these are pass-1 leakage. If you're tempted to cite an issue that doesn't exist yet, stop and leave it for the Phase 9 second pass.
 
 **Filler in the References section.** "Suggested skills: none specific", "Related: n/a" — these add nothing and train the reader to skip the section. Omit the line. But don't use omission as an escape hatch: if you found nothing to cite, you probably didn't look at the spec hard enough.
+
+**`#` in front of a non-issue number.** Specs number their phases, tasks, and steps. Writing `task #13` to cite the spec produces a live link to issue #13 — almost always the wrong issue, since issue numbers and spec task numbers overlap. The `#` is only ever for real issue references. Write spec callouts as prose ("the config-loader task", "Phase 2") with no `#`.
 
 **Acceptance criteria that restate the title.** Title: "Implement parseStateIssue". Criterion: "parseStateIssue is implemented." Not a criterion. A criterion describes observable behavior or output.
 
