@@ -1088,18 +1088,22 @@ These three gates do not interfere with the agent's reasoning — they react to 
 
 ## Watchdog
 
-Bunqueue cron, runs every 30 seconds, reconciles three signals per `running` workflow:
+Bunqueue cron, runs every 30 seconds, reconciles per `launching` and `running` workflow:
 
-1. **tmux liveness** — `tmux has-session -t <name>` and pane count. Dead session whose workflow is `running` → mark `failed` with reason `tmux session disappeared`. Trigger compensation.
+1. **Launch timeout** — a `launching` workflow whose `readyEvent` has not arrived within the launch timeout, or whose transcript never confirmed the prompt landed, is marked `failed` (reason `stuck-launching` or `prompt-not-accepted`). bunqueue retry decides whether to re-launch.
 
-2. **Heartbeat freshness** — `now - last_heartbeat`:
+2. **tmux liveness** — `tmux has-session -t <name>` and pane count. A dead session whose workflow is `running` → mark `failed` with reason `tmux session disappeared`. Trigger compensation.
+
+3. **Activity freshness** — `now - last_heartbeat`, cross-checked against transcript staleness (the interactive process never self-terminates, so staleness is the primary stuck-agent detector). **Skipped while `controlled_by = 'human'`** — a human-controlled session is not idle, it is being driven by the operator.
    - < `IDLE_THRESHOLD` (default 5 min): healthy
    - ≥ `IDLE_THRESHOLD`, < `IDLE_KILL_THRESHOLD` (default 15 min): mark `idle` in events; dashboard shows yellow
-   - ≥ `IDLE_KILL_THRESHOLD`: `tmux kill-session`, mark workflow `failed` with reason `idle-timeout`. bunqueue retry decides whether to re-spawn.
+   - ≥ `IDLE_KILL_THRESHOLD`: `tmux kill-session`, mark workflow `failed` with reason `idle-timeout`. Resume is a fresh session.
 
-3. **Sentinel files** — `<worktree>/.middle/blocked.json` exists but no `waitFor` signal armed for this workflow → re-arm the signal (handles a race where the agent wrote the sentinel after the workflow advanced).
+4. **Sentinel files** — `<worktree>/.middle/blocked.json` exists but no `waitFor` signal armed for this workflow → re-arm the signal (handles a race where the agent wrote the sentinel after the workflow advanced).
 
-The watchdog NEVER overrides "in progress" decisions made by hooks. Hooks update heartbeat first; watchdog only acts on staleness.
+A companion **reconciler cron** re-reads each `running` workflow's transcript and corrects any drift between what hooks reported and what the transcript shows — the transcript is the source of truth, hooks are the fast path.
+
+The watchdog NEVER overrides "in progress" decisions made by hooks. Hooks and the transcript update activity first; the watchdog only acts on staleness.
 
 ---
 
