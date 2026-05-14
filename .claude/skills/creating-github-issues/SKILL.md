@@ -92,7 +92,7 @@ Note:
 - **Label families** — `phase:N`, `area:X`, `priority:N` style. Conform.
 
 If `.middle/config.toml` exists in the repo, read it for the controlled vocabulary middle expects:
-- `agent:claude-code`, `agent:codex` — adapter overrides
+- `agent:claude`, `agent:codex` — adapter overrides
 - `approved` — bypasses the complexity ceiling
 - `agent-queue:state`, `agent-queue:eligible` — middle internals (don't apply to new issues)
 - `needs-design`, `blocked`, `wontfix` — recommender exclusion signals (use deliberately)
@@ -169,7 +169,7 @@ Planned for <owner>/<repo>: 4 parents + 23 children + 2 standalone = 29 issues.
   ...
   S1. "Add MIT LICENSE" [housekeeping]
 Labels applied: phase:0..2, bootstrap, dogfood, housekeeping.
-Labels left for the user: agent:claude-code, agent:codex, approved.
+Labels left for the user: agent:claude, agent:codex, approved.
 Filing now.
 ```
 
@@ -330,7 +330,7 @@ Filed 29 issues on <owner>/<repo>:
 **Decision issues filed** (unknowns turned into work):
 - #16X — "Decide: <X> vs <Y>"
 **Follow-ups for you:**
-- Apply `agent:claude-code` to issues you want pinned to an adapter
+- Apply `agent:claude` to issues you want pinned to an adapter
 - Apply `approved` to any issue you expect to exceed the complexity ceiling
 ```
 
@@ -414,7 +414,7 @@ Middle's controlled labels (applied by this skill when the plan calls for them):
 - `housekeeping` — infrastructure / repo hygiene
 
 Middle's controlled labels (applied manually by the user, NOT by this skill — they're dispatch decisions, not metadata about the work):
-- `agent:claude-code`, `agent:codex` — adapter override
+- `agent:claude`, `agent:codex` — adapter override
 - `approved` — bypasses complexity ceiling
 - `agent-queue:state`, `agent-queue:eligible` — middle internals
 - `needs-design`, `blocked`, `wontfix` — exclusion signals
