@@ -690,6 +690,8 @@ diff comment via `gh issue comment`.
 
 ## Adapter interface
 
+middle dispatches every agent as an **interactive CLI session inside tmux**. There is no headless mode. The adapter abstracts the per-CLI launch command, the prompt-delivery text, how to enter auto mode, how to locate and read the on-disk transcript, and how to classify a turn boundary.
+
 ```ts
 // packages/core/src/adapter.ts
 
@@ -699,21 +701,43 @@ export interface AgentAdapter {
   /** Write hook config + any per-CLI setup into the worktree. */
   installHooks(opts: InstallHookOpts): Promise<void>;
 
-  /** Build the headless invocation. tmux runs this. */
-  buildCommand(opts: SpawnOpts): {
+  /** Build the INTERACTIVE launch command. tmux runs this; it takes no prompt. */
+  buildLaunchCommand(opts: LaunchOpts): {
     argv: string[];
     env: Record<string, string>;
   };
 
-  /** Classify an exit + log tail. */
-  classifyExit(opts: {
-    exitCode: number;
-    logTail: string;
-    sentinelPresent: boolean;
-  }): ExitClassification;
+  /** The literal text to send-keys into the session to start or continue the
+   *  agent — includes the `@`-reference to the on-disk prompt file. */
+  buildPromptText(opts: {
+    promptFile: string;              // path, relative to the worktree
+    kind: 'initial' | 'resume' | 'answer';
+  }): string;
 
-  /** Optional: detect rate-limit message in a Stop-hook payload. */
-  detectRateLimit?(payload: HookPayload): RateLimitDetection | null;
+  /** Put the ready session into auto mode — a launch flag or post-ready keystrokes. */
+  enterAutoMode(opts: { sessionName: string }): Promise<void>;
+
+  /** The normalized event that signals the CLI is ready for input. */
+  readonly readyEvent: NormalizedEvent;
+
+  /** Locate the on-disk session transcript from the ready/session hook payload. */
+  resolveTranscriptPath(payload: HookPayload): string;
+
+  /** Read activity, state, and context/token usage from the transcript. */
+  readTranscriptState(transcriptPath: string): TranscriptState;
+
+  /** Classify the agent's state at a Stop hook. */
+  classifyStop(opts: {
+    payload: HookPayload;
+    transcriptPath: string;
+    sentinelPresent: boolean;
+  }): StopClassification;
+
+  /** Optional: detect a rate-limit message in a Stop-hook payload or transcript. */
+  detectRateLimit?(opts: {
+    payload: HookPayload;
+    transcriptPath: string;
+  }): RateLimitDetection | null;
 }
 
 export type InstallHookOpts = {
@@ -725,39 +749,50 @@ export type InstallHookOpts = {
   epicNumber: number;           // the Epic (or standalone issue) being dispatched
 };
 
-export type SpawnOpts = {
+export type LaunchOpts = {
   worktree: string;
-  promptFile: string;           // path on disk containing the agent prompt
   sessionName: string;
   sessionToken: string;
   envOverrides?: Record<string, string>;
 };
 
-export type ExitClassification =
-  | { kind: 'done' }
+export type TranscriptState = {
+  lastActivity: string;         // ISO
+  contextTokens: number;        // for the context-overflow monitor
+  turnCount: number;
+  lastToolUse: string | null;
+};
+
+export type StopClassification =
+  | { kind: 'done' }                                   // agent marked the PR ready
   | { kind: 'asked-question'; sentinelPath: string }
   | { kind: 'rate-limited'; resetAt: string /* ISO */ }
-  | { kind: 'failed'; reason: string }
-  | { kind: 'idle-timeout' };
+  | { kind: 'bare-stop' }                              // stopped, no sentinel, not done
+  | { kind: 'failed'; reason: string };
 
 export type RateLimitDetection = {
   resetAt: string;
-  source: 'exit' | 'stop-hook' | 'transcript';
+  source: 'stop-hook' | 'transcript';
 };
 ```
 
 ### `ClaudeAdapter` specifics
 
-- `buildCommand`: `["claude", "-p", "--permission-mode=auto", "--output-format=stream-json", "--prompt-file", promptFile]` plus a redirect to the logfile.
-- `installHooks`: writes `<worktree>/.claude/settings.json` with hooks for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStop`, `SessionEnd`. Each entry runs `hook.sh <EventName>` and forwards stdin.
-- `classifyExit`: matches log tail against `/You've hit your usage limit\. Resets at (.+?)\./` for rate limits. Checks `<worktree>/.middle/blocked.json` for question sentinel. Auto mode termination after 3 consecutive denials → `failed` with reason from the message.
-- `detectRateLimit`: same regex applied to the `Stop` hook's transcript text.
+- `buildLaunchCommand`: `["claude"]` — interactive, no `-p`, no prompt. Env (`MIDDLE_*`) injected by tmux at spawn time.
+- `buildPromptText`: returns a one-line `@`-reference that force-includes the on-disk prompt — `@.middle/prompt.md` (a single `@` prefixing the whole relative path). `kind: 'resume'` points additionally at `@planning/issues/<n>/plan.md` and `@.../decisions.md`; `kind: 'answer'` frames the human's reply.
+- `enterAutoMode`: brings the session up in auto mode (the old `permission_mode = "auto"`). Mechanism is empirical — a launch flag if one is honored in interactive mode, otherwise `tmux send-keys S-Tab S-Tab`. The keystroke path is the guaranteed fallback.
+- `readyEvent`: `session.started` (from the `SessionStart` hook).
+- `resolveTranscriptPath`: reads `transcript_path` directly from the `SessionStart` hook payload.
+- `readTranscriptState`: parses the JSONL transcript for last activity, turn count, last tool use, and cumulative context tokens.
+- `classifyStop`: checks `<worktree>/.middle/blocked.json` for the question sentinel; matches the transcript tail against `/You've hit your usage limit\. Resets at (.+?)\./` for rate limits; reads PR state for `done`; otherwise `bare-stop`. Auto-mode termination after 3 consecutive denials → `failed` with the message reason.
+- `detectRateLimit`: same usage-limit regex applied to the `Stop` hook transcript text.
 
 ### `CodexAdapter` specifics
 
-- `buildCommand`: `["codex", "exec", "--json", "--sandbox=workspace-write", "--cd", worktree, "--", promptText]` — passes prompt as argv, not file (Codex prefers it). The `approval_policy = "never"` lives in `.codex/config.toml`, not the command line.
-- `installHooks`: writes `<worktree>/.codex/config.toml` with a `[hooks]` block. Codex's hook event names differ; the adapter maps them to normalized events (see "Normalized events" below).
-- `classifyExit`: matches Codex's rate-limit message (TBD — observe and add patterns as encountered; start with a generous `/rate.?limit|429|too many requests/i` and tighten).
+- `buildLaunchCommand`: the interactive `codex` invocation (no `exec`). `approval_policy = "never"` and `sandbox = "workspace-write"` live in `.codex/config.toml`, not the command line.
+- `buildPromptText`: Codex's force-include syntax for the on-disk prompt file (observed during the Codex phase).
+- `enterAutoMode`, `readyEvent`, `resolveTranscriptPath`, `readTranscriptState`: Codex's launch flag / keystrokes, ready hook, and transcript location/format differ from Claude's and are filled in during Phase 10.
+- `classifyStop`: matches Codex's rate-limit message (start with a generous `/rate.?limit|429|too many requests/i` and tighten as patterns are observed).
 
 ---
 
