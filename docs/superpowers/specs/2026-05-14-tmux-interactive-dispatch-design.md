@@ -86,8 +86,8 @@ A live interactive session **holds a concurrency slot**. Parallelism is scoped o
    ▼
 [ready] ── enterAutoMode ── transcript confirms ──▶ send-keys "@.middle/prompt.md" + Enter
    ▼
-[running] ◀── send-keys "continue" ──┐  ← the ONLY same-session continuation
-   │ Stop hook → classifyStop         │    (bare-stop nudge, bounded; no external wait)
+[running] ◀── send-keys "continue" ──┐  ← only same-session continuation; preserves the
+   │ Stop hook → classifyStop         │    session vs. a respawn. retry to a max, then kill.
    ├─ bare stop ──────────────────────┘
    ├─ asked-question ──▶ END SESSION (free slot) ▶ waiting-human ▶ resume (see below)
    ├─ done / PR ready ─▶ END SESSION (free slot) ▶ verification
@@ -104,7 +104,7 @@ Slots count sessions in `launching` / `ready` / `running`. `END SESSION` decreme
 
 When work resumes after a boundary, the workflow picks the cheapest mechanism that preserves *enough* state:
 
-1. **send-keys into the live session** — free. Only available when no external wait occurred, i.e. the bare-stop nudge. The session is still alive; `send-keys "continue"`.
+1. **send-keys into the live session** — free. Only available when no external wait occurred, i.e. the bare-stop nudge. The session is still alive; `send-keys "continue"`. Its value is **session preservation**: when the agent just stops for no clear reason, a cheap nudge is worth trying before paying the full cost of a new session. Scoped as a bounded retry — `send-keys "continue"` up to a max — and if the agent keeps bare-stopping, kill the session and fall through to a fresh respawn.
 2. **Fresh session + reconstruction** — cheap. A brand-new session re-primed from the workstream's own artifacts: `@planning/issues/N/plan.md`, `@planning/issues/N/decisions.md`, and PR state. The **default** for resuming after any wait. The implementing-github-issues skill already writes these artifacts, so reconstruction is near-free.
 3. **`claude --resume <session-id>`** — costs tokens; rehydrates the transcript into context. The **deliberate exception**, used only when in-flight reasoning is honestly worth the tokens and is not cheaply reconstructable from artifacts.
 
@@ -187,7 +187,7 @@ Mapping from the old interface:
 | Agent hangs mid-turn | transcript / heartbeat staleness (watchdog) | kill session, fresh resume (bounded) |
 | Context near overflow | `readTranscriptState().contextTokens` over threshold | let current turn finish, end session, fresh resume |
 | Adapter rate-limited | `detectRateLimit` on `Stop` | end session, resume after reset |
-| Bare stop (no sentinel, not done) | `classifyStop` → `bare-stop` | `send-keys "continue"` (bounded); then `failed` |
+| Bare stop (no sentinel, not done) | `classifyStop` → `bare-stop` | `send-keys "continue"` retry (max N) to preserve the session; then kill + fresh respawn |
 | Agent asks a question | `.middle/blocked.json` sentinel at `Stop` | end session, `waiting-human`, resume with the answer |
 
 ## Open / empirical questions
