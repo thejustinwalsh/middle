@@ -51,6 +51,16 @@ describe("validate", () => {
     expect(validate(bad, config).ok).toBe(false);
   });
 
+  test("fails when a Ready row epic has no title", () => {
+    const bad = {
+      ...fullState,
+      readyToDispatch: [
+        { rank: 1, epic: "#42", adapter: "claude", subIssues: 1, reason: "x" },
+      ],
+    };
+    expect(validate(bad, config).ok).toBe(false);
+  });
+
   test("fails when a blocked issue-blocker reference is malformed", () => {
     const bad = {
       ...fullState,
