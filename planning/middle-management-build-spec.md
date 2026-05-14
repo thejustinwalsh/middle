@@ -924,6 +924,70 @@ Retention: `events` older than 14 days are deleted on a daily cron. Completed `w
 
 ---
 
+## Dispatch lifecycle
+
+Every dispatch is **launch → drive → observe**. There is no headless mode and no exit code to read.
+
+1. **Launch.** `tmux new-session -d` runs the interactive CLI (`claude`, no prompt) at a generous fixed size. Workflow state: `launching`.
+2. **Drive.** The `SessionStart` hook fires — its payload yields `session_id` and `transcript_path`, recorded on the workflow row. The dispatcher runs `enterAutoMode`, tails the transcript to confirm the session is live and idle-ready (`capture-pane` is a thin fallback), then `send-keys` the adapter's prompt text (`@.middle/prompt.md`) followed by `Enter`. Workflow state: `running`.
+3. **Observe.** The agent works; the process does not exit between turns. Each `Stop` hook is a turn boundary; the dispatcher runs `classifyStop` against the transcript + `.middle/blocked.json` sentinel + PR state.
+
+### Transcript as the state channel
+
+Interactive tmux gives no captured stdout. The CLI's on-disk JSONL **transcript** replaces it: `readTranscriptState` reads activity, turn boundaries, tool use, and context/token usage. Hooks are the fast-path notification; **crons and durable workers reconciling against the transcript are the source of truth** — a reconciler cron corrects any drift between what hooks reported and what the transcript shows.
+
+### Sessions are slot-expensive
+
+A live interactive session holds a concurrency slot; parallelism is scoped on active interactive sessions. So:
+
+> **A session exists only while an agent is actively working. Any wait on something external — a human, a rate-limit reset — ends the session and frees the slot. Resume is a fresh session.**
+
+```
+[launching] ──launch timeout──▶ respawn (bounded)
+   │ SessionStart hook → capture session_id + transcript_path
+   ▼
+[ready] ── enterAutoMode ── transcript confirms ──▶ send-keys "@.middle/prompt.md" + Enter
+   ▼
+[running] ◀── send-keys "continue" ──┐  ← only same-session continuation; preserves the
+   │ Stop hook → classifyStop         │    session vs. a respawn. retry to a max, then kill.
+   ├─ bare stop ──────────────────────┘
+   ├─ asked-question ──▶ END SESSION (free slot) ▶ waiting-human ▶ resume
+   ├─ done / PR ready ─▶ END SESSION (free slot) ▶ verification
+   ├─ rate-limited ────▶ END SESSION (free slot) ▶ resume after reset
+   ├─ context-overflow ▶ END SESSION (free slot) ▶ resume (fresh, always)
+   └─ non-responsive ──▶ KILL SESSION ▶ resume (fresh, bounded)
+
+   At any point in [running]:
+   human takes control ─▶ controlled_by=human  (middle stops send-keys; watchdog
+                          idle-kill suspended; slot still held)
+                          └─ release ─▶ middle re-orients from transcript + PR ─▶ keeps driving
+```
+
+Slots count sessions in `launching` / `ready` / `running`. `END SESSION` decrements the slot immediately — that is what lets the auto-dispatch loop launch the next agent.
+
+### Continuation mechanisms (cost-ordered)
+
+Ending a tmux session frees the slot but does **not** burn the session: `session_id` and `transcript_path` stay on the workflow row, so `--resume` remains available. Resuming work picks the cheapest mechanism that preserves enough state:
+
+1. **send-keys into the live session** — free. Only when no external wait occurred (the bare-stop nudge). Its value is session preservation: a cheap nudge before paying for a new session. Bounded retry, then kill + fresh respawn.
+2. **Fresh session + reconstruction** — cheap. A new session re-primed from the workstream's own artifacts (`@planning/issues/<n>/plan.md`, `@.../decisions.md`, PR state). The default for resuming after any wait.
+3. **`<cli> --resume <session-id>`** — costs tokens; rehydrates the transcript into context. The deliberate exception — used only when in-flight reasoning is honestly worth the tokens (verification "pump-to-finish" bounce-backs; quick-answered questions mid-reasoning). Never for context-overflow (rehydrates the bloat) or non-responsive recovery (the context may be the problem) — those always go fresh.
+
+### Human takeover
+
+A live session is something the operator can join (the dashboard surfaces the attach affordances — see "Dashboard"). The `workflows.controlled_by` column (`middle` | `human`) governs who drives:
+
+- **Watch** — a read-only attach (`tmux attach -r`). No ownership change; middle keeps driving. Always safe — a read-only client cannot send input, so it never collides with `send-keys`.
+- **Take control** — `controlled_by` flips to `human`. middle suspends `send-keys` driving for that session and the watchdog suspends idle-kill; the session keeps its slot. This is a pause, not an end.
+- **Release** — an explicit operator action. A plain detach does not release (the operator may reattach). On release, middle re-reads the transcript + PR to re-orient, then resumes driving.
+- If the operator ends the session while `controlled_by = human`, middle treats it as a deliberate manual conclusion — a human-decided terminal state, not `failed`/respawn.
+
+The empirical unknown — whether `enterAutoMode` uses a launch flag or `S-Tab S-Tab` keystrokes — is abstracted behind the adapter and resolved during implementation; the keystroke path is the guaranteed fallback.
+
+Full design rationale: `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md`.
+
+---
+
 ## bunqueue workflows
 
 ### `implementation` workflow
