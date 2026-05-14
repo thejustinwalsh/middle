@@ -103,6 +103,16 @@ describe("parseStateIssue", () => {
     );
     expect(parseStateIssue(body)).toEqual(fullState);
   });
+
+  test("returns ParseError when the Ready table omits the documented empty-state row", () => {
+    const body = renderStateIssue(emptyState).replace("| — | _no Epics ready_ | — | — | — |\n", "");
+    expect(isParseError(parseStateIssue(body))).toBe(true);
+  });
+
+  test("returns ParseError when the In-flight section omits the documented empty state", () => {
+    const body = renderStateIssue(emptyState).replace("\n- _no agents in flight_", "");
+    expect(isParseError(parseStateIssue(body))).toBe(true);
+  });
 });
 
 describe("round-trip", () => {

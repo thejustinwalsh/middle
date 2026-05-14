@@ -135,6 +135,9 @@ function parseReady(content: string[]): ReadyRow[] {
   if (content[1] !== READY_TABLE_SEPARATOR) fail("Ready table has a malformed separator row");
   const rows = content.slice(2);
   if (rows.length === 1 && rows[0] === READY_EMPTY_ROW) return [];
+  if (rows.length === 0) {
+    fail("Ready table has no rows — an empty section must use the documented empty-state row");
+  }
   return rows.map((row) => {
     const cells = splitTableRow(row);
     if (cells.length !== 5) fail(`Ready row has ${cells.length} cells, expected 5`);
@@ -174,6 +177,9 @@ const IN_FLIGHT_RE =
 
 function parseInFlight(content: string[]): InFlightItem[] {
   if (content.length === 1 && content[0] === IN_FLIGHT_EMPTY) return [];
+  if (content.length === 0) {
+    fail('In-flight section is empty — an empty section must use the documented "- _no agents in flight_" state');
+  }
   return content.map((line) => {
     const m = IN_FLIGHT_RE.exec(line);
     if (!m) fail(`malformed "In-flight" item: "${line}"`);
