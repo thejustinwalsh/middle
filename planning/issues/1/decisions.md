@@ -15,6 +15,14 @@
 **Why:** The environment shipped Bun 1.3.5; issue #2 acceptance pins the stack at Bun ≥1.3.12.
 **Evidence:** Spec "Tech stack"; issue #2 acceptance criteria.
 
+## Schema doc is a verbatim extraction, not an expansion
+**File(s):** `schemas/state-issue.v1.md`
+**Date:** 2026-05-14
+
+**Decision:** `schemas/state-issue.v1.md` is a faithful, verbatim extraction of the build spec's "State issue schema" fenced block — not an editorialized expansion. The parser-interface section keeps `ReadyRow`, `NeedsHumanItem`, etc. as bare names; their field shapes are derived (in code, Phase 3) from the per-section format descriptions.
+**Why:** Issue #31 says the doc is "extracted from the build spec's 'State issue schema' section" and is "the source of truth, not a copy of the code". Expanding sub-types in the doc would make it a second spec that could drift from the build spec. The doc stays the contract; the code conforms to it.
+**Evidence:** Issue #31 acceptance criteria; spec lines for "State issue schema".
+
 ## typecheck via `tsc --noEmit`, not `tsc --build`
 **File(s):** `package.json`
 **Date:** 2026-05-14
