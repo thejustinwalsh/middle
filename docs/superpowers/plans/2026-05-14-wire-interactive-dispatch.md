@@ -859,7 +859,7 @@ Run:
 ```bash
 for p in 5 7 8; do
   for n in $(gh issue list --label "phase:$p" --state all --json number --jq '.[].number'); do
-    if gh issue view $n --json body --jq '.body' | grep -qE 'buildCommand|classifyExit|SpawnOpts|ExitClassification|headless|claude -p|--prompt-file|runs and exits|exit code'; then
+    if gh issue view $n --json body --jq '.body' | grep -qiE 'buildCommand|classifyExit|SpawnOpts|ExitClassification|headless|claude -p|--prompt-file|runs and exits|exit code|re-spawn|respawn|and exits'; then
       echo "#$n HAS STALE REFS"
     fi
   done
