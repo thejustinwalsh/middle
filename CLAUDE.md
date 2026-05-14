@@ -14,8 +14,8 @@
 middle's dispatch unit is an **Epic** — one Epic = one branch = one PR. The Epic's open sub-issues are the workstream's phases.
 
 - PRs open as **draft** and stay draft until every phase is verified.
-- When a phase is verified → comment on the issue + add the `phase-review` label. This is a real-time review signal, not a hard gate; keep moving.
-- When all phases are done and all verifications pass → mark the PR ready for review, comment on the Epic, and swap the label to `ready-for-review`. The human does the final review and merge — the workflow never merges the PR itself.
+- The agent works through every phase **continuously** — the mechanical verification gates (and the skill-enforcement gates) *are* the gates between phases. No human review between phases; pause only if genuinely stuck or a review gate trips.
+- When all phases are done and all verifications pass → mark the PR **ready for review**, comment on the Epic, and add the `ready-for-review` label so the issue shows it's ready with the linked PR. The human does the final review and merge — the workflow never merges the PR itself.
 - **Updating a PR body:** `gh pr edit --body-file` fails *silently* on a GitHub projects-classic GraphQL bug (`repository.pullRequest.projectCards`). Always PATCH via `gh api`, then verify:
   ```bash
   jq -n --rawfile body /tmp/body.md '{body: $body}' \
