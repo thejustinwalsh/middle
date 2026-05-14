@@ -1027,7 +1027,7 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
       .waitFor((ctx) => `epic-${ctx.input.epicNumber}-answered`, {
         timeout: 7 * 24 * 3600 * 1000,  // 1 week
       })
-      .step('resume-with-answer', resumeAgent)   // re-spawn; agent continues from the paused sub-issue
+      .step('resume-with-answer', resumeAgent)   // fresh session re-primed from plan.md/decisions.md/PR, or --resume when in-flight context is worth the tokens (see "Dispatch lifecycle")
       // and loop back via re-enqueue
     )
     .path('rate-limited', (w) => w
@@ -1036,7 +1036,7 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
   .step('finalize', finalizeAndCleanup);
 ```
 
-Each step is small, well-named, and individually testable. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause` — the agent pauses at the current sub-issue, the Epic's other completed sub-issues stay done on the branch, and a human reply resumes the same workstream.
+Each step is small, well-named, and individually testable. The agent-spawning steps (`plan`, `implement-loop`) follow the launch → drive → observe model from "Dispatch lifecycle" — launch the interactive CLI, await readiness, `enterAutoMode`, `send-keys` the prompt, then react to `Stop` via `classifyStop`. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause`: the agent pauses at the current sub-issue, the session **ends to free its slot**, the Epic's completed sub-issues stay done on the branch, and a human reply resumes the workstream as a fresh session (or `--resume`, per "Dispatch lifecycle").
 
 ### `recommender` workflow
 
@@ -1055,7 +1055,7 @@ export const recommenderWorkflow = new Workflow<RecommenderInput>('recommender')
   .step('cleanup-worktree', cleanupWorktree);
 ```
 
-Recommender uses its own dedicated slot (not counted against `maxConcurrent`).
+The `spawn-recommender-agent` step is an interactive launch like any other (the recommender is still a short one-shot — it just runs interactively now). Recommender uses its own dedicated slot (not counted against `maxConcurrent`).
 
 ---
 
