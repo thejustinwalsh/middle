@@ -763,6 +763,7 @@ Expected: every issue prints `clean`.
 - add as the first criterion: `- [ ] launch-timeout: a \`launching\` workflow with no \`readyEvent\` within the timeout, or whose transcript never confirmed the prompt landed, is marked \`failed\` (\`stuck-launching\` / \`prompt-not-accepted\`)`
 - replace the heartbeat-freshness criterion to note it is cross-checked against transcript staleness and **skipped while \`controlled_by = 'human'\`**
 - add: `- [ ] a companion reconciler cron re-reads each \`running\` workflow's transcript and corrects drift`
+- in **Out of scope**, replace `Sentinel-file detection inside \`classifyExit\` (Phase 5)` with `Sentinel-file detection inside \`classifyStop\` (Phase 5)` (Task 10 renamed the build-spec's Phase 5 item)
 
 - [ ] **Step 6: #20 — classifyStop rate-limit**
 
