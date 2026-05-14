@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Propagate the approved interactive-tmux dispatch design into `planning/middle-management-build-spec.md` and the affected GitHub issues, so the build spec and the issue backlog both describe the interactive model instead of the dead `claude -p` headless model.
+**Goal:** Propagate the approved interactive-tmux dispatch design into `planning/middle-management-build-spec.md` and the affected GitHub issues, so the build spec and the issue backlog both describe the interactive model (including human attach / control ownership) instead of the dead `claude -p` headless model.
 
-**Architecture:** Two parts. Part A edits the build spec section-by-section (one commit per section). Part B edits the affected GitHub issues (Phases 1, 2, 10, plus an audit of 5/7/8). The design is already captured and committed in `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md` — this plan transcribes it into the two planning artifacts.
+**Architecture:** Two parts. Part A edits the build spec section-by-section (one commit per section). Part B edits the affected GitHub issues (Phases 1, 2, 9, 10, plus an audit of 5/7/8). The design is already captured and committed in `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md` — this plan transcribes it into the two planning artifacts.
 
 **Tech Stack:** Markdown editing (`planning/middle-management-build-spec.md`), `gh` CLI for issue edits, `git` for commits.
 
@@ -12,7 +12,7 @@
 
 ## Working context
 
-- **Branch:** `docs/interactive-tmux-dispatch` (already created, off `main`; the design doc is committed here).
+- **Branch:** `docs/interactive-tmux-dispatch` (already created, off `main`; the design doc + this plan are committed here).
 - **Do not touch** the Epic #1 worktree / branch `worktree-1-bootstrap-repo-state-issue-parser` / PR #69 — unrelated.
 - The build spec is one file: `planning/middle-management-build-spec.md`. Line numbers below are from the state at the start of this plan; **re-grep before each edit** since earlier edits shift line numbers.
 - **GitHub API rate limit** may be exhausted at plan time. Before Part B, run `gh api rate_limit --jq .resources.core` and wait for reset if needed.
@@ -30,7 +30,7 @@ When editing either artifact, this is the consistent old→new mapping:
 | `claude -p …` headless invocation | interactive `claude` launch + `send-keys` prompt |
 | "agent runs and exits" / "exit code" | "agent works, hits a `Stop`, dispatcher classifies" |
 | "headless" (of agent processes) | "interactive (tmux + send-keys)" |
-| log tail / stdout log | on-disk JSONL transcript |
+| log tail / stdout log / tmux log file | on-disk JSONL transcript |
 
 ---
 
@@ -49,7 +49,7 @@ Find:
 ```
 Replace with:
 ```
-3. **Not a chat UI for agents.** Agents run as interactive CLI sessions inside tmux, driven by the dispatcher via `tmux send-keys`. The dashboard is read-only on agent state.
+3. **Not a chat UI for agents.** Agents run as interactive CLI sessions inside tmux, driven by the dispatcher via `tmux send-keys`. The dashboard is read-only on agent state, but the operator can attach to a live session (see "Dispatch lifecycle" → human takeover).
 ```
 
 - [ ] **Step 2: Add non-goal #7 after #6**
@@ -250,7 +250,7 @@ git commit -m "spec: mark session.started and agent.stopped as dispatch-driving"
 
 ---
 
-### Task 4: Add transcript columns and the launching state to the SQLite schema
+### Task 4: Add transcript/control columns and the launching state to the SQLite schema
 
 **Files:**
 - Modify: `planning/middle-management-build-spec.md` (`## SQLite schema`, `workflows` table, ~lines 807-828)
@@ -272,7 +272,7 @@ Replace with:
   )),
 ```
 
-- [ ] **Step 2: Add `session_id` and `transcript_path` columns**
+- [ ] **Step 2: Add `session_id`, `transcript_path`, and `controlled_by` columns**
 
 Find:
 ```
@@ -285,18 +285,19 @@ Replace with:
   session_token TEXT,
   session_id TEXT,              -- the CLI's own session id, from the SessionStart hook
   transcript_path TEXT,         -- on-disk JSONL transcript; retained after the tmux session ends so --resume stays available
+  controlled_by TEXT NOT NULL DEFAULT 'middle' CHECK (controlled_by IN ('middle', 'human')),
 ```
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -n "session_id\|transcript_path\|'launching'" planning/middle-management-build-spec.md`
-Expected: three hits in the `workflows` table definition.
+Run: `grep -n "session_id\|transcript_path\|controlled_by\|'launching'" planning/middle-management-build-spec.md`
+Expected: four hits in the `workflows` table definition.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add planning/middle-management-build-spec.md
-git commit -m "spec: add session_id, transcript_path, launching state to workflows table"
+git commit -m "spec: add session_id, transcript_path, controlled_by, launching state to workflows table"
 ```
 
 ---
@@ -315,7 +316,7 @@ Find the line `## bunqueue workflows` and insert **before** it:
 
 Every dispatch is **launch → drive → observe**. There is no headless mode and no exit code to read.
 
-1. **Launch.** `tmux new-session -d` runs the interactive CLI (`claude`, no prompt). Workflow state: `launching`.
+1. **Launch.** `tmux new-session -d` runs the interactive CLI (`claude`, no prompt) at a generous fixed size. Workflow state: `launching`.
 2. **Drive.** The `SessionStart` hook fires — its payload yields `session_id` and `transcript_path`, recorded on the workflow row. The dispatcher runs `enterAutoMode`, tails the transcript to confirm the session is live and idle-ready (`capture-pane` is a thin fallback), then `send-keys` the adapter's prompt text (`@.middle/prompt.md`) followed by `Enter`. Workflow state: `running`.
 3. **Observe.** The agent works; the process does not exit between turns. Each `Stop` hook is a turn boundary; the dispatcher runs `classifyStop` against the transcript + `.middle/blocked.json` sentinel + PR state.
 
@@ -343,6 +344,11 @@ A live interactive session holds a concurrency slot; parallelism is scoped on ac
    ├─ rate-limited ────▶ END SESSION (free slot) ▶ resume after reset
    ├─ context-overflow ▶ END SESSION (free slot) ▶ resume (fresh, always)
    └─ non-responsive ──▶ KILL SESSION ▶ resume (fresh, bounded)
+
+   At any point in [running]:
+   human takes control ─▶ controlled_by=human  (middle stops send-keys; watchdog
+                          idle-kill suspended; slot still held)
+                          └─ release ─▶ middle re-orients from transcript + PR ─▶ keeps driving
 ```
 
 Slots count sessions in `launching` / `ready` / `running`. `END SESSION` decrements the slot immediately — that is what lets the auto-dispatch loop launch the next agent.
@@ -355,6 +361,15 @@ Ending a tmux session frees the slot but does **not** burn the session: `session
 2. **Fresh session + reconstruction** — cheap. A new session re-primed from the workstream's own artifacts (`@planning/issues/<n>/plan.md`, `@.../decisions.md`, PR state). The default for resuming after any wait.
 3. **`<cli> --resume <session-id>`** — costs tokens; rehydrates the transcript into context. The deliberate exception — used only when in-flight reasoning is honestly worth the tokens (verification "pump-to-finish" bounce-backs; quick-answered questions mid-reasoning). Never for context-overflow (rehydrates the bloat) or non-responsive recovery (the context may be the problem) — those always go fresh.
 
+### Human takeover
+
+A live session is something the operator can join (the dashboard surfaces the attach affordances — see "Dashboard"). The `workflows.controlled_by` column (`middle` | `human`) governs who drives:
+
+- **Watch** — a read-only attach (`tmux attach -r`). No ownership change; middle keeps driving. Always safe — a read-only client cannot send input, so it never collides with `send-keys`.
+- **Take control** — `controlled_by` flips to `human`. middle suspends `send-keys` driving for that session and the watchdog suspends idle-kill; the session keeps its slot. This is a pause, not an end.
+- **Release** — an explicit operator action. A plain detach does not release (the operator may reattach). On release, middle re-reads the transcript + PR to re-orient, then resumes driving.
+- If the operator ends the session while `controlled_by = human`, middle treats it as a deliberate manual conclusion — a human-decided terminal state, not `failed`/respawn.
+
 The empirical unknown — whether `enterAutoMode` uses a launch flag or `S-Tab S-Tab` keystrokes — is abstracted behind the adapter and resolved during implementation; the keystroke path is the guaranteed fallback.
 
 Full design rationale: `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md`.
@@ -364,14 +379,14 @@ Full design rationale: `docs/superpowers/specs/2026-05-14-tmux-interactive-dispa
 
 - [ ] **Step 2: Verify**
 
-Run: `grep -n "## Dispatch lifecycle\|## bunqueue workflows" planning/middle-management-build-spec.md`
-Expected: `## Dispatch lifecycle` appears immediately before `## bunqueue workflows`.
+Run: `grep -n "## Dispatch lifecycle\|### Human takeover\|## bunqueue workflows" planning/middle-management-build-spec.md`
+Expected: `## Dispatch lifecycle` and `### Human takeover` appear, immediately before `## bunqueue workflows`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add planning/middle-management-build-spec.md
-git commit -m "spec: add Dispatch lifecycle section (launch/drive/observe + session boundaries)"
+git commit -m "spec: add Dispatch lifecycle section (launch/drive/observe, boundaries, human takeover)"
 ```
 
 ---
@@ -446,7 +461,7 @@ Bunqueue cron, runs every 30 seconds, reconciles per `launching` and `running` w
 
 2. **tmux liveness** — `tmux has-session -t <name>` and pane count. A dead session whose workflow is `running` → mark `failed` with reason `tmux session disappeared`. Trigger compensation.
 
-3. **Activity freshness** — `now - last_heartbeat`, cross-checked against transcript staleness (the interactive process never self-terminates, so staleness is the primary stuck-agent detector):
+3. **Activity freshness** — `now - last_heartbeat`, cross-checked against transcript staleness (the interactive process never self-terminates, so staleness is the primary stuck-agent detector). **Skipped while `controlled_by = 'human'`** — a human-controlled session is not idle, it is being driven by the operator.
    - < `IDLE_THRESHOLD` (default 5 min): healthy
    - ≥ `IDLE_THRESHOLD`, < `IDLE_KILL_THRESHOLD` (default 15 min): mark `idle` in events; dashboard shows yellow
    - ≥ `IDLE_KILL_THRESHOLD`: `tmux kill-session`, mark workflow `failed` with reason `idle-timeout`. Resume is a fresh session.
@@ -460,14 +475,14 @@ The watchdog NEVER overrides "in progress" decisions made by hooks. Hooks and th
 
 - [ ] **Step 2: Verify**
 
-Run: `grep -n "stuck-launching\|prompt-not-accepted\|reconciler cron\|transcript staleness" planning/middle-management-build-spec.md`
+Run: `grep -n "stuck-launching\|prompt-not-accepted\|reconciler cron\|controlled_by = 'human'" planning/middle-management-build-spec.md`
 Expected: all four phrases present in the Watchdog section.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add planning/middle-management-build-spec.md
-git commit -m "spec: add launch-timeout, transcript staleness, reconciler to Watchdog"
+git commit -m "spec: add launch-timeout, transcript staleness, reconciler, human-control skip to Watchdog"
 ```
 
 ---
@@ -499,7 +514,7 @@ Two sources, both reactive, both at the `Stop` boundary (there is no process exi
 - [ ] **Step 2: Verify**
 
 Run: `grep -n "classifyExit\|Exit classifier" planning/middle-management-build-spec.md`
-Expected: zero hits in the Rate-limit detection section (one may remain at the Phase 5 build-sequence reference — handled in Task 9).
+Expected: zero hits in the Rate-limit detection section (one may remain at the Phase 5 build-sequence reference — handled in Task 10).
 
 - [ ] **Step 3: Commit**
 
@@ -510,7 +525,81 @@ git commit -m "spec: rebase Rate-limit detection on the Stop boundary"
 
 ---
 
-### Task 9: Update the Build sequence (Phases 1, 2, 5)
+### Task 9: Update the Dashboard section
+
+**Files:**
+- Modify: `planning/middle-management-build-spec.md` (`## Dashboard`, ~lines 1056-1133)
+
+- [ ] **Step 1: Update the Layout ASCII attach affordance**
+
+In the `### Layout` ASCII block, find the two IN FLIGHT lines:
+```
+│  │  #247 · claude · sub-issue 2/4 · 14s ago  [tmux attach] │   │
+│  │  #253 · codex · running · 41s ago         [tmux attach] │   │
+```
+Replace with:
+```
+│  │  #247 · claude · sub-issue 2/4 · 14s ago  [watch][take] │   │
+│  │  #253 · codex · running · 41s ago         [watch][take] │   │
+```
+
+- [ ] **Step 2: Expand View 4 (Epic inspector)**
+
+Find:
+```
+4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree + tmux command.
+```
+Replace with:
+```
+4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree. Includes a **per-runner panel**: workflow state, `controlled_by`, tmux session name + liveness, last heartbeat, context-token usage, transcript path, and the attach affordances (see "Attaching to a live session").
+```
+
+- [ ] **Step 3: Add the `### Attaching to a live session` subsection**
+
+Find the line `### SSE channels` and insert **before** it:
+```
+### Attaching to a live session
+
+A live tmux session is joinable. The inspector exposes three affordances per runner:
+
+- **Watch** — a read-only attach (`tmux attach -r`). Always safe; never collides with middle's `send-keys` driving.
+- **Take control** — flips `controlled_by` to `human` (middle suspends driving; watchdog idle-kill suspends), then a read-write attach. Release is an explicit action; see "Dispatch lifecycle" → human takeover.
+- **Copy command** — the raw `tmux attach -r -t <session>` (and the read-write variant) as copyable text — the guaranteed-portable fallback.
+
+Watch / Take control POST to `POST /api/sessions/:session/attach`; the dispatcher (a local process) spawns the operator's terminal directly (e.g. `ghostty -e tmux attach …`). The exact spawn invocation is a small empirical detail; the copy-command path always works.
+
+```
+
+- [ ] **Step 4: Update the API list**
+
+In the `### API` block, find:
+```
+GET  /api/sessions/:session/events         # paginated event history
+GET  /api/sessions/:session/log            # tmux log file content (streamed)
+```
+Replace with:
+```
+GET  /api/sessions/:session/events         # paginated event history
+GET  /api/sessions/:session/transcript     # on-disk JSONL transcript content (streamed)
+POST /api/sessions/:session/attach         # spawn the operator's terminal; body: { mode: "watch" | "control" }
+POST /api/sessions/:session/release        # return control to middle (controlled_by → middle)
+```
+
+- [ ] **Step 5: Verify**
+
+Run: `grep -n "tmux log file\|/api/sessions/:session/log\|Attaching to a live session\|/attach\|/release" planning/middle-management-build-spec.md`
+Expected: no `tmux log file` and no `/log` endpoint; `Attaching to a live session`, `/attach`, `/release` all present.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add planning/middle-management-build-spec.md
+git commit -m "spec: surface live-session attach + control ownership in Dashboard"
+```
+
+---
+
+### Task 10: Update the Build sequence (Phases 1, 2, 5)
 
 **Files:**
 - Modify: `planning/middle-management-build-spec.md` (`### Phase 1 — Minimal dispatcher`, `### Phase 2 — Hooks + watchdog`, and the Phase 5 item referencing `classifyExit`, ~lines 1173-1219)
@@ -581,7 +670,7 @@ git commit -m "spec: rewrite Build sequence Phases 1-2 for interactive dispatch"
 
 > Before starting Part B: `gh api rate_limit --jq .resources.core` — if `remaining` is low, wait for `reset`. Each issue edit fetches the body, swaps the specified blocks, and writes it back with `gh issue edit <n> --body-file <tmpfile>` (and `--title` where noted). Preserve every part of the body not called out below (Context, Out of scope, References).
 
-### Task 10: Update Phase 1 issues
+### Task 11: Update Phase 1 issues
 
 **Issues:** #6, #7, #9, #10, #12
 
@@ -595,7 +684,7 @@ with
 - [ ] **Step 2: #7 — SQLite columns**
 
 `gh issue edit 7`: in **Acceptance criteria**, replace the `001_initial.sql` line with:
-`- [ ] \`001_initial.sql\` creates all tables from the spec's "SQLite schema": \`workflows\` (including \`session_id\`, \`transcript_path\`, and \`'launching'\` in the \`state\` CHECK set), \`events\`, \`rate_limit_state\`, \`repo_config\`, \`waitfor_signals\`, \`schema_version\`, with the documented indexes and CHECK constraints`
+`- [ ] \`001_initial.sql\` creates all tables from the spec's "SQLite schema": \`workflows\` (including \`session_id\`, \`transcript_path\`, \`controlled_by\`, and \`'launching'\` in the \`state\` CHECK set), \`events\`, \`rate_limit_state\`, \`repo_config\`, \`waitfor_signals\`, \`schema_version\`, with the documented indexes and CHECK constraints`
 
 - [ ] **Step 3: #9 — AgentAdapter + ClaudeAdapter**
 
@@ -618,7 +707,7 @@ Replace the **Out of scope** first bullet "Real `installHooks` writing `.claude/
 `gh issue edit 10 --title "Implement tmux session helpers (launch, send-keys, capture-pane, has-session, kill, status)"`. In **Context**, replace "agents run headlessly inside tmux sessions" with "agents run as interactive sessions inside tmux, driven by send-keys". Replace the **Acceptance criteria** block with:
 ```
 - [ ] `packages/dispatcher/src/tmux.ts` exposes launch, send-text, send-enter, capture-pane, has-session, kill, and status helpers
-- [ ] `newSession` creates a detached session (`tmux new-session -d`) running a given command, with env injected via `tmux new-session -e KEY=val`
+- [ ] `newSession` creates a detached session (`tmux new-session -d`) running a given command at a generous fixed size, with env injected via `tmux new-session -e KEY=val`
 - [ ] `sendText` sends literal text into a session (`tmux send-keys -l`, so prompt content is not interpreted as key names); `sendEnter` sends `Enter`
 - [ ] `capturePane` returns the pane contents (`tmux capture-pane -p`) for readiness / echo confirmation
 - [ ] `hasSession` reports whether a named session is alive; `status` reports pane count / liveness; `killSession` terminates a named session
@@ -628,7 +717,7 @@ Replace the **Out of scope** first bullet "Real `installHooks` writing `.claude/
 
 - [ ] **Step 5: #12 — 3-step implementation workflow**
 
-`gh issue edit 12`. In **Acceptance criteria**, replace the three steps line and the spawn-agent line:
+`gh issue edit 12`. In **Acceptance criteria**:
 - replace `- [ ] \`packages/dispatcher/src/workflows/implementation.ts\` defines a \`bunqueue/workflow\` \`Workflow\` with exactly three steps: prepare-worktree → spawn-agent → cleanup`
   with `- [ ] \`packages/dispatcher/src/workflows/implementation.ts\` defines a \`bunqueue/workflow\` \`Workflow\` with exactly three steps: prepare-worktree → launch-and-drive → cleanup`
 - replace `- [ ] spawn-agent uses the adapter's \`buildCommand\` and the tmux helpers to run the agent`
@@ -643,7 +732,7 @@ Expected: every issue prints `clean`.
 
 ---
 
-### Task 11: Update Phase 2 issues
+### Task 12: Update Phase 2 issues
 
 **Issues:** #14, #15, #16, #18, #19, #20
 
@@ -672,7 +761,7 @@ Expected: every issue prints `clean`.
 
 `gh issue edit 19`. In **Acceptance criteria**:
 - add as the first criterion: `- [ ] launch-timeout: a \`launching\` workflow with no \`readyEvent\` within the timeout, or whose transcript never confirmed the prompt landed, is marked \`failed\` (\`stuck-launching\` / \`prompt-not-accepted\`)`
-- replace the heartbeat-freshness criterion's parenthetical to note it is cross-checked against transcript staleness
+- replace the heartbeat-freshness criterion to note it is cross-checked against transcript staleness and **skipped while \`controlled_by = 'human'\`**
 - add: `- [ ] a companion reconciler cron re-reads each \`running\` workflow's transcript and corrects drift`
 
 - [ ] **Step 6: #20 — classifyStop rate-limit**
@@ -694,7 +783,7 @@ Expected: every issue prints `clean`.
 
 ---
 
-### Task 12: Update Phase 10 issues
+### Task 13: Update Phase 10 issues
 
 **Issues:** #60, #61
 
@@ -722,7 +811,44 @@ Expected: both print `clean`.
 
 ---
 
-### Task 13: Audit Phases 5, 7, 8 issues for stale references
+### Task 14: Update Phase 9 (Dashboard) issues
+
+**Issues:** #54, #55, #56, #57, #58
+
+- [ ] **Step 1: #54 — Epic**
+
+`gh issue edit 54`. In **Acceptance criteria**, add:
+`- [ ] The Inspector's per-runner panel surfaces \`controlled_by\` and the Watch / Take control / copy-command attach affordances; take-control flips \`controlled_by\` and the operator's terminal opens`
+
+- [ ] **Step 2: #55 — Bun.serve + API**
+
+`gh issue edit 55`. In **Acceptance criteria**, replace the API-routes criterion `- [ ] The JSON API routes from the spec's "API" list are stubbed and wired (\`GET /api/repos\`, \`GET /api/repos/:repo\`, \`POST /api/repos/:repo/run-recommender\`, pause/resume/dispatch, \`POST /api/rate-limits/:adapter/clear\`, session events/log)` with:
+`- [ ] The JSON API routes from the spec's "API" list are stubbed and wired, including \`GET /api/sessions/:session/transcript\`, \`POST /api/sessions/:session/attach\` (spawns the operator's terminal), and \`POST /api/sessions/:session/release\` (returns control to middle)`
+
+- [ ] **Step 3: #56 — React app / Inspector**
+
+`gh issue edit 56`. In **Acceptance criteria**:
+- replace `- [ ] The per-repo expansion shows NEXT UP (top of ready) and IN FLIGHT (currently running), with copy-paste-accurate tmux attach commands`
+  with `- [ ] The per-repo expansion shows NEXT UP (top of ready) and IN FLIGHT (currently running), each runner with Watch / Take control buttons and a copy-paste-accurate \`tmux attach\` command`
+- replace `- [ ] The Inspector shows a session's hook event timeline, verification evidence, and links to PR + worktree + tmux`
+  with `- [ ] The Inspector shows a session's hook event timeline, verification evidence, links to PR + worktree, and a per-runner panel (workflow state, \`controlled_by\`, tmux session + liveness, last heartbeat, context-token usage, transcript path) with Watch / Take control / Release / copy-command affordances`
+
+- [ ] **Step 4: #57 — SSE channels**
+
+`gh issue edit 57`. In **Acceptance criteria**, replace `- [ ] \`GET /events/sessions/:session\` streams a session's hook event timeline for the Inspector` with `- [ ] \`GET /events/sessions/:session\` streams a session's hook event timeline plus runner-panel updates (\`controlled_by\` changes, heartbeat, context tokens) for the Inspector`.
+
+- [ ] **Step 5: #58 — Settings page**
+
+`gh issue view 58 --json body` — scan for any headless/`log` references. #58 (settings page) is not expected to need changes; if the scan is clean, leave it untouched and note "no change needed" in the task log.
+
+- [ ] **Step 6: Verify**
+
+Run: `for n in 54 55 56 57 58; do echo "#$n:"; gh issue view $n --json body --jq '(.body | test("tmux log file|/sessions/:session/log") | if . then "STALE REF FOUND" else "clean" end)'; done`
+Expected: every issue prints `clean`; #54-57 additionally mention the attach affordances.
+
+---
+
+### Task 15: Audit Phases 5, 7, 8 issues for stale references
 
 The design's ripple list named the `recommender` workflow (Phase 7) and the human-in-loop / sentinel path (Phase 5). Their issues may carry headless-model vocabulary.
 
@@ -749,19 +875,19 @@ Re-run Step 1's scan. Expected: no output (no `HAS STALE REFS` lines).
 
 ---
 
-## Task 14: Final audit and open the PR
+## Task 16: Final audit and open the PR
 
 **Files:**
 - Read: `planning/middle-management-build-spec.md`
 
 - [ ] **Step 1: Full spec audit**
 
-Run: `grep -nE 'claude -p|buildCommand|classifyExit|SpawnOpts|ExitClassification|--prompt-file|headlessly|stream-json|agent runs, exits' planning/middle-management-build-spec.md`
+Run: `grep -nE 'claude -p|buildCommand|classifyExit|SpawnOpts|ExitClassification|--prompt-file|headlessly|stream-json|agent runs, exits|tmux log file|/sessions/:session/log' planning/middle-management-build-spec.md`
 Expected: zero hits.
 
 - [ ] **Step 2: Confirm spec ↔ design-doc consistency**
 
-Read `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md` and skim the edited build-spec sections. Confirm the `AgentAdapter` interface, the state machine, the continuation mechanisms, and the event taxonomy match between the two documents.
+Read `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md` and skim the edited build-spec sections. Confirm the `AgentAdapter` interface, the state machine (incl. the human-takeover branch), the continuation mechanisms, the event taxonomy, the `controlled_by` model, and the Dashboard attach surface match between the two documents.
 
 - [ ] **Step 3: Push and open the PR**
 
@@ -769,21 +895,22 @@ Read `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md` and
 git push -u origin docs/interactive-tmux-dispatch
 gh pr create --title "docs: interactive tmux dispatch — design + build-spec wiring" --body "$(cat <<'EOF'
 ## Summary
-`claude -p` can no longer start a session. This replaces middle's headless dispatch model with interactive CLI sessions driven by `tmux send-keys`.
+`claude -p` can no longer start a session. This replaces middle's headless dispatch model with interactive CLI sessions driven by `tmux send-keys`, and makes a live session something the operator can attach to.
 
 - Adds the design doc: `docs/superpowers/specs/2026-05-14-tmux-interactive-dispatch-design.md`
-- Wires it into `planning/middle-management-build-spec.md`: Non-goals, Adapter interface, Normalized event taxonomy, SQLite schema, a new Dispatch lifecycle section, bunqueue workflows, Watchdog, Rate-limit detection, Build sequence Phases 1-2/5
-- Affected GitHub issues updated in place: Phase 1 (#6 #7 #9 #10 #12), Phase 2 (#14 #15 #16 #18 #19 #20), Phase 10 (#60 #61), plus a stale-reference audit of Phases 5/7/8
+- Wires it into `planning/middle-management-build-spec.md`: Non-goals, Adapter interface, Normalized event taxonomy, SQLite schema, a new Dispatch lifecycle section, bunqueue workflows, Watchdog, Rate-limit detection, Dashboard, Build sequence Phases 1-2/5
+- Affected GitHub issues updated in place: Phase 1 (#6 #7 #9 #10 #12), Phase 2 (#14 #15 #16 #18 #19 #20), Phase 9 (#54 #55 #56 #57 #58), Phase 10 (#60 #61), plus a stale-reference audit of Phases 5/7/8
 
 ## Key decisions
 - Interactive-only, all adapters — no headless fallback path
 - On-disk transcript replaces the stdio log as the state channel; crons reconcile as source of truth
 - Sessions are slot-expensive: any external wait ends the session and frees the slot
 - Three cost-ordered continuation mechanisms; ending a session retains `session_id` for optional `--resume`
+- Live sessions are joinable: `controlled_by` ownership model, read-only watch is collision-free, take-control hands off driving, the dashboard spawns the operator's terminal
 - Phase 1 keeps a minimal `SessionStart`-only hook receiver (the interactive model can't function without it)
 
 ## Verification
-- `grep` audit: no `claude -p` / `buildCommand` / `classifyExit` / headless references remain in the build spec
+- `grep` audit: no `claude -p` / `buildCommand` / `classifyExit` / headless / `tmux log file` references remain in the build spec
 - All listed issues re-scanned clean of stale headless-model vocabulary
 EOF
 )"
@@ -799,15 +926,15 @@ EOF
 - Context / Non-goals / durability rationale → Task 1
 - Adapter interface + ClaudeAdapter + CodexAdapter specifics → Task 2
 - Normalized event taxonomy changes → Task 3
-- SQLite `session_id`/`transcript_path`/`launching` → Task 4
-- launch→drive→observe, transcript-as-state-channel, slot principle, state machine, continuation mechanisms → Task 5
+- SQLite `session_id`/`transcript_path`/`controlled_by`/`launching` → Task 4
+- launch→drive→observe, transcript-as-state-channel, slot principle, state machine, continuation mechanisms, human takeover → Task 5
 - bunqueue workflow ripple → Task 6
-- Watchdog ripple (stuck-launching, prompt-not-accepted, transcript staleness, reconciler) → Task 7
+- Watchdog ripple (stuck-launching, prompt-not-accepted, transcript staleness, reconciler, human-control skip) → Task 7
 - Rate-limit detection ripple → Task 8
-- Build sequence ripple → Task 9
-- Affected issues → Tasks 10-13
-- Consistency audit + PR → Task 14
+- Dashboard ripple (per-runner panel, attach affordances, attach/release API, transcript endpoint) → Task 9
+- Build sequence ripple → Task 10
+- Affected issues → Tasks 11-15
 
-**Placeholder scan** — no TBD/TODO; the one empirical unknown (auto-mode mechanism) is carried as explicit spec text with a stated fallback, not a plan placeholder. The Phase 5/7/8 audit (Task 13) is a concrete scan-and-replace with a fixed vocabulary, not a vague "handle edge cases".
+**Placeholder scan** — no TBD/TODO; the empirical unknowns (auto-mode mechanism, terminal-spawn invocation) are carried as explicit spec text with stated fallbacks, not plan placeholders. The Phase 5/7/8 audit (Task 15) is a concrete scan-and-replace with a fixed vocabulary. Task 14 Step 5 (#58) explicitly allows "no change needed" with a clean-scan condition rather than inventing edits.
 
-**Type consistency** — `buildLaunchCommand`, `buildPromptText`, `enterAutoMode`, `readyEvent`, `resolveTranscriptPath`, `readTranscriptState`, `classifyStop`, `LaunchOpts`, `TranscriptState`, `StopClassification`, `RateLimitDetection` are used identically in Task 2 (spec), Task 9 (build sequence), and Tasks 10-12 (issues). The `bare-stop` variant and `source: 'transcript'` are consistent across Tasks 2, 8, 11.
+**Type consistency** — `buildLaunchCommand`, `buildPromptText`, `enterAutoMode`, `readyEvent`, `resolveTranscriptPath`, `readTranscriptState`, `classifyStop`, `LaunchOpts`, `TranscriptState`, `StopClassification`, `RateLimitDetection` are used identically in Task 2 (spec), Task 10 (build sequence), and Tasks 11-13 (issues). `controlled_by` (`middle`|`human`), the `'launching'` state, and `session_id`/`transcript_path` are consistent across Tasks 4, 5, 7, 9, 11, 12, 14. The `bare-stop` variant and `source: 'transcript'` are consistent across Tasks 2, 8, 12.
