@@ -10,7 +10,7 @@ This document is the build spec. It's designed to be handed to an agent (or a de
 
 - **middle** — the system. The CLI binary is `mm`. In prose, "middle" is fine.
 - **dispatcher** — the long-running middle process. Houses the bunqueue engine, hook receiver, watchdog, recommender scheduler, and HTTP dashboard.
-- **adapter** — implementation of a CLI agent: `claude-code`, `codex`, etc. Behind one interface (`AgentAdapter`).
+- **adapter** — implementation of a CLI agent: `claude`, `codex`, etc. Behind one interface (`AgentAdapter`).
 - **workflow** — a bunqueue workflow execution. Two kinds: `implementation` (per issue) and `recommender` (per repo, cron).
 - **state issue** — one GitHub issue per repo, label `agent-queue:state`, whose body is the recommender's ranked output and the dashboard's primary read source.
 - **worktree** — a git worktree under `~/.middle/worktrees/<repo>/issue-<n>/` (or `recommender/`), one per active workflow.
@@ -90,7 +90,7 @@ middle/
 │   │   ├── test/                   # round-trip fixtures
 │   │   └── package.json
 │   ├── adapters/
-│   │   ├── claude-code/
+│   │   ├── claude/
 │   │   │   ├── src/
 │   │   │   │   ├── index.ts        # implements AgentAdapter
 │   │   │   │   ├── hooks.ts        # writes .claude/settings.json
@@ -204,12 +204,12 @@ Two scopes:
 [global]
 dispatcher_port = 8822
 max_concurrent = 4
-default_adapter = "claude-code"
+default_adapter = "claude"
 log_dir = "~/.middle/logs"
 worktree_root = "~/.middle/worktrees"
 db_path = "~/.middle/db.sqlite3"
 
-[adapters.claude-code]
+[adapters.claude]
 enabled = true
 binary = "claude"                         # or full path
 permission_mode = "auto"                  # or "default", "acceptEdits", "plan"
@@ -237,13 +237,13 @@ default_branch = "main"
 
 [limits]
 max_concurrent = 3
-max_concurrent_per_adapter = { claude-code = 2, codex = 1 }
+max_concurrent_per_adapter = { claude = 2, codex = 1 }
 complexity_ceiling = 4
 
 [recommender]
 enabled = true
 interval_minutes = 15
-adapter = "claude-code"                   # which CLI runs the recommender itself
+adapter = "claude"                   # which CLI runs the recommender itself
 auto_dispatch = false                     # SAFE DEFAULT — opt in per repo
 
 [state_issue]
@@ -359,7 +359,7 @@ acceptance criteria missing, archived, out of scope
 
 ### 6. ## Rate limits  [DISPATCHER-OWNED]
 
-- claude-code: <AVAILABLE | RATE LIMITED until <ISO> (in <rel>) | UNKNOWN>
+- claude: <AVAILABLE | RATE LIMITED until <ISO> (in <rel>) | UNKNOWN>
 - codex: <same>
 - github: <n/m req/hr · resets in <rel> | EXHAUSTED until <ISO>>
 
@@ -478,7 +478,7 @@ The dispatcher provides via your prompt:
 - `state_issue`: integer issue number to rewrite
 - `schema_path`: filesystem path to state-issue.v1.md
 - `prior_body`: current contents of the state issue
-- `rate_limits`: claude-code, codex, github statuses
+- `rate_limits`: claude, codex, github statuses
 - `in_flight`: array of currently running agents
 - `slots`: { <adapter>: { used, max }, total: { used, max, global_used, global_max } }
 - `config`: { default_adapter, complexity_ceiling, auto_dispatch }
@@ -641,7 +641,7 @@ diff comment via `gh issue comment`.
 // packages/core/src/adapter.ts
 
 export interface AgentAdapter {
-  readonly name: string;             // 'claude-code' | 'codex' | ...
+  readonly name: string;             // 'claude' | 'codex' | ...
 
   /** Write hook config + any per-CLI setup into the worktree. */
   installHooks(opts: InstallHookOpts): Promise<void>;
@@ -693,7 +693,7 @@ export type RateLimitDetection = {
 };
 ```
 
-### `ClaudeCodeAdapter` specifics
+### `ClaudeAdapter` specifics
 
 - `buildCommand`: `["claude", "-p", "--permission-mode=auto", "--output-format=stream-json", "--prompt-file", promptFile]` plus a redirect to the logfile.
 - `installHooks`: writes `<worktree>/.claude/settings.json` with hooks for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStop`, `SessionEnd`. Each entry runs `hook.sh <EventName>` and forwards stdin.
@@ -952,7 +952,7 @@ On detection:
 
 When `reset_at` passes:
 - `rate_limit_state[adapter]` reverts to `AVAILABLE` after the next successful dispatch (probe-via-real-work)
-- Manual override: dashboard button + `mm rate-limit clear claude-code`
+- Manual override: dashboard button + `mm rate-limit clear claude`
 
 GitHub limits are queried via `gh api rate_limit` every 60s by a separate cron. No reactive needed there.
 
@@ -1004,7 +1004,7 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  ⏵ middle                                                        │
-│  claude-code ✓ available   codex ⏸ 2h 14m   github ✓ 4180/5000  │  ← global banner
+│  claude ✓ available   codex ⏸ 2h 14m   github ✓ 4180/5000  │  ← global banner
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  NEEDS YOU                                            4 items    │  ← top priority
@@ -1116,7 +1116,7 @@ Phased for dogfooding — by phase 3, middle is dispatching its own work.
 
 5. SQLite migrations + db wrapper.
 6. Config loader (global + per-repo, TOML).
-7. `AgentAdapter` interface + `ClaudeCodeAdapter` (only). Hooks NOT yet writing — just spawn + classify.
+7. `AgentAdapter` interface + `ClaudeAdapter` (only). Hooks NOT yet writing — just spawn + classify.
 8. tmux helpers (spawn, has-session, kill, status).
 9. Worktree helpers (create, destroy, list).
 10. One bunqueue workflow: `implementation` with just 3 steps (worktree-prepare → spawn-agent → cleanup). No skill enforcement yet, no hooks.
@@ -1127,7 +1127,7 @@ Phased for dogfooding — by phase 3, middle is dispatching its own work.
 ### Phase 2 — Hooks + watchdog
 
 12. Hook server (Bun.serve, /hooks/:event endpoint with HMAC validation).
-13. `installHooks` for ClaudeCodeAdapter writes `.claude/settings.json` referencing the universal `hook.sh`.
+13. `installHooks` for ClaudeAdapter writes `.claude/settings.json` referencing the universal `hook.sh`.
 14. Universal `hook.sh` curl script.
 15. Events table populated from incoming hooks. Heartbeats from `tool.pre`/`tool.post`.
 16. Watchdog cron: tmux liveness + idle detection + sentinel check.
@@ -1205,7 +1205,7 @@ From here forward, middle's remaining work is dispatched by middle.
 
 ### Phase 10 — CodexAdapter
 
-49. `CodexAdapter` implementation (mirror of ClaudeCodeAdapter).
+49. `CodexAdapter` implementation (mirror of ClaudeAdapter).
 50. Per-CLI adapter selection in implementer prompt + recommender.
 51. Test that the adapter abstraction holds (or fix where it doesn't).
 
