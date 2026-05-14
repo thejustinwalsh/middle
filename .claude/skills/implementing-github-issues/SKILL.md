@@ -597,6 +597,14 @@ Both files live with the branch and get merged with the PR. They're project-arch
 
 Everything above describes the skill running interactively. When **middle-management** (`mm`) dispatches you, you run **headless in a tmux session** — there is no human in the loop during the run, you execute until you exit, and middle's dispatcher, hooks, and mechanical gates observe and enforce your work. The phases above still apply; this section is the delta. Where it says "overrides Phase N," follow this instead.
 
+### You are pointed at an Epic — its sub-issues are your plan phases
+
+middle dispatches **Epics**, not individual issues. The issue you're pointed at is an Epic: it has sub-issues, and **its open sub-issues ARE the phases of your plan**. Don't invent a phase breakdown — fetch the Epic's sub-issues (`gh api /repos/{owner}/{repo}/issues/{epic}/sub_issues`), and each one is a phase. Your `plan.md` Phases list and the PR's Status checkboxes are one-per-sub-issue.
+
+One Epic → one worktree → one branch → one PR. You work *down* the sub-issues in dependency order on that single branch, ticking each Status checkbox as its sub-issue's work verifies. Do **not** open a PR per sub-issue, and do **not** wait for review between sub-issues — the whole Epic is reviewed once, as one PR, when every sub-issue is done.
+
+If you're pointed at a **standalone issue** (no sub-issues), treat it as a one-phase Epic — the normal single-workstream flow, one checkbox.
+
 ### You are already in a prepared worktree (overrides Phase 5)
 
 The dispatcher created your worktree and branch and spawned you inside it. Do **not** run `git worktree add` or create another branch — you're already on the workstream's branch. Confirm your location (`git branch --show-current`, `pwd`) and start at Phase 6 (or resume mid-workstream — see below). Architectural forks still branch off your current branch as normal.
@@ -604,6 +612,15 @@ The dispatcher created your worktree and branch and spawned you inside it. Do **
 ### Asking a question = write `.middle/blocked.json` and exit (overrides Phase 2's "comment and wait")
 
 You cannot "comment on the issue and wait" — headless, there is nothing to wait *in*. When you genuinely need human input (ambiguous acceptance criteria, a decision CLAUDE.md/skills/docs don't resolve and that isn't worth a fork), write `<worktree>/.middle/blocked.json` containing the question and the context a human needs to answer it, then **exit cleanly**. Middle's exit classifier detects the sentinel, parks the workflow on a `waitFor` signal, and surfaces the question on the issue. Do not guess past a real blocker; do not spin idle.
+
+### Complexity is fork branching factor — pause the sub-issue past the ceiling
+
+`complexity` here is **not** size or effort. It is the **branching factor of an unresolved design decision** — how many candidate implementations you'd have to build and compare to answer it. The repo's `complexity_ceiling` (default 3) is the most candidate-forks you may resolve on your own.
+
+- A decision with **2 or 3** viable candidates and no clear winner from CLAUDE.md / repo skills / docs → use the **Architectural forks** mechanic above: worktree each candidate, build a minimal POC, evaluate against fitness, fold the winner. This is expected and good — don't ask a human what you can A/B/C yourself.
+- A decision that genuinely needs **more candidates than `complexity_ceiling`** to reason about → do **not** fork your way through it and do **not** guess. That many live options means the sub-issue is under-specified. **Pause at that sub-issue**: write `.middle/blocked.json` with the decision, the candidate space, and why it exceeds the ceiling, then exit. The human resolves it by scope reduction or clarification — and may add the `approved` label to let you proceed with a best-judgment call on resume.
+
+Completed sub-issues stay done on the branch; only the current one is paused. On resume you continue from there.
 
 ### You may be resumed mid-workstream
 
@@ -619,7 +636,7 @@ A `PreToolUse` hook intercepts `gh pr ready`. The dispatcher walks every accepta
 
 ### Status checkboxes trigger verification gates (reinforces Phase 7e)
 
-When you tick a Status checkbox `[ ] → [x]` for phase N and push, the dispatcher runs phase N's verification gates (lint, typecheck, test, project acceptance script). Any failure → it **reverts your checkbox** and posts a comment naming the failed gate. Only tick a phase box when that phase's gates genuinely pass. A reverted checkbox plus a comment is the system talking back — fix the failure and re-tick; don't fight it.
+When you tick a Status checkbox `[ ] → [x]` for sub-issue N and push, the dispatcher runs sub-issue N's verification gates (lint, typecheck, test, project acceptance script). Any failure → it **reverts your checkbox** and posts a comment naming the failed gate. Only tick a sub-issue's box when its gates genuinely pass. A reverted checkbox plus a comment is the system talking back — fix the failure and re-tick; don't fight it.
 
 ### `.middle/` is middle's operational directory — hands off
 

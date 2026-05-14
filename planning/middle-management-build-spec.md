@@ -1,6 +1,6 @@
 # middle-management — Build Spec
 
-A local orchestration layer for agentic coding work. It dispatches Claude Code and Codex agents against GitHub issues, enforces a strict implementation workflow via skills the agents run, monitors agent health via hooks, and surfaces only what truly needs human attention. GitHub is the system of record; middle is the operator.
+A local orchestration layer for agentic coding work. It dispatches Claude Code and Codex agents against GitHub **Epics** (issues with sub-issues), enforces a strict implementation workflow via skills the agents run, monitors agent health via hooks, and surfaces only what truly needs human attention. GitHub is the system of record; middle is the operator.
 
 This document is the build spec. It's designed to be handed to an agent (or a developer) and built in a single workstream, **dogfooding from the first commit** — the repo building middle uses middle to dispatch its own remaining work.
 
@@ -11,9 +11,14 @@ This document is the build spec. It's designed to be handed to an agent (or a de
 - **middle** — the system. The CLI binary is `mm`. In prose, "middle" is fine.
 - **dispatcher** — the long-running middle process. Houses the bunqueue engine, hook receiver, watchdog, recommender scheduler, and HTTP dashboard.
 - **adapter** — implementation of a CLI agent: `claude`, `codex`, etc. Behind one interface (`AgentAdapter`).
-- **workflow** — a bunqueue workflow execution. Two kinds: `implementation` (per issue) and `recommender` (per repo, cron).
+- **Epic** — a GitHub issue that has sub-issues. The unit of dispatch and of human review. One Epic → one branch → one PR. See "Dispatch granularity".
+- **sub-issue** — a GitHub issue with a parent Epic. Never dispatched alone; it is one phase of its Epic's workstream and one checkbox in the Epic's PR.
+- **standalone issue** — an issue with neither parent nor children. Also a dispatch unit — effectively a one-phase Epic.
+- **dispatch unit** — an Epic or a standalone issue. The thing the recommender ranks and the dispatcher spawns an agent against.
+- **complexity** — the branching factor of an unresolved design decision (how many candidate forks are needed to answer it), NOT size or effort. See "Complexity and architectural forks".
+- **workflow** — a bunqueue workflow execution. Two kinds: `implementation` (per dispatch unit — an Epic or standalone issue) and `recommender` (per repo, cron).
 - **state issue** — one GitHub issue per repo, label `agent-queue:state`, whose body is the recommender's ranked output and the dashboard's primary read source.
-- **worktree** — a git worktree under `~/.middle/worktrees/<repo>/issue-<n>/` (or `recommender/`), one per active workflow.
+- **worktree** — a git worktree under `~/.middle/worktrees/<repo>/epic-<n>/` (or `recommender/`), one per active workflow.
 - **bootstrap / unbootstrap** — `mm init <repo>` installs middle's skills, hooks, and the state issue into a target repo. `mm uninit <repo>` removes them. Safe and reversible.
 
 ---
@@ -26,6 +31,35 @@ This document is the build spec. It's designed to be handed to an agent (or a de
 4. **Not a code reviewer.** Mechanical verification gates only. Humans review and merge PRs.
 5. **No private storage of work data.** GitHub is the source of truth for issues, plans, decisions, evidence. middle's SQLite holds operational state only — agent heartbeats, workflow executions, rate-limit reactions. Wiping middle's SQLite must not lose anything important.
 6. **No undocumented APIs for rate limits.** GitHub's `rate_limit` endpoint is fair game. For CLI subscriptions: reactive detection only (catch the error, extract the reset, wait).
+
+---
+
+## Dispatch granularity — Epics, not issues
+
+middle dispatches **Epics**, not individual issues. This is the load-bearing decision the rest of the spec assumes.
+
+- **Epic** — a GitHub issue that has sub-issues. It is the unit of dispatch *and* the unit of human review. One Epic → one worktree → one branch → one PR.
+- **Sub-issue** — a GitHub issue with a parent. It is **never** dispatched on its own. It is one *phase* of its Epic's workstream; its acceptance criteria become one checkbox in the Epic's PR Status list.
+- **Standalone issue** — an issue with neither parent nor children. It is also a dispatch unit — effectively a one-phase Epic: one issue → one branch → one PR.
+- middle distinguishes these from GitHub's native sub-issue graph (`gh api .../sub_issues`). No `epic` label is required, though a repo may add one for human scanning.
+
+**Why Epic-granular.** Dispatching tiny issues means a human reviews and merges constantly — babysitting. The Epic is the natural review unit: an agent works *down* an Epic's sub-issues on a single branch, ticking each off as a phase, and the human reviews the whole Epic PR once. Contention is bounded by the Epic-level dependency graph — within a dependency chain one Epic-workstream is live at a time, and the next Epic unblocks when the prior Epic's PR merges. There is no inter-sub-issue merge gating; the agent self-sequences within the Epic.
+
+**PR mode (the `pr_mode` seam).** v1 ships `pr_mode = "single"` — one PR per Epic, sub-issues as Status checkboxes. The spec keeps a `[repo].pr_mode` seam so a future `"stacked"` mode (one stacked PR per sub-issue, managed via Graphite / the `gt` CLI) can be added without re-architecting. Everything below assumes `"single"` unless explicitly noted.
+
+**The recommender ranks Epics.** The state issue's "Ready to dispatch" table is a ranked list of Epics (plus standalone issues). The recommender never ranks a sub-issue on its own — sub-issues are scope *inside* an Epic, surfaced only as that Epic's phase list.
+
+---
+
+## Complexity and architectural forks
+
+`complexity` is **not** a measure of size or effort. It is the **branching factor of an unresolved design decision** — how many candidate implementations must be built and compared to answer a question the agent cannot resolve from CLAUDE.md, repo skills, or project docs.
+
+The implementer's **architectural-fork mechanic** (canonical text in `implementing-github-issues`) handles this: when a decision is genuinely unclear, the agent worktrees each candidate, builds a minimal POC, evaluates them against project fitness signals, and folds the winner back. A 2-way (A vs B) or 3-way (A vs B vs C) comparison is tractable — the agent can reason about it and pick a winner. A 4-way-or-more comparison usually means the question is under-specified; the agent cannot reliably choose.
+
+`complexity_ceiling` (per-repo config, default **3**) is the **maximum fork branching factor the agent resolves autonomously**. It is **not** a pre-dispatch gate. The Epic dispatches and the agent works down its sub-issues; when a sub-issue surfaces a decision that would need more candidate forks than the ceiling, the agent **pauses at that sub-issue** — writes `.middle/blocked.json` and exits — and the workflow surfaces it for human review. The human resolves it by **scope reduction or clarification**, not by adjudicating N implementations.
+
+The `approved` label, applied by a human to an Epic, records that the human has reviewed its scope and authorizes the agent to proceed past a complexity pause (make a best-judgment call within the ceiling rather than pausing again). It is the human's "I've seen the branching cost, go" signal — typically applied after resolving an earlier pause.
 
 ---
 
@@ -135,7 +169,7 @@ middle/
 │   │   │   │   ├── pause.ts        # pause auto-dispatch per repo
 │   │   │   │   ├── slots.ts        # set concurrency
 │   │   │   │   ├── doctor.ts       # health check
-│   │   │   │   └── attach.ts       # prints `tmux attach -t ...` for an issue
+│   │   │   │   └── attach.ts       # prints `tmux attach -t ...` for an Epic
 │   │   │   └── bootstrap-assets/   # files copied into the target repo
 │   │   │       ├── skills/
 │   │   │       │   ├── implementing-github-issues/SKILL.md
@@ -231,14 +265,15 @@ theme = "auto"
 
 ```toml
 [repo]
-owner = "tjwesley"
+owner = "thejustinwalsh"
 name = "middle"
 default_branch = "main"
+pr_mode = "single"                        # "single" (one PR per Epic) — v1. "stacked" reserved for a future Graphite/gt mode.
 
 [limits]
 max_concurrent = 3
 max_concurrent_per_adapter = { claude = 2, codex = 1 }
-complexity_ceiling = 4
+complexity_ceiling = 3                     # max fork branching factor an agent resolves itself; beyond it, pause the sub-issue for a human. NOT size.
 
 [recommender]
 enabled = true
@@ -279,12 +314,12 @@ This is the most important command for the user-facing surface. It does the foll
 7. **Update target repo's `.gitignore`**: add `.middle/` (so the per-repo middle dir is ignored). Skills under `.claude/skills/` SHOULD be committed (they're shared with collaborators); the bootstrap status under `.middle/` is local-only.
 8. **Print a summary**:
    ```
-   ✓ middle initialized for tjwesley/middle
+   ✓ middle initialized for thejustinwalsh/middle
      skills installed at .claude/skills/, .codex/skills/
      hook script at .middle/hooks/hook.sh
      state issue created: #142
      config: .middle/config.toml
-     auto-dispatch: OFF (enable with `mm config tjwesley/middle auto_dispatch true`)
+     auto-dispatch: OFF (enable with `mm config thejustinwalsh/middle auto_dispatch true`)
    ```
 
 `mm init` is reversible. `mm uninit <path>` does:
@@ -324,38 +359,41 @@ Content outside the markers is ignored.
 
 ## Sections (in order)
 
+Every `#<n>` reference in this body is an **Epic** or a **standalone issue** — the dispatch units. Sub-issues never appear on their own; they are surfaced only as an Epic's phase count and progress.
+
 ### 1. ## Ready to dispatch
 
-Table with EXACTLY columns: | Rank | Issue | Adapter | Est. phases | Reason |
+Table with EXACTLY columns: | Rank | Epic | Adapter | Sub-issues | Reason |
 - Rank: int starting at 1, sequential
-- Issue: `#<n> <title>` (title truncated to 60 chars with …)
+- Epic: `#<n> <title>` (title truncated to 60 chars with …) — an Epic or a standalone issue
 - Adapter: configured adapter name
-- Est. phases: int 1-99 or `?`
+- Sub-issues: int — count of open sub-issues (the Epic's phase count); `1` for a standalone issue
 - Reason: ≤180 chars, single line, only backtick markdown
-- Empty state: single row `| — | _no issues ready_ | — | — | — |`
+- Empty state: single row `| — | _no Epics ready_ | — | — | — |`
 
 ### 2. ## Needs human input
 
 Bulleted list. Each: `- **#<n> <short label>** — <one-liner> · [link]`
 Short labels (stable vocabulary): fork tied, ambiguous criteria, ready for review,
-size above ceiling, awaiting reply, blocking critical path
+complexity pause, awaiting reply, blocking critical path
+(`complexity pause` — an agent paused at a sub-issue whose decision needs more candidate forks than `complexity_ceiling`; resolve by scope reduction or clarification.)
 
 ### 3. ## Blocked
 
 Bulleted list. `- **#<n>** waiting on #<blocker> · <context>`
-Non-issue blockers: `waiting on \`<description>\``
+`#<n>` and `#<blocker>` are Epics (or standalone issues). Non-issue blockers: `waiting on \`<description>\``
 
 ### 4. ## In-flight  [DISPATCHER-OWNED]
 
 `- **#<n>** · <adapter> · <progress> · last heartbeat <rel> · [tmux: <session>]`
-Progress: `phase <m>/<n>` or `running`
+Progress: `sub-issue <m>/<n>` (which phase of the Epic the agent is on) or `running`
 Empty: `- _no agents in flight_`
 
 ### 5. ## Excluded
 
 `- **#<n>** <reason category> — <detail>`
-Categories (closed set): size above ceiling, assigned to human, needs-design label,
-acceptance criteria missing, archived, out of scope
+Categories (closed set): assigned to human, needs-design label,
+acceptance criteria missing, no open sub-issues, archived, out of scope
 
 ### 6. ## Rate limits  [DISPATCHER-OWNED]
 
@@ -451,6 +489,11 @@ You are the dispatch recommender for a single GitHub repository. Your only job
 is to rewrite ONE state issue's body with a ranked plan of work to dispatch and
 a digest of items needing human attention.
 
+middle dispatches **Epics** (issues with sub-issues) and **standalone issues** —
+never bare sub-issues. You rank dispatch units, not individual sub-issues. A
+sub-issue is one phase inside its Epic's single-PR workstream; it is the
+implementer's concern, not yours.
+
 ## What you are
 
 - A read-only analyst of one repo's issues, PRs, and recent history
@@ -481,12 +524,12 @@ The dispatcher provides via your prompt:
 - `rate_limits`: claude, codex, github statuses
 - `in_flight`: array of currently running agents
 - `slots`: { <adapter>: { used, max }, total: { used, max, global_used, global_max } }
-- `config`: { default_adapter, complexity_ceiling, auto_dispatch }
+- `config`: { default_adapter, auto_dispatch, pr_mode }
 
 Read all of it. Do not start `gh` calls until you've internalized prior_body and
 the dispatcher inputs.
 
-### Phase 2 — Fetch repo state
+### Phase 2 — Fetch repo state and resolve the Epic graph
 
 Run, in order:
 
@@ -500,59 +543,65 @@ gh pr list --state open --limit 100 \\
 If >200 open issues, filter to `--label agent-queue:eligible` (document the filter
 you used in your run-summary comment).
 
+Then resolve the **dispatch-unit structure** from GitHub's native sub-issue graph
+(`gh api /repos/{owner}/{repo}/issues/{n}/sub_issues`):
+- An issue with sub-issues is an **Epic** — a dispatch unit.
+- An issue with a parent is a **sub-issue** — NOT a dispatch unit. It is scope inside
+  its Epic; never classify or rank it on its own.
+- An issue with neither is a **standalone issue** — a dispatch unit (a one-phase Epic).
+
 You may also `git log --oneline -50 main` to gauge recent merge cadence.
 
-### Phase 3 — Classify each open issue
+### Phase 3 — Classify each dispatch unit
 
-For every open issue NOT currently In-flight:
+For every **Epic and standalone issue** NOT currently In-flight (skip sub-issues entirely):
 
-classify(issue) → { category, adapter, phases, reason }
+classify(unit) → { category, adapter, subIssueCount, reason }
 
 **Category** is one of: `ready`, `needs-human`, `blocked`, `excluded`.
 
 `ready` requires ALL:
-- Acceptance criteria readable (explicit or strongly implicit)
-- No open blockers
-- No `needs-design`, `blocked`, `wontfix` labels
+- The unit has readable acceptance criteria — for an Epic, every open sub-issue has
+  explicit or strongly-implicit criteria
+- No open blockers (no open Epic this one waits on)
+- No `needs-design`, `blocked`, `wontfix` labels on the Epic
 - Not assigned to a human
-- Phases ≤ complexity_ceiling OR carries `approved` label
 - A non-rate-limited adapter exists
 
+There is **no pre-dispatch complexity gate**. Complexity is the branching factor of
+a design decision and is discovered at runtime — if an agent hits a decision needing
+more forks than `complexity_ceiling`, it pauses that sub-issue and the dispatcher
+surfaces it as `needs-human`. You do not estimate or gate on it here.
+
 `needs-human` means a human resolves the blocker:
-- Ambiguous acceptance criteria
-- PR awaiting human review
+- Ambiguous acceptance criteria on the Epic or one of its sub-issues
+- The Epic's PR is awaiting human review
 - Fork PRs both open with tie declared
-- Size above ceiling without `approved`
+- An agent paused a sub-issue on a `complexity pause` (decision exceeded the ceiling)
 
-`blocked` means another open issue must close first. Name blocker explicitly.
+`blocked` means another open Epic must close first. Name the blocker explicitly.
 
-`excluded` is not ranked this cycle. Categories fixed (see schema).
+`excluded` is not ranked this cycle. Categories fixed (see schema). An Epic with no
+open sub-issues is `excluded` (`no open sub-issues`) — it is effectively done.
 
 **Adapter selection:**
-1. Explicit `agent:<name>` label overrides
+1. Explicit `agent:<name>` label on the Epic overrides
 2. Else `config.default_adapter`
 3. If chosen adapter rate-limited AND task portable, switch
 4. Otherwise leave it; auto-dispatch skips it until reset
 
-**Phase estimate:**
-- Default 1 for genuinely single-concern issues
-- +1 multiple subsystems touched
-- +1 database/schema changes
-- +1 new external API/service
-- +1 refactor/migration keywords
-- +0.5 explicit documentation requirement
-- Round up. Be conservative. Over-estimation pushes big work to humans sooner.
+**Sub-issue count** is not an estimate — it is the count of open sub-issues from the
+Epic graph (the Epic's phase count). A standalone issue counts as `1`. Report it as-is.
 
-**Reason** must fit ≤180 chars on one line. Be specific. "Acceptance criteria
-clear; pattern matches #198; no blockers" is good. "Looks doable" is not.
+**Reason** must fit ≤180 chars on one line. Be specific. "5 open sub-issues, criteria
+clear, parent Epic #6 unblocked on merge" is good. "Looks doable" is not.
 
 ### Phase 4 — Rank Ready
 
 Sort by, in order:
-1. Number of currently-blocked issues this would unblock
-2. Sub-issue of currently-In-flight parent (continuity)
-3. Smaller phase estimate breaks ties
-4. Older updatedAt breaks remaining ties
+1. Number of currently-blocked Epics this one would unblock
+2. Fewer open sub-issues breaks ties (smaller Epics clear faster)
+3. Older updatedAt breaks remaining ties
 
 Output top 5–8 only. Auto-dispatch loop re-runs after every state change;
 depth beyond the working set is wasted.
@@ -563,9 +612,9 @@ Render against the schema. Sections you don't own (In-flight, Rate limits,
 Slot usage) come from dispatcher input verbatim — do not recompute them.
 
 Verify before writing:
-- Every #N reference resolves to a real open issue/PR
+- Every #N reference resolves to a real open Epic, standalone issue, or PR — never a bare sub-issue
 - Every adapter name is configured
-- Ready table column header exact
+- Ready table column header exact (`| Rank | Epic | Adapter | Sub-issues | Reason |`)
 - Section order matches schema
 - Metadata block present, `generated` is current
 
@@ -580,10 +629,10 @@ Then post a single comment with the diff summary against prior_body:
 > ## Run a3f8c10b summary
 >
 > **Promotions:**
-> - #253 Blocked → Ready (parent #200 now in-flight)
+> - #253 Blocked → Ready (Epic #200 it waited on merged)
 >
 > **Demotions:**
-> - #259 Ready → Needs human input (issue updated 1h ago with ambiguity)
+> - #259 Ready → Needs human input (a sub-issue's criteria went ambiguous 1h ago)
 >
 > **New entries:**
 > - #266 — added to Needs human input (acceptance criteria missing)
@@ -601,7 +650,7 @@ recommender is alive without polluting timeline.
 Done when:
 1. State issue body parses against the schema
 2. Diff comment posted (or no-change comment if applicable)
-3. Every #N references a real issue/PR
+3. Every #N references a real Epic, standalone issue, or PR
 
 If stuck (state issue malformed, missing, etc.): post one comment describing
 the problem and stop. Dispatcher will surface to human.
@@ -612,11 +661,13 @@ the problem and stop. Dispatcher will surface to human.
 |---|---|
 | "Let me open a PR to fix this issue while I'm here" | You implement nothing. |
 | "Let me re-label these issues so they classify cleanly" | You change no labels. Document state as-is in reason. |
-| "This issue is small enough to just do" | Still no. Implementer skill runs separately. |
+| "This Epic is small enough to just do" | Still no. Implementer skill runs separately. |
+| "I'll rank this sub-issue, it looks ready" | Sub-issues are never dispatch units. Rank its Epic, or nothing. |
 | "I'll comment on issue #N for clarification" | Only the state issue is yours. Put the question in `needs-human` reason. |
 | "Previous recommender got #253 wrong, let me explain at length" | One-line diff comment, move on. |
-| "I'll include all 47 ready issues" | Cap 5–8. Auto-dispatch re-runs on state change. |
-| "I'll guess phases without reading" | Read. Wrong estimate = wrong dispatch. |
+| "I'll include all 47 ready Epics" | Cap 5–8. Auto-dispatch re-runs on state change. |
+| "I'll guess the sub-issue count" | Resolve the sub-issue graph. The count is a fact, not an estimate. |
+| "Let me estimate this Epic's complexity and gate on it" | There is no pre-dispatch complexity gate. Complexity is discovered at runtime; the agent pauses if a decision exceeds the ceiling. |
 | "I'll rewrite In-flight, it looks stale" | You don't own it. Copy dispatcher input verbatim. |
 | "Let me add a new exclusion category" | Closed set. Schema bump required. |
 
@@ -628,9 +679,10 @@ diff comment via `gh issue comment`.
 ## Files this skill reads
 
 - Schema at the path provided by the dispatcher
-- Repo's open issues and PRs via `gh`
+- Repo's open issues and PRs via `gh`, and the sub-issue graph via `gh api`
 - Recent git log on main
-- Source files when needed to estimate phases (skim, don't read fully)
+- Source files when needed to assess Epic readiness (skim, don't read fully) — the
+  sub-issue count comes from the graph, never from estimation
 ```
 
 ---
@@ -669,7 +721,7 @@ export type InstallHookOpts = {
   dispatcherUrl: string;        // http://127.0.0.1:8822
   sessionName: string;
   sessionToken: string;         // HMAC token for hook auth
-  issueNumber: number;
+  epicNumber: number;           // the Epic (or standalone issue) being dispatched
 };
 
 export type SpawnOpts = {
@@ -736,12 +788,12 @@ EVENT="$1"
 exec curl -sS -X POST "${MIDDLE_DISPATCHER_URL}/hooks/${EVENT}" \
   -H "X-Middle-Session: ${MIDDLE_SESSION}" \
   -H "X-Middle-Token: ${MIDDLE_SESSION_TOKEN}" \
-  -H "X-Middle-Issue: ${MIDDLE_ISSUE}" \
+  -H "X-Middle-Epic: ${MIDDLE_EPIC}" \
   -H "Content-Type: application/json" \
   --data-binary @- --max-time 3 || exit 0
 ```
 
-Env vars (`MIDDLE_DISPATCHER_URL`, `MIDDLE_SESSION`, `MIDDLE_SESSION_TOKEN`, `MIDDLE_ISSUE`) are set by tmux at spawn time via `tmux new-session -e KEY=val`.
+Env vars (`MIDDLE_DISPATCHER_URL`, `MIDDLE_SESSION`, `MIDDLE_SESSION_TOKEN`, `MIDDLE_EPIC`) are set by tmux at spawn time via `tmux new-session -e KEY=val`. `MIDDLE_EPIC` is the dispatched Epic (or standalone issue) number.
 
 ---
 
@@ -756,7 +808,7 @@ CREATE TABLE workflows (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('implementation', 'recommender')),
   repo TEXT NOT NULL,           -- 'owner/name'
-  issue_number INTEGER,         -- null for recommender
+  epic_number INTEGER,          -- the dispatched Epic or standalone issue; null for recommender
   adapter TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN (
     'pending', 'running', 'waiting-human', 'rate-limited',
@@ -768,7 +820,8 @@ CREATE TABLE workflows (
   worktree_path TEXT,
   session_name TEXT,
   session_token TEXT,
-  pr_number INTEGER,
+  current_sub_issue INTEGER,    -- which sub-issue/phase the agent is on; null for standalone
+  pr_number INTEGER,            -- the one PR for this Epic
   pr_branch TEXT,
   last_heartbeat INTEGER,
   meta_json TEXT                -- adapter-specific scratch
@@ -831,36 +884,42 @@ Retention: `events` older than 14 days are deleted on a daily cron. Completed `w
 
 ### `implementation` workflow
 
+One `implementation` workflow per **dispatch unit** — an Epic or a standalone issue. The agent is pointed at the Epic; the Epic's open sub-issues are the workstream's phases. One worktree, one branch, one PR for the whole Epic. Sub-issues are the PR's Status checkboxes — the workflow does NOT enqueue a workflow per sub-issue. (`pr_mode = "single"`; a future `"stacked"` mode would split this.)
+
 ```ts
 // packages/dispatcher/src/workflows/implementation.ts
 
 import { Workflow } from 'bunqueue/workflow';
 
 export const implementationWorkflow = new Workflow<ImplementationInput>('implementation')
+  // ImplementationInput: { repo, epicNumber, adapter }
   .step('prepare-worktree', prepareWorktree, {
     compensate: cleanupWorktree,
   })
+  .step('resolve-sub-issues', loadEpicSubIssuesAsPlan)   // the Epic's open sub-issues = the phase list
   .step('plan', spawnAgentForPlanPhase, {
     timeout: 30 * 60 * 1000,        // 30 min
     retry: 2,
   })
-  .step('verify-plan-posted', verifyPlanCommentExists)   // skill enforcement
+  .step('verify-plan-posted', verifyPlanCommentExists)   // skill enforcement: plan comment on the Epic
   .step('implement-loop', implementWithVerification, {
+    // agent works DOWN the sub-issues on one branch, ticking each as a phase
     timeout: 4 * 60 * 60 * 1000,    // 4 hr per attempt
     retry: 3,
     compensate: rollbackPR,
   })
   .branch((ctx) => ctx.steps['implement-loop'].outcome)
     .path('done', (w) => w
-      .step('verify-acceptance-gate', verifyAcceptanceGate)  // skill enforcement
+      .step('verify-acceptance-gate', verifyAcceptanceGate)  // skill enforcement: all sub-issue criteria
       .step('mark-pr-ready', markPRReady)
     )
     .path('asked-question', (w) => w
+      // agent paused at a sub-issue — ambiguity, or a decision exceeding complexity_ceiling
       .step('post-question-on-issue', postQuestionVisibility)
-      .waitFor((ctx) => `issue-${ctx.input.issueNumber}-answered`, {
+      .waitFor((ctx) => `epic-${ctx.input.epicNumber}-answered`, {
         timeout: 7 * 24 * 3600 * 1000,  // 1 week
       })
-      .step('resume-with-answer', resumeAgent)
+      .step('resume-with-answer', resumeAgent)   // re-spawn; agent continues from the paused sub-issue
       // and loop back via re-enqueue
     )
     .path('rate-limited', (w) => w
@@ -869,7 +928,7 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
   .step('finalize', finalizeAndCleanup);
 ```
 
-Each step is small, well-named, and individually testable. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill.
+Each step is small, well-named, and individually testable. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause` — the agent pauses at the current sub-issue, the Epic's other completed sub-issues stay done on the branch, and a human reply resumes the same workstream.
 
 ### `recommender` workflow
 
@@ -898,22 +957,22 @@ Three mechanical gates that turn the implementer skill's "principles" into "enfo
 
 ### 1. Plan-comment guard
 
-After the agent finishes its "plan" phase, the dispatcher reads the target issue and verifies a comment exists by the agent's account containing the plan body. If missing, the workflow fails with a clear reason ("Plan-comment guard: no plan comment found on issue #N").
+After the agent finishes its "plan" phase, the dispatcher reads the **Epic** and verifies a comment exists by the agent's account containing the plan body (the plan covers the whole Epic — every sub-issue as a phase). If missing, the workflow fails with a clear reason ("Plan-comment guard: no plan comment found on Epic #N").
 
 ### 2. PR-ready guard (Phase 10 gate, mechanically enforced)
 
 A `PreToolUse` hook installed in the worktree matches `Bash` commands whose `tool_input.command` contains `gh pr ready`. When matched, the hook calls a dispatcher endpoint `/gates/pr-ready` with the PR number; the dispatcher:
 
-1. Reads the PR body.
-2. Walks the acceptance-criteria section.
+1. Reads the Epic PR body.
+2. Walks the acceptance-criteria section — for an Epic PR this is the union of every sub-issue's acceptance criteria.
 3. For each criterion, verifies either evidence link OR `(deferred: <comment-url>)` annotation where the comment is by a non-bot user.
 4. Returns `allow` (exit 0) or `deny` (exit 2 with reason).
 
-If denied, the agent sees the reason and either fills the gap or requests deferral. Phase 10 of the skill is now genuinely a gate, not a suggestion.
+If denied, the agent sees the reason and either fills the gap or requests deferral. Phase 10 of the skill is now genuinely a gate, not a suggestion — and it gates the *whole Epic*, not a single sub-issue.
 
 ### 3. Checkbox-revert
 
-After every push by the agent, the dispatcher reads the PR body and inspects the "Status" checkbox list. If a checkbox transitioned `[ ] → [x]` for phase N, the dispatcher runs the verification gates for phase N (lint, typecheck, test, project-specific acceptance script). If any gate fails, the dispatcher reverts the checkbox (`gh pr edit --body-file ...`) and posts a comment naming the failed gate. The agent's next turn sees the revert and the failure context.
+After every push by the agent, the dispatcher reads the Epic PR body and inspects the "Status" checkbox list — **one checkbox per sub-issue**. If a checkbox transitioned `[ ] → [x]` for sub-issue N, the dispatcher runs the verification gates for that sub-issue (lint, typecheck, test, project-specific acceptance script). If any gate fails, the dispatcher reverts the checkbox (`gh pr edit --body-file ...`) and posts a comment naming the failed gate. The agent's next turn sees the revert and the failure context, and stays on that sub-issue.
 
 These three gates do not interfere with the agent's reasoning — they react to its outputs. The skill stays advisory; the dispatcher makes the advice binding.
 
@@ -966,23 +1025,22 @@ Triggered after:
 - Every rate-limit state change
 - Manual `mm dispatch <repo>` invocation
 
+Each row of `state.readyToDispatch` is an **Epic** (or standalone issue) — one `implementation` workflow per row. There is **no pre-dispatch complexity gate**: complexity is the branching factor of a runtime design decision, discovered while the agent works (see "Complexity and architectural forks"). If a sub-issue's decision exceeds `complexity_ceiling`, the agent pauses *that sub-issue* and the workflow transitions to `waiting-human` — the loop never had to predict it.
+
 ```ts
 async function autoDispatch(repo: string) {
   const state = await readStateIssue(repo);             // parsed from GitHub
-  const limits = await loadConfig(repo).limits;
   const rateLimits = await getRateLimitState();
   const slots = await getSlotState(repo);
   if (!repoIsAutoDispatchEnabled(repo)) return;
 
-  for (const row of state.readyToDispatch) {
+  for (const row of state.readyToDispatch) {            // each row is an Epic
     if (slots.globalAvailable === 0) break;
     if (rateLimits[row.adapter]?.status === 'RATE_LIMITED') continue;
     if (slots.byAdapter[row.adapter] === 0) continue;
-    if (row.estPhases > limits.complexityCeiling
-        && !await issueHasLabel(row.issueNumber, 'approved')) continue;
 
     await enqueueImplementationWorkflow({
-      repo, issueNumber: row.issueNumber, adapter: row.adapter,
+      repo, epicNumber: row.epicNumber, adapter: row.adapter,
     });
     // Decrement local counters so the next row sees fresh state
     slots.byAdapter[row.adapter]--;
@@ -991,7 +1049,7 @@ async function autoDispatch(repo: string) {
 }
 ```
 
-Manual force-dispatch (`mm dispatch <repo> <issue-num> --adapter <adapter>`) bypasses the ceiling and approval gates but still respects slot limits. Logged with `source: 'manual'`.
+Manual force-dispatch (`mm dispatch <repo> <epic-num> --adapter <adapter>`) still respects slot limits. Logged with `source: 'manual'`.
 
 ---
 
@@ -1009,16 +1067,16 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 │                                                                  │
 │  NEEDS YOU                                            4 items    │  ← top priority
 │  ────────────────────────────────────────────────────────────   │
-│  ↑ PR #251 (issue #247) — ready for review · 2h ago             │
-│    OAuth refresh · all gates green                              │
+│  ↑ PR #251 (Epic #247) — ready for review · 2h ago              │
+│    OAuth refresh · 4/4 sub-issues · all gates green             │
 │                                                                  │
-│  ↑ Issue #266 — agent asked: "should refresh use sliding or     │
+│  ↑ Epic #266 — agent paused sub-issue #271: "sliding or         │
 │    fixed window?" · 18m ago                          [open]     │
 │                                                                  │
-│  ↑ PR #248 + #249 (issue #244) — architectural fork TIED        │
+│  ↑ PR #248 + #249 (Epic #244) — architectural fork TIED         │
 │    IndexedDB vs OPFS · [compare]                                │
 │                                                                  │
-│  ↑ Issue #259 — flagged blocker for #260, #261                  │
+│  ↑ Epic #259 — flagged blocker for #260, #261                   │
 │    "needs design decision on schema migration"                  │
 │                                                                  │
 ├─────────────────────────────────────────────────────────────────┤
@@ -1027,12 +1085,12 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 │  ────────────────────────────────────────────────────────────   │
 │  retroforge       claude 2/2  codex 0/1  total 2/3   auto ✓    │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ NEXT UP:                                                  │   │
-│  │  1. #247 OAuth refresh · claude · 3 phases               │   │
-│  │  2. #253 cache-warm tests · codex · 1 phase              │   │
+│  │ NEXT UP (Epics):                                          │   │
+│  │  1. #247 OAuth refresh · claude · 4 sub-issues           │   │
+│  │  2. #253 cache-warm tests · codex · 1 sub-issue          │   │
 │  │ IN FLIGHT:                                                │   │
-│  │  #247 · claude · phase 2/3 · 14s ago    [tmux attach]   │   │
-│  │  #253 · codex · running · 41s ago       [tmux attach]   │   │
+│  │  #247 · claude · sub-issue 2/4 · 14s ago  [tmux attach] │   │
+│  │  #253 · codex · running · 41s ago         [tmux attach] │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  three-flatland   claude 1/2  codex 0/1  total 1/2   auto ✗    │
@@ -1043,10 +1101,10 @@ HTTP server on `localhost:8822` (configurable). Single-page React app. Real-time
 
 ### Views
 
-1. **Needs You** (the primary surface): aggregated from `needsHumanInput` across all repos, plus `Ready for review` PRs.
+1. **Needs You** (the primary surface): aggregated from `needsHumanInput` across all repos, plus `Ready for review` Epic PRs.
 2. **Per-repo header** with slot pills and auto-dispatch toggle.
-3. **Per-repo expansion**: NEXT UP (top 2 of ready) + IN FLIGHT (all currently running) + recent history (collapsed).
-4. **Issue inspector** (modal/drawer): hook event timeline for a session, verification evidence, links to PR + worktree + tmux command.
+3. **Per-repo expansion**: NEXT UP (top 2 ready Epics) + IN FLIGHT (all running, with sub-issue progress) + recent history (collapsed).
+4. **Epic inspector** (modal/drawer): the Epic's sub-issue checklist with per-sub-issue status, hook event timeline for the session, verification evidence, links to PR + worktree + tmux command.
 5. **History** (collapsed by default): completed workflows from the last 7 days.
 6. **Settings**: per-repo config editor, global config, manual rate-limit override buttons.
 
@@ -1064,7 +1122,7 @@ GET  /api/repos/:repo                      # detailed repo state
 POST /api/repos/:repo/run-recommender      # trigger recommender now
 POST /api/repos/:repo/pause                # pause auto-dispatch
 POST /api/repos/:repo/resume
-POST /api/repos/:repo/dispatch             # manual dispatch a specific issue
+POST /api/repos/:repo/dispatch             # manual dispatch a specific Epic
 POST /api/rate-limits/:adapter/clear       # manual override
 GET  /api/sessions/:session/events         # paginated event history
 GET  /api/sessions/:session/log            # tmux log file content (streamed)
@@ -1085,8 +1143,8 @@ mm start [--window]             Start dispatcher
 mm stop                         Stop dispatcher
 mm status                       One-screen summary of all repos
 mm doctor                       Health check + schema validation
-mm attach <repo> <issue>        Print the tmux attach command
-mm dispatch <repo> <issue>      Force-dispatch an issue
+mm attach <repo> <epic>         Print the tmux attach command for an Epic's session
+mm dispatch <repo> <epic>       Force-dispatch an Epic (or standalone issue)
 mm pause <repo>                 Pause auto-dispatch
 mm resume <repo>
 mm run-recommender <repo>       Trigger recommender now
@@ -1122,7 +1180,7 @@ Phased for dogfooding — by phase 3, middle is dispatching its own work.
 10. One bunqueue workflow: `implementation` with just 3 steps (worktree-prepare → spawn-agent → cleanup). No skill enforcement yet, no hooks.
 11. `mm start`, `mm stop`, `mm status` CLI commands.
 
-**Acceptance:** `mm dispatch <test-repo> <issue>` spawns Claude in tmux, agent runs, exits, workflow finalizes, worktree cleaned up.
+**Acceptance:** `mm dispatch <test-repo> <epic>` spawns Claude in tmux, agent runs, exits, workflow finalizes, worktree cleaned up.
 
 ### Phase 2 — Hooks + watchdog
 
@@ -1143,7 +1201,7 @@ Phased for dogfooding — by phase 3, middle is dispatching its own work.
 21. State issue parser integrated; dispatcher can read/write its three sections.
 22. **`mm init` middle into middle itself.** This is the dogfooding crossover.
 
-**Acceptance:** `mm init .` on the middle repo creates a state issue, installs skills, hooks; `mm uninit .` cleanly removes everything. After `mm init`, you can manually create a GitHub issue in middle's repo, `mm dispatch . <issue>`, and middle dispatches an agent on its own repo.
+**Acceptance:** `mm init .` on the middle repo creates a state issue, installs skills, hooks; `mm uninit .` cleanly removes everything. After `mm init`, you can manually create an Epic (an issue with sub-issues) in middle's repo, `mm dispatch . <epic>`, and middle dispatches an agent against it.
 
 From here forward, middle's remaining work is dispatched by middle.
 
@@ -1153,7 +1211,7 @@ From here forward, middle's remaining work is dispatched by middle.
 24. PR-ready guard (PreToolUse on `gh pr ready`).
 25. Checkbox-revert reconciler.
 
-**Acceptance:** Dispatch an issue with deliberately bad agent behavior (skip plan comment); guard catches it. Try to flip a PR ready without all acceptance criteria; guard blocks. Tick a checkbox without passing gates; dispatcher reverts.
+**Acceptance:** Dispatch an Epic with deliberately bad agent behavior (skip plan comment); guard catches it. Try to flip the Epic PR ready without all sub-issue acceptance criteria; guard blocks. Tick a sub-issue checkbox without passing gates; dispatcher reverts.
 
 ### Phase 5 — Human-in-loop
 
@@ -1162,7 +1220,7 @@ From here forward, middle's remaining work is dispatched by middle.
 28. GitHub comment poller (looks for human replies on issues with active wait signals).
 29. Resume logic — re-spawn agent with the answer fed into the prompt.
 
-**Acceptance:** Dispatch an issue. Agent writes blocked.json and exits. Dashboard shows "asked question." Reply on GitHub. Dispatcher signals the workflow. Agent re-spawns with the answer in context and continues.
+**Acceptance:** Dispatch an Epic. Agent pauses at a sub-issue — writes blocked.json and exits. Dashboard shows "asked question." Reply on GitHub. Dispatcher signals the workflow. Agent re-spawns with the answer in context and continues from that sub-issue.
 
 ### Phase 6 — Mechanical verification
 
@@ -1186,12 +1244,12 @@ From here forward, middle's remaining work is dispatched by middle.
 ### Phase 8 — Auto-dispatch + limits
 
 39. Slot tracking + enforcement in the dispatcher's enqueue path.
-40. Auto-dispatch loop (triggered on the 4 events listed above).
+40. Auto-dispatch loop (Epic-granular; triggered on the 4 events listed above).
 41. Per-repo `auto_dispatch` toggle, pause/resume.
-42. Complexity ceiling enforcement.
-43. `approved` label override.
+42. Runtime complexity-pause handling: a sub-issue decision exceeding `complexity_ceiling` routes the workflow to `waiting-human` (no pre-dispatch gate).
+43. `approved` label handling: lets the agent proceed past a complexity pause on a human-reviewed Epic.
 
-**Acceptance:** Enable auto-dispatch on middle's own repo. The recommender runs on cron; new issues auto-dispatch within their limits; nothing runs over the ceiling without `approved`.
+**Acceptance:** Enable auto-dispatch on middle's own repo. The recommender runs on cron; ready Epics auto-dispatch within their slot limits; a sub-issue whose decision exceeds `complexity_ceiling` pauses for human input rather than guessing.
 
 ### Phase 9 — Dashboard
 
@@ -1209,7 +1267,7 @@ From here forward, middle's remaining work is dispatched by middle.
 50. Per-CLI adapter selection in implementer prompt + recommender.
 51. Test that the adapter abstraction holds (or fix where it doesn't).
 
-**Acceptance:** Dispatch the same issue twice, once each adapter, on a test repo; both produce conforming output. The adapter interface didn't need to change.
+**Acceptance:** Dispatch the same Epic twice, once each adapter, on a test repo; both produce conforming output. The adapter interface didn't need to change.
 
 ### Phase 11 — Operator polish
 
@@ -1226,7 +1284,7 @@ From here forward, middle's remaining work is dispatched by middle.
 
 These keep the dogfooding honest:
 
-1. **From Phase 3 onward, every new feature is dispatched as a GitHub issue on middle's own repo.** No "I'll just hack it directly" — that's the whole point.
+1. **From Phase 3 onward, every new feature is dispatched as a GitHub Epic on middle's own repo.** No "I'll just hack it directly" — that's the whole point. Small one-off work goes through a standalone issue (a one-phase Epic).
 
 2. **The state issue is real from Phase 3.** It's not a test fixture; it's the live state of middle's development.
 
