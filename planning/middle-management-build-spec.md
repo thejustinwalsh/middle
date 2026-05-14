@@ -798,7 +798,7 @@ export type RateLimitDetection = {
 
 ## Normalized event taxonomy
 
-All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to the dispatcher.
+All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to the dispatcher. Hooks are the **fast-path notification**; the authoritative state is the on-disk transcript, reconciled by a cron (see "Dispatch lifecycle").
 
 | Event | Trigger (Claude) | Trigger (Codex) |
 |---|---|---|
@@ -811,6 +811,11 @@ All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to
 | `agent.stopped` | Stop / SubagentStop | turn-end hook |
 | `session.ended` | SessionEnd | shutdown hook |
 | `rate-limit.detected` | (synthetic from Stop) | (synthetic from Stop) |
+
+Two events are **load-bearing for dispatch**, not merely observational:
+
+- `session.started` carries `session_id` and `transcript_path` in its payload. It is how the dispatcher discovers the on-disk transcript at all, and it triggers the launch→drive transition (enter auto mode, confirm readiness, send the prompt).
+- `agent.stopped` is the turn boundary the workflow reacts to. Because the interactive process does not exit between turns, this — not a process exit — is the signal the dispatcher classifies (`classifyStop`).
 
 The hook script is uniform across both:
 
