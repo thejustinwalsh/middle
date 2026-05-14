@@ -124,9 +124,11 @@ function splitTableRow(row: string): string[] {
   return row.slice(2, -2).split(" | ");
 }
 
-function int(raw: string, what: string): number {
+function int(raw: string, what: string, min = 1): number {
   const value = Number(raw);
-  if (!Number.isInteger(value)) fail(`${what} is not an integer: "${raw}"`);
+  if (!Number.isInteger(value) || value < min) {
+    fail(`${what} must be an integer ≥ ${min}: "${raw}"`);
+  }
   return value;
 }
 

@@ -113,6 +113,19 @@ describe("parseStateIssue", () => {
     const body = renderStateIssue(emptyState).replace("\n- _no agents in flight_", "");
     expect(isParseError(parseStateIssue(body))).toBe(true);
   });
+
+  test("returns ParseError when a Ready row rank is below 1", () => {
+    const body = renderStateIssue(fullState).replace("| 1 | #42", "| 0 | #42");
+    expect(isParseError(parseStateIssue(body))).toBe(true);
+  });
+
+  test("returns ParseError when a Ready row sub-issue count is below 1", () => {
+    const body = renderStateIssue(fullState).replace(
+      "| 1 | #42 Recommender workflow | claude | 6 |",
+      "| 1 | #42 Recommender workflow | claude | 0 |",
+    );
+    expect(isParseError(parseStateIssue(body))).toBe(true);
+  });
 });
 
 describe("round-trip", () => {
