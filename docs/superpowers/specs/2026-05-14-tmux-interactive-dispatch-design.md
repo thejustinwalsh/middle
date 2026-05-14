@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-14
 **Status:** Approved design — pending build-spec edits
-**Supersedes:** the headless-`claude -p` dispatch model in `planning/middle-management-build-spec.md` (Adapter interface, Normalized event taxonomy, bunqueue workflows, Watchdog, Rate-limit detection, Build sequence Phases 1–2)
+**Supersedes:** the headless-`claude -p` dispatch model in `planning/middle-management-build-spec.md` (Non-goals, Adapter interface, Normalized event taxonomy, SQLite schema, bunqueue workflows, Watchdog, Rate-limit detection, Dashboard, Build sequence Phases 1–2)
 
 ## Context
 
@@ -10,7 +10,7 @@ middle dispatches coding agents against GitHub Epics. The original build spec di
 
 `claude -p` can no longer be used to start a session. The headless path is gone. Agents must now run as **interactive CLI sessions inside tmux**, driven by `tmux send-keys`.
 
-This is not a local patch — it changes how the dispatcher launches agents, how it observes them, how it knows they are ready, and how it ends and resumes their work. It ripples through six build-spec sections.
+This is not a local patch — it changes how the dispatcher launches agents, how it observes them, how it knows they are ready, and how it ends and resumes their work — and it makes a live session something a human can join. It ripples through most of the build spec's dispatch surface.
 
 A second-order decision falls out of it: middle commits to **interactive-only dispatch for every adapter**, with no headless fallback. A headless code path is a vendor-removable rug — `claude -p` is the proof. Interactive + tmux + on-disk transcript is the durable substrate.
 
@@ -22,6 +22,7 @@ A second-order decision falls out of it: middle commits to **interactive-only di
 - Treat external validation (crons, durable workers) as the source of truth; hooks are the fast path.
 - Make concurrency-slot usage reflect *active work*, not idle waiting.
 - Define clear session boundaries and three cost-ordered continuation mechanisms.
+- Let a human watch or take control of a live session from the dashboard, without colliding with middle's driving.
 
 ## Non-goals
 
@@ -94,6 +95,11 @@ A live interactive session **holds a concurrency slot**. Parallelism is scoped o
    ├─ rate-limited ────▶ END SESSION (free slot) ▶ resume after reset
    ├─ context-overflow ▶ END SESSION (free slot) ▶ resume (fresh, always)
    └─ non-responsive ──▶ KILL SESSION ▶ resume (fresh, bounded)
+
+   At any point in [running]:
+   human takes control ─▶ controlled_by=human  (middle stops send-keys; watchdog
+                          idle-kill suspended; slot still held)
+                          └─ release ─▶ middle re-orients from transcript + PR ─▶ keeps driving
 ```
 
 Slots count sessions in `launching` / `ready` / `running`. `END SESSION` decrements the slot immediately — that is what lets the auto-dispatch loop launch the next agent.
@@ -113,6 +119,35 @@ When work resumes after a boundary, the workflow picks the cheapest mechanism th
 Where `--resume` earns its tokens: verification "pump-to-finish" bounce-backs (a checkbox got reverted; the agent should fix the specific thing with full context) and quick-answered questions where the agent was mid-reasoning. Where it does not: context-overflow (rehydrating the bloat defeats the purpose — always fresh) and non-responsive recovery (the context may be the problem — always fresh).
 
 Verification itself is **situational**, not a hard rule: default to fresh/clean context for the acceptance gate, but allow "resume-existing to pump it to finish" for quick bounce-backs. The workflow step picks.
+
+## Surfacing and attaching to live sessions
+
+Interactive sessions are something a human can join. The dashboard surfaces every active runner and lets the operator drop into a live tmux session to diagnose or fix — but a session driven by `send-keys` and a human typing into it at the same time will collide.
+
+### What concurrent attach actually does
+
+tmux is multi-client, and `tmux send-keys` injects into a pane whether or not any client is attached. So if middle is driving a session and a human attaches read-write, both keystroke streams hit the same pane's stdin and interleave — garbling the agent's input. Two consequences shape the design:
+
+- **Read-only attach is always safe.** `tmux attach -r` is a watch-only client — it cannot send input, so it never collides with middle's driving. This is the default "jump in and look" mode.
+- **Read-write attach requires a handoff.** Taking control means middle must stop `send-keys`-driving that session first.
+
+middle creates sessions detached at a generous fixed size; a human attaching resizes the session and the agent's TUI redraws once — survivable, not disruptive.
+
+### Control ownership
+
+Every workflow row carries `controlled_by` — `middle` (default) or `human`.
+
+- **Watch** (read-only) — no ownership change. middle keeps driving; the human observes.
+- **Take control** — `controlled_by` flips to `human`. middle suspends its `send-keys` driving for that session, and the watchdog suspends idle-kill (the human is in there). The session keeps its concurrency slot. This is a **pause**, not an end — middle can reclaim.
+- **Release** — an explicit dashboard action ("return control to middle"). A plain detach does **not** release control (the human may reattach). On release, middle re-reads the transcript + PR state to re-orient, then resumes driving.
+- If the human ends the session themselves while in control, middle sees the session disappear and — because `controlled_by` was `human` — treats it as a deliberate manual conclusion, not a crash: the workflow goes to a human-decided terminal state, not `failed`/respawn.
+
+### Surfacing in the dashboard
+
+The Epic inspector shows a per-runner panel: epic #, adapter, workflow state, `controlled_by`, tmux session name + liveness, last heartbeat, context-token usage, transcript path. Plus the attach affordances:
+
+- **Watch** / **Take control** buttons — POST to `POST /api/sessions/:session/attach` with the mode; the dispatcher (a local process) spawns the terminal directly, e.g. `ghostty -e tmux attach -r -t <session>` for watch, without `-r` for control. Take control also flips `controlled_by` before spawning.
+- **Copy command** — the raw `tmux attach -r -t <session>` (and the read-write variant) as copyable text. The guaranteed-portable fallback when the spawn button can't apply (a different terminal, a remote box).
 
 ## Adapter interface changes
 
@@ -176,6 +211,8 @@ Mapping from the old interface:
 - **Watchdog** — tmux liveness check unchanged. Heartbeat/transcript staleness becomes the *primary* stuck-agent detector, since the process never self-terminates. New failure modes: `stuck-launching` (no `readyEvent` within the launch timeout) and `prompt-not-accepted` (transcript never confirms the prompt landed).
 - **Rate-limit detection** — the exit-code path is gone. Rate limits are detected from the `Stop` hook transcript / `detectRateLimit`. Still reactive.
 - **bunqueue workflows** — the `implementation` workflow's `spawn-agent` step expands into `launch-cli → await-ready → enter-auto-mode → send-prompt → await-stop`. The `asked-question` path no longer re-spawns blindly: it ends the session, waits, then resumes via the cost-ordered mechanism. The `recommender` workflow's `spawn-recommender-agent` step likewise becomes an interactive launch (it is still a short one-shot — it just runs interactively now).
+- **SQLite schema** — the `workflows` table gains `session_id` and `transcript_path` (retained after a tmux session ends so `--resume` stays available), `controlled_by` (`middle` | `human`), and `'launching'` in the `state` CHECK set.
+- **Dashboard** — the Epic inspector surfaces a per-runner panel (state, `controlled_by`, tmux session, heartbeat, context tokens, transcript path) with Watch / Take control / copy-command affordances; a new `POST /api/sessions/:session/attach` endpoint spawns the terminal; `GET /api/sessions/:session/log` becomes `/transcript`.
 - **Build sequence** — the launch → readiness → send-keys loop is foundational; you cannot spawn an agent at all without it. It moves **into Phase 1**. Phase 1's acceptance ("agent runs, exits, workflow finalizes") is rewritten — there is no exit; the agent runs, hits `Stop`, the dispatcher classifies, and the session ends or is nudged. Phase 2's hooks shift from purely observational to *driving* dispatch, and gain the transcript-reconciler cron.
 
 ## Error handling and failure modes
@@ -189,11 +226,13 @@ Mapping from the old interface:
 | Adapter rate-limited | `detectRateLimit` on `Stop` | end session, resume after reset |
 | Bare stop (no sentinel, not done) | `classifyStop` → `bare-stop` | `send-keys "continue"` retry (max N) to preserve the session; then kill + fresh respawn |
 | Agent asks a question | `.middle/blocked.json` sentinel at `Stop` | end session, `waiting-human`, resume with the answer |
+| Human ends a controlled session | tmux session gone while `controlled_by = human` | deliberate manual conclusion — workflow to a human-decided terminal state, not `failed`/respawn |
 
 ## Open / empirical questions
 
 - **Auto-mode mechanism.** Unknown whether the interactive CLI honors a launch flag for permission mode, or whether `enterAutoMode` must `send-keys S-Tab S-Tab` in the TUI. Abstracted behind `AgentAdapter.enterAutoMode`; resolved empirically during implementation. The keystroke path is the guaranteed fallback. Not a design blocker.
 - **Codex specifics.** `CodexAdapter` goes interactive too, but its `readyEvent`, launch command, transcript location/format, and auto-mode mechanism all differ from Claude's and need to be observed and filled in during the Codex phase.
+- **Terminal-spawn invocation.** The exact command the attach endpoint uses to open the operator's terminal (`ghostty -e tmux attach …` vs `open -na Ghostty --args …`) is a small empirical detail resolved during implementation; the copy-command path always works regardless.
 
 ## Testing approach
 
@@ -202,6 +241,7 @@ Mapping from the old interface:
 - **`classifyStop`** — unit-test each variant against recorded `Stop` payloads + transcript fixtures + sentinel-file states.
 - **State machine** — test each boundary transition decrements the slot and selects the expected continuation mechanism.
 - **Transcript reconciler cron** — test that it corrects a deliberately-stale DB row from the authoritative transcript.
+- **Control ownership** — test that Take control flips `controlled_by`, suspends `send-keys` driving and watchdog idle-kill; that Release re-orients and resumes; that a plain detach does not release.
 
 ## Out of scope
 
