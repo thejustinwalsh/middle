@@ -1,0 +1,12 @@
+{
+  "name": "@middle/dispatcher",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "dependencies": {
+    "@middle/core": "workspace:*",
+    "@middle/state-issue": "workspace:*",
+    "bunqueue": "^2.7.12"
+  }
+}
