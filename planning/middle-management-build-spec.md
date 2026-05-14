@@ -1109,11 +1109,11 @@ The watchdog NEVER overrides "in progress" decisions made by hooks. Hooks and th
 
 ## Rate-limit detection (reactive, per the constraint)
 
-Two sources, both reactive:
+Two sources, both reactive, both at the `Stop` boundary (there is no process exit to classify):
 
-1. **Exit classifier** — adapter's `classifyExit` matches the log tail. On match, returns `{kind: 'rate-limited', resetAt}`. The workflow transitions to `rate-limited`; bunqueue re-enqueues with `delay: resetAt - now`.
+1. **Stop classifier** — adapter's `classifyStop` matches the transcript tail. On match, returns `{kind: 'rate-limited', resetAt}`. The workflow ends the session, transitions to `rate-limited`, and bunqueue re-enqueues with `delay: resetAt - now`.
 
-2. **Stop-hook detector** — adapter's `detectRateLimit` runs against every Stop hook payload. If matched, fires a `rate-limit.detected` synthetic event with `resetAt`. The dispatcher updates `rate_limit_state` immediately even though the agent technically exited 0.
+2. **Stop-hook detector** — adapter's `detectRateLimit` runs against every `Stop` hook payload + transcript. If matched, fires a `rate-limit.detected` synthetic event with `resetAt`; the dispatcher updates `rate_limit_state` immediately.
 
 On detection:
 - `rate_limit_state[adapter]` set to `{ status: 'RATE_LIMITED', reset_at, source }`
