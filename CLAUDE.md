@@ -15,7 +15,9 @@ middle's dispatch unit is an **Epic** — one Epic = one branch = one PR. The Ep
 
 - PRs open as **draft** and stay draft until every phase is verified.
 - The agent works through every phase **continuously** — the mechanical verification gates (and the skill-enforcement gates) *are* the gates between phases. No human review between phases; pause only if genuinely stuck or a review gate trips.
-- When all phases are done and all verifications pass → mark the PR **ready for review**, comment on the Epic, and add the `ready-for-review` label so the issue shows it's ready with the linked PR. The human does the final review and merge — the workflow never merges the PR itself.
+- **Issues track work state continuously — not optional.** As each phase completes, close its sub-issue with a comment marking where the work landed (`gh issue close <n> --reason completed --comment "Done in <sha> on PR #<pr> — <area>"`). The Epic auto-checks it off. The PR body and the issues must never lag the real state of the work.
+- When all phases are done and all verifications pass → mark the PR **ready for review**, add the `ready-for-review` label, and post a **reviewer's brief** as a comment on **both the Epic and the PR** (same body, deliberately duplicated so a reviewer — or a first-pass AI review bot — finds it on either surface): how to run it (exact commands), what to verify (specific paths/flows and what "correct" looks like), how to review it, and anything fragile that needs extra eyes. The human does the final review and merge — the workflow never merges the PR itself.
+- **If the PR is rejected:** reopen the closed sub-issues (and the Epic, if it was closed), `gh pr close <n> --delete-branch`, and retry the workstream from scratch.
 - **Updating a PR body:** `gh pr edit --body-file` fails *silently* on a GitHub projects-classic GraphQL bug (`repository.pullRequest.projectCards`). Always PATCH via `gh api`, then verify:
   ```bash
   jq -n --rawfile body /tmp/body.md '{body: $body}' \
