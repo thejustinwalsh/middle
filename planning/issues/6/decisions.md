@@ -187,3 +187,16 @@ keystrokes — resolves to "flag works in interactive mode".
 replaced by a no-op assertion. The keystroke path remains a documented fallback in case
 a future Claude build removes the flag from interactive mode — it's the path the spec
 called out as the "guaranteed fallback" and the interface still has the hook.
+
+## Lifecycle hardening for repeated `mm dispatch` (2026-05-15)
+**File(s):** `packages/dispatcher/src/dispatch.ts`, `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-15
+
+**Decision:** Three changes to keep `mm dispatch` stable across repeated runs and failure paths:
+
+1. **`engine.close(false)`** in `dispatchEpic`'s cleanups — let the bunqueue worker finish any in-flight job-failure finalization before shutdown. `close(true)` was forcing a teardown while `handleJobFailure` was still inside `throwIfOwnershipConflict`, surfacing as an unhandled `Invalid or expired lock token for job …` and killing the process.
+2. **`retry: 1` on `launch-and-drive`** — bunqueue's `retry` field is `maxAttempts` (the loop runs `attempt = 1 … <= retry`), so `1` is exactly one attempt with no retries. Phase 1's minimal workflow has no place for the retry to land — re-launches would pile up tmux session/branch state and aggravate the same lifecycle race. The full workflow's retry budgets (spec) belong on `plan` / `implement-loop`. Default was 3, which is why the operator saw `[3/3]` on a failing run.
+3. **`unhandledRejection` swallower** scoped to `dispatchEpic`'s lifetime — matches only `/Invalid or expired lock token for job/` and logs a notice to stderr. Anything else is re-raised via `queueMicrotask` so the runtime crashes the way it would have without the listener. Belt to the suspenders of (1) — bunqueue's worker can still race in edge cases (concurrent shutdown signals, in-flight retries) and the swallower keeps a benign internal race from killing an otherwise-completed dispatch.
+
+**Why:** Encountered live during the manual end-to-end run on Epic #27. Run 1 completed (empty-prompt no-op turn), run 2 crashed mid-cleanup with the bunqueue lock-token throw before `dispatchEpic` could return. Without these, every dispatch whose `launch-and-drive` fails (which is most early-iteration runs) leaves the process in an inconsistent exit state.
+**Evidence:** Full suite 105 pass; tests use the in-memory engine + stub adapter where the close-race doesn't manifest, but the same `dispatchEpic` path is exercised by `runDispatch` integration tests (including the EADDRINUSE failure path).

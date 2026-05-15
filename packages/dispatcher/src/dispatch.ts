@@ -54,6 +54,33 @@ async function waitForSettle(
 }
 
 /**
+ * bunqueue's worker can throw `Invalid or expired lock token …` from inside
+ * `handleJobFailure` when the engine is shutting down concurrently with a
+ * failing job — surfaces as a runtime-killing unhandledRejection. Swallow only
+ * that specific message during a dispatch, and remove the listener again on
+ * exit. Anything else falls through to the runtime's normal crash semantics.
+ */
+const BUNQUEUE_LOCK_TOKEN_RE = /Invalid or expired lock token for job/;
+
+function installBunqueueRaceSwallower(): () => void {
+  const listener = (reason: unknown): void => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (BUNQUEUE_LOCK_TOKEN_RE.test(message)) {
+      console.error(`[dispatch] suppressed benign bunqueue lifecycle race: ${message}`);
+      return;
+    }
+    // not ours — re-raise so Bun crashes the way it would have without us
+    queueMicrotask(() => {
+      throw reason;
+    });
+  };
+  process.on("unhandledRejection", listener);
+  return () => {
+    process.off("unhandledRejection", listener);
+  };
+}
+
+/**
  * Run one Epic through the Phase 1 `implementation` workflow end to end:
  * stand up a hook receiver and engine, dispatch the agent, wait for the
  * workflow to settle, then tear everything down. Self-contained — the caller
@@ -68,6 +95,8 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
   mkdirSync(dirname(opts.dbPath), { recursive: true });
 
   const cleanups: Array<() => Promise<void> | void> = [];
+  cleanups.push(installBunqueueRaceSwallower());
+
   const runCleanups = async (): Promise<void> => {
     while (cleanups.length > 0) {
       try {
@@ -87,7 +116,11 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     cleanups.push(() => hookServer.stop());
 
     const engine = new Engine({ embedded: true });
-    cleanups.push(() => engine.close(true));
+    // close(false): wait for the worker to finish any in-flight job-failure
+    // finalization. close(true) was racing bunqueue's `handleJobFailure` and
+    // surfaced as an unhandled "Invalid or expired lock token" on repeated
+    // dispatches when the workflow ended via the failure path.
+    cleanups.push(() => engine.close(false));
 
     engine.register(
       createImplementationWorkflow({
