@@ -52,7 +52,7 @@ export type ImplementationDeps = {
   stopTimeoutMs?: number;
 };
 
-const DEFAULT_LAUNCH_TIMEOUT_MS = 60_000;
+const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
 /** Session names are deterministic so compensations can recompute them. */
@@ -128,10 +128,12 @@ export function createImplementationWorkflow(
     const adapter = deps.getAdapter(ctx.input.adapter);
     const sessionName = sessionNameFor(ctx.input);
     const sessionToken = crypto.randomUUID();
+    const tag = `[workflow:${sessionName}]`;
 
     updateWorkflow(deps.db, ctx.executionId, { state: "launching", sessionName, sessionToken });
 
     try {
+      console.error(`${tag} installing hooks in ${handle.path}`);
       await adapter.installHooks({
         worktree: handle.path,
         hookScriptPath: ".middle/hooks/hook.sh",
@@ -150,10 +152,15 @@ export function createImplementationWorkflow(
           MIDDLE_EPIC: String(ctx.input.epicNumber),
         },
       });
+      console.error(`${tag} launching tmux session: ${argv.join(" ")} (cwd=${handle.path})`);
       await deps.tmux.newSession({ sessionName, command: argv, cwd: handle.path, env });
 
       // drive: SessionStart yields session_id + transcript_path, then auto mode + prompt
+      console.error(`${tag} waiting for SessionStart hook (timeout ${launchTimeout}ms)`);
       const startPayload = await deps.sessionGate.awaitSessionStart(sessionName, launchTimeout);
+      console.error(
+        `${tag} SessionStart received — session_id=${startPayload.session_id ?? "<missing>"}`,
+      );
       const transcriptPath = adapter.resolveTranscriptPath(startPayload);
       updateWorkflow(deps.db, ctx.executionId, {
         state: "running",
@@ -162,15 +169,18 @@ export function createImplementationWorkflow(
         transcriptPath,
       });
 
+      console.error(`${tag} entering auto mode`);
       await adapter.enterAutoMode({ sessionName });
       const promptText = adapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: "initial",
       });
+      console.error(`${tag} sending prompt: "${promptText}"`);
       await deps.tmux.sendText(sessionName, promptText);
       await deps.tmux.sendEnter(sessionName);
 
       // observe: the Stop boundary is the signal — not a process exit
+      console.error(`${tag} waiting for Stop hook (timeout ${stopTimeout}ms)`);
       const stopPayload = await deps.sessionGate.awaitStop(sessionName, stopTimeout);
       const sentinelPresent = existsSync(join(handle.path, ".middle", "blocked.json"));
       const classification = adapter.classifyStop({
@@ -179,10 +189,12 @@ export function createImplementationWorkflow(
         sentinelPresent,
         worktree: handle.path,
       });
+      console.error(`${tag} Stop received — classification=${classification.kind}`);
       return { classification, sessionName };
     } catch (error) {
       // never leak a tmux session on the failure path; the compensation rolls
       // back the worktree
+      console.error(`${tag} step failed: ${(error as Error).message}`);
       await deps.tmux.killSession(sessionName);
       throw error;
     }

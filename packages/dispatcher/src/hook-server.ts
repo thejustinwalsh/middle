@@ -70,6 +70,7 @@ export class HookServer implements SessionGate {
     const sessionName =
       req.headers.get("X-Middle-Session") ??
       (typeof payload.sessionName === "string" ? payload.sessionName : "");
+    console.error(`[hook-server] received ${event}:${sessionName || "<unknown>"}`);
     this.#deliver(`${event}:${sessionName}`, payload);
     return new Response("ok");
   }
