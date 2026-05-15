@@ -6,29 +6,24 @@ import { buildPromptText } from "./prompt.ts";
 import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
 
 /**
- * Bring the ready session into auto mode. Claude's interactive mode honors no
- * launch flag for this, so the guaranteed path is two Shift-Tab keystrokes sent
- * into the live tmux session. The adapter shells out to `tmux` directly rather
- * than depending on the dispatcher's richer helper module — entering auto mode
- * is intrinsically a per-CLI keystroke concern the adapter owns.
- *
- * A non-zero exit from `tmux send-keys` (missing session, tmux not on PATH)
- * throws so `launchAndDrive`'s catch can kill the session and compensate —
- * otherwise the workflow would silently proceed to send the prompt into a
- * session that never entered auto mode and never reaches `Stop`.
+ * Auto mode is set at launch time via `--permission-mode bypassPermissions`.
+ * This is the spec's "launch flag if one is honored in interactive mode" path,
+ * preferred over the `S-Tab S-Tab` keystroke fallback because the latter
+ * depends on the mode-cycle order — which has shifted across Claude versions
+ * (`default → acceptEdits → plan → bypassPermissions` in current builds, so
+ * two Shift-Tabs lands on *plan mode*, not bypass) — and on the TUI being
+ * input-ready immediately after `SessionStart`, which has no readiness gate.
  */
-async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
-  const proc = Bun.spawn(["tmux", "send-keys", "-t", opts.sessionName, "S-Tab", "S-Tab"], {
-    stdout: "ignore",
-    stderr: "pipe",
-  });
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    throw new Error(
-      `enterAutoMode: tmux send-keys to "${opts.sessionName}" failed (exit ${exitCode}): ${stderr.trim()}`,
-    );
-  }
+const PERMISSION_MODE = "bypassPermissions";
+
+/**
+ * No-op: the launch flag above puts the session in auto mode at start time, so
+ * there is nothing keystroke-cyclable left to do when `SessionStart` fires.
+ * The method stays on the interface as the per-CLI hook for any adapter whose
+ * auto mode IS a post-launch keystroke gesture.
+ */
+async function enterAutoMode(_opts: { sessionName: string }): Promise<void> {
+  // intentionally empty — see PERMISSION_MODE on buildLaunchCommand
 }
 
 export const claudeAdapter: AgentAdapter = {
@@ -36,9 +31,11 @@ export const claudeAdapter: AgentAdapter = {
   readyEvent: "session.started",
   installHooks,
   buildLaunchCommand(opts) {
-    // Interactive — no `-p`, no prompt. Env is injected by tmux at spawn time.
+    // Interactive — no `-p`, no prompt. `--permission-mode` engages auto mode
+    // at launch (replaces the legacy `S-Tab S-Tab` keystroke cycle). Env is
+    // injected by tmux at spawn time.
     return {
-      argv: ["claude"],
+      argv: ["claude", "--permission-mode", PERMISSION_MODE],
       env: {
         MIDDLE_SESSION: opts.sessionName,
         MIDDLE_SESSION_TOKEN: opts.sessionToken,

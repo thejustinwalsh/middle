@@ -23,13 +23,14 @@ describe("claudeAdapter identity", () => {
 });
 
 describe("buildLaunchCommand", () => {
-  test("argv is bare interactive claude — no -p, no prompt", () => {
+  test("argv launches interactive claude in auto mode via --permission-mode bypassPermissions", () => {
     const { argv } = claudeAdapter.buildLaunchCommand({
       worktree: dir,
       sessionName: "middle-6",
       sessionToken: "tok",
     });
-    expect(argv).toEqual(["claude"]);
+    expect(argv).toEqual(["claude", "--permission-mode", "bypassPermissions"]);
+    expect(argv).not.toContain("-p"); // never headless
   });
 
   test("env carries the session vars and merges envOverrides", () => {
@@ -290,12 +291,11 @@ describe("installHooks", () => {
   });
 });
 
-const TMUX = Bun.which("tmux");
-const tmuxDescribe = describe.skipIf(!TMUX);
-
-tmuxDescribe("enterAutoMode failure surfacing", () => {
-  test("throws when the target tmux session does not exist", async () => {
-    const sessionName = `middle-noexistent-${crypto.randomUUID().slice(0, 8)}`;
-    await expect(claudeAdapter.enterAutoMode({ sessionName })).rejects.toThrow();
+describe("enterAutoMode", () => {
+  test("is a no-op — auto mode is set at launch by --permission-mode", async () => {
+    // Doesn't touch tmux, doesn't throw even for a session that does not exist.
+    await expect(
+      claudeAdapter.enterAutoMode({ sessionName: "middle-does-not-exist" }),
+    ).resolves.toBeUndefined();
   });
 });

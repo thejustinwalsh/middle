@@ -165,3 +165,25 @@ covers the fail-fast validation; the real Claude end-to-end is a manual verifica
 
 **Why:** Items 1 and 2 are correctness-blocking for the real-binary dispatch path the Phase 1 acceptance gate exercises. Items 3–6 are hardening on edge cases (port collision, missing tmux, engine-state corruption, retry-storm duplicate hooks) the real environment will inevitably exercise.
 **How to apply:** Regression coverage added: subdir-cwd sentinel test, `enterAutoMode` rejects on missing tmux session, `installHooks` registers both events and writes an executable hook.sh, duplicate-pre-await stash keeps first. Full suite: 104 pass, `tsc` clean.
+
+## Auto mode via --permission-mode launch flag, not S-Tab keystrokes
+**File(s):** `packages/adapters/claude/src/index.ts:14`
+**Date:** 2026-05-15
+
+**Decision:** `buildLaunchCommand` now produces `["claude", "--permission-mode",
+"bypassPermissions"]`. `enterAutoMode` is a no-op — auto mode is engaged at process
+launch, not after `SessionStart` via keystrokes.
+**Why:** The keystroke path had three real fragilities that surfaced during the manual
+end-to-end run: (1) Claude's current mode cycle is `default → acceptEdits → plan →
+bypassPermissions`, so two Shift-Tabs lands on *plan mode*, not bypass — the wrong mode
+for autonomous dispatch; (2) `SessionStart` fires when the session boots but Claude's
+TUI may not be input-ready, and the keystrokes have no readiness gate; (3) two key
+events in one `send-keys` call can be debounced/missed. The launch flag avoids all
+three: the process starts in the right mode, the mode persists for the session, and
+there is nothing to mis-time. The spec's "open empirical question" — flag vs.
+keystrokes — resolves to "flag works in interactive mode".
+**Evidence:** `buildLaunchCommand` test asserts the new argv; the previous
+`enterAutoMode failure surfacing` test (which expected a throw on a missing session) is
+replaced by a no-op assertion. The keystroke path remains a documented fallback in case
+a future Claude build removes the flag from interactive mode — it's the path the spec
+called out as the "guaranteed fallback" and the interface still has the hook.
