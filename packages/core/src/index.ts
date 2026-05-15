@@ -13,3 +13,14 @@ export type {
   LoadConfigOptions,
 } from "./config.ts";
 export { loadConfig } from "./config.ts";
+
+export type { NormalizedEvent, HookPayload, HookEnvelope } from "./events.ts";
+
+export type {
+  AgentAdapter,
+  InstallHookOpts,
+  LaunchOpts,
+  TranscriptState,
+  StopClassification,
+  RateLimitDetection,
+} from "./adapter.ts";

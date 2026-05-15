@@ -42,3 +42,34 @@ sections optional is honest: there is no sensible default for `repo.owner`, so a
 global-only load leaves them `undefined` rather than inventing values.
 **Evidence:** `per-repo values override global on a colliding key` test (repo file with
 its own `[global]` block wins); `global only` and `missing files` tests.
+
+## classifyStop detects done/failed via sentinels, not PR state, in Phase 1
+**File(s):** `packages/adapters/claude/src/classify.ts:18`
+**Date:** 2026-05-14
+
+**Decision:** `classifyStop` returns `done` when `<cwd>/.middle/done.json` exists and
+`failed` when `<cwd>/.middle/failed.json` exists — sentinel files parallel to the
+`.middle/blocked.json` question sentinel. The interface signature
+(`{ payload, transcriptPath, sentinelPresent }`) carries no PR handle.
+**Why:** The spec describes `classifyStop` as "reads PR state for `done`", but the fixed
+interface gives the adapter no PR number and no GitHub client — and Phase 1 explicitly
+ships no skill enforcement or hook taxonomy. A sentinel keeps `done`/`failed`
+deterministically classifiable (so every branch is unit-testable, per #9's acceptance)
+without inventing dependencies. Phase 4's mechanically-enforced PR-ready hook gate
+replaces the `done.json` path with the real "agent ran `gh pr ready`" signal.
+**Evidence:** `classifyStop` tests cover all five branches against temp `.middle/` dirs.
+
+## enterAutoMode shells out to tmux directly; adapter does not depend on dispatcher
+**File(s):** `packages/adapters/claude/src/index.ts:15`
+**Date:** 2026-05-14
+
+**Decision:** `enterAutoMode` runs `tmux send-keys -t <session> S-Tab S-Tab` via
+`Bun.spawn` inside the adapter package, rather than calling the dispatcher's `tmux.ts`
+helper module.
+**Why:** `@middle/adapter-claude` depends on `@middle/core` only; the tmux helpers live
+in `@middle/dispatcher`, and an adapter → dispatcher dependency would invert the layering.
+Entering auto mode is intrinsically a per-CLI keystroke concern the adapter owns, and the
+keystroke call is two tokens of `tmux` — not worth a shared abstraction. Not unit-tested
+in Phase 1 (needs a live tmux session); exercised by #12's workflow integration.
+**Evidence:** dependency graph stays `adapters/* → core`; #9 acceptance does not require
+an `enterAutoMode` unit test.

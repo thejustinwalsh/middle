@@ -1,0 +1,253 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { HookPayload } from "@middle/core";
+import { claudeAdapter } from "../src/index.ts";
+
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "middle-claude-"));
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe("claudeAdapter identity", () => {
+  test("name is 'claude' and readyEvent is session.started", () => {
+    expect(claudeAdapter.name).toBe("claude");
+    expect(claudeAdapter.readyEvent).toBe("session.started");
+  });
+});
+
+describe("buildLaunchCommand", () => {
+  test("argv is bare interactive claude — no -p, no prompt", () => {
+    const { argv } = claudeAdapter.buildLaunchCommand({
+      worktree: dir,
+      sessionName: "middle-6",
+      sessionToken: "tok",
+    });
+    expect(argv).toEqual(["claude"]);
+  });
+
+  test("env carries the session vars and merges envOverrides", () => {
+    const { env } = claudeAdapter.buildLaunchCommand({
+      worktree: dir,
+      sessionName: "middle-6",
+      sessionToken: "secret-token",
+      envOverrides: { MIDDLE_DISPATCHER_URL: "http://127.0.0.1:8822", MIDDLE_EPIC: "6" },
+    });
+    expect(env.MIDDLE_SESSION).toBe("middle-6");
+    expect(env.MIDDLE_SESSION_TOKEN).toBe("secret-token");
+    expect(env.MIDDLE_DISPATCHER_URL).toBe("http://127.0.0.1:8822");
+    expect(env.MIDDLE_EPIC).toBe("6");
+  });
+});
+
+describe("buildPromptText", () => {
+  test("initial returns the bare @-reference one-liner", () => {
+    expect(
+      claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial" }),
+    ).toBe("@.middle/prompt.md");
+  });
+
+  test("resume frames the @-reference as a continuation", () => {
+    const text = claudeAdapter.buildPromptText({
+      promptFile: ".middle/resume.md",
+      kind: "resume",
+    });
+    expect(text).toContain("@.middle/resume.md");
+    expect(text.toLowerCase()).toContain("resum");
+  });
+
+  test("answer frames the @-reference as a human reply", () => {
+    const text = claudeAdapter.buildPromptText({
+      promptFile: ".middle/answer.md",
+      kind: "answer",
+    });
+    expect(text).toContain("@.middle/answer.md");
+    expect(text.toLowerCase()).toContain("answer");
+  });
+});
+
+describe("resolveTranscriptPath", () => {
+  test("returns transcript_path from the SessionStart payload", () => {
+    const payload: HookPayload = {
+      session_id: "abc",
+      transcript_path: "/home/u/.claude/projects/x/abc.jsonl",
+    };
+    expect(claudeAdapter.resolveTranscriptPath(payload)).toBe(
+      "/home/u/.claude/projects/x/abc.jsonl",
+    );
+  });
+
+  test("throws when the payload has no transcript_path", () => {
+    expect(() => claudeAdapter.resolveTranscriptPath({ session_id: "abc" })).toThrow();
+  });
+});
+
+describe("readTranscriptState", () => {
+  test("parses activity, turn count, last tool use, and context tokens", () => {
+    const transcript = join(dir, "t.jsonl");
+    writeFileSync(
+      transcript,
+      [
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "go" },
+          timestamp: "2026-05-14T12:00:00.000Z",
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "ok" }],
+            usage: { input_tokens: 100, cache_read_input_tokens: 900, output_tokens: 50 },
+          },
+          timestamp: "2026-05-14T12:00:05.000Z",
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", name: "Bash", input: { command: "ls" } }],
+            usage: { input_tokens: 200, cache_read_input_tokens: 1800, output_tokens: 30 },
+          },
+          timestamp: "2026-05-14T12:00:10.000Z",
+        }),
+        "", // trailing blank line — must be tolerated
+      ].join("\n"),
+    );
+    const state = claudeAdapter.readTranscriptState(transcript);
+    expect(state.lastActivity).toBe("2026-05-14T12:00:10.000Z");
+    expect(state.turnCount).toBe(2);
+    expect(state.lastToolUse).toBe("Bash");
+    expect(state.contextTokens).toBe(2000); // 200 + 1800 from the last assistant turn
+  });
+
+  test("tolerates a corrupt line without throwing", () => {
+    const transcript = join(dir, "corrupt.jsonl");
+    writeFileSync(
+      transcript,
+      [
+        "{ not json",
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+          timestamp: "2026-05-14T12:00:01.000Z",
+        }),
+      ].join("\n"),
+    );
+    const state = claudeAdapter.readTranscriptState(transcript);
+    expect(state.turnCount).toBe(1);
+    expect(state.lastActivity).toBe("2026-05-14T12:00:01.000Z");
+  });
+});
+
+function writeMiddleDir(): { cwd: string; middle: string; transcript: string } {
+  const cwd = join(dir, "worktree");
+  const middle = join(cwd, ".middle");
+  mkdirSync(middle, { recursive: true });
+  const transcript = join(dir, "stop.jsonl");
+  writeFileSync(transcript, "");
+  return { cwd, middle, transcript };
+}
+
+describe("classifyStop", () => {
+  test("sentinelPresent → asked-question, with the blocked.json path", () => {
+    const { cwd, transcript } = writeMiddleDir();
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: true,
+    });
+    expect(result.kind).toBe("asked-question");
+    if (result.kind === "asked-question") {
+      expect(result.sentinelPath).toBe(join(cwd, ".middle", "blocked.json"));
+    }
+  });
+
+  test("usage-limit message in the transcript tail → rate-limited", () => {
+    const { cwd, transcript } = writeMiddleDir();
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "You've hit your usage limit. Resets at 2026-05-14T18:00:00Z." },
+          ],
+        },
+        timestamp: "2026-05-14T12:30:00.000Z",
+      }),
+    );
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: false,
+    });
+    expect(result.kind).toBe("rate-limited");
+    if (result.kind === "rate-limited") {
+      expect(result.resetAt).toBe("2026-05-14T18:00:00Z");
+    }
+  });
+
+  test("done.json sentinel → done", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 73 }));
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: false,
+    });
+    expect(result.kind).toBe("done");
+  });
+
+  test("failed.json sentinel → failed, carrying its reason", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(join(middle, "failed.json"), JSON.stringify({ reason: "3 consecutive denials" }));
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: false,
+    });
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") {
+      expect(result.reason).toBe("3 consecutive denials");
+    }
+  });
+
+  test("nothing notable → bare-stop", () => {
+    const { cwd, transcript } = writeMiddleDir();
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: false,
+    });
+    expect(result.kind).toBe("bare-stop");
+  });
+});
+
+describe("installHooks", () => {
+  test("writes a SessionStart-only .claude/settings.json into the worktree", async () => {
+    const worktree = join(dir, "wt");
+    mkdirSync(worktree, { recursive: true });
+    await claudeAdapter.installHooks({
+      worktree,
+      hookScriptPath: ".middle/hooks/hook.sh",
+      dispatcherUrl: "http://127.0.0.1:8822",
+      sessionName: "middle-6",
+      sessionToken: "tok",
+      epicNumber: 6,
+    });
+    const settings = JSON.parse(
+      await Bun.file(join(worktree, ".claude", "settings.json")).text(),
+    ) as { hooks: Record<string, unknown[]> };
+    expect(Object.keys(settings.hooks)).toEqual(["SessionStart"]);
+    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(".middle/hooks/hook.sh");
+    expect(JSON.stringify(settings.hooks.SessionStart)).toContain("session.started");
+  });
+});
