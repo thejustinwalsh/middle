@@ -23,14 +23,17 @@ describe("claudeAdapter identity", () => {
 });
 
 describe("buildLaunchCommand", () => {
-  test("argv launches interactive claude in auto mode via --permission-mode bypassPermissions", () => {
+  test("argv launches interactive claude in auto mode via --dangerously-skip-permissions", () => {
     const { argv } = claudeAdapter.buildLaunchCommand({
       worktree: dir,
       sessionName: "middle-6",
       sessionToken: "tok",
     });
-    expect(argv).toEqual(["claude", "--permission-mode", "bypassPermissions"]);
+    expect(argv).toEqual(["claude", "--dangerously-skip-permissions"]);
     expect(argv).not.toContain("-p"); // never headless
+    // bypassPermissions via --permission-mode would pop a one-time confirmation
+    // prompt the dispatcher cannot answer — never use that variant.
+    expect(argv).not.toContain("--permission-mode");
   });
 
   test("env carries the session vars and merges envOverrides", () => {

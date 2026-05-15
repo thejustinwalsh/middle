@@ -6,15 +6,15 @@ import { buildPromptText } from "./prompt.ts";
 import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
 
 /**
- * Auto mode is set at launch time via `--permission-mode bypassPermissions`.
- * This is the spec's "launch flag if one is honored in interactive mode" path,
- * preferred over the `S-Tab S-Tab` keystroke fallback because the latter
- * depends on the mode-cycle order — which has shifted across Claude versions
- * (`default → acceptEdits → plan → bypassPermissions` in current builds, so
- * two Shift-Tabs lands on *plan mode*, not bypass) — and on the TUI being
- * input-ready immediately after `SessionStart`, which has no readiness gate.
+ * `--dangerously-skip-permissions` is the explicit "skip all checks AND the
+ * one-time bypass-mode confirmation" flag. `--permission-mode bypassPermissions`
+ * has the same runtime semantics but still pops a one-time UI confirmation when
+ * the session boots — fine for a human, fatal for autonomous dispatch (the
+ * agent would hang on the prompt because middle has no readiness gate to
+ * answer it). The keystroke path (`S-Tab S-Tab`) is the spec's documented
+ * fallback if Claude ever drops this flag from interactive mode.
  */
-const PERMISSION_MODE = "bypassPermissions";
+const AUTO_MODE_FLAG = "--dangerously-skip-permissions";
 
 /**
  * No-op: the launch flag above puts the session in auto mode at start time, so
@@ -31,11 +31,13 @@ export const claudeAdapter: AgentAdapter = {
   readyEvent: "session.started",
   installHooks,
   buildLaunchCommand(opts) {
-    // Interactive — no `-p`, no prompt. `--permission-mode` engages auto mode
-    // at launch (replaces the legacy `S-Tab S-Tab` keystroke cycle). Env is
-    // injected by tmux at spawn time.
+    // Interactive — no `-p`, no prompt. `--dangerously-skip-permissions`
+    // engages auto mode AND suppresses the one-time bypass-mode confirmation
+    // prompt at boot (which `--permission-mode bypassPermissions` would still
+    // pop — fatal for autonomous dispatch with no readiness gate to answer
+    // it). Env is injected by tmux at spawn time.
     return {
-      argv: ["claude", "--permission-mode", PERMISSION_MODE],
+      argv: ["claude", AUTO_MODE_FLAG],
       env: {
         MIDDLE_SESSION: opts.sessionName,
         MIDDLE_SESSION_TOKEN: opts.sessionToken,
