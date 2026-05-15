@@ -200,3 +200,25 @@ called out as the "guaranteed fallback" and the interface still has the hook.
 
 **Why:** Encountered live during the manual end-to-end run on Epic #27. Run 1 completed (empty-prompt no-op turn), run 2 crashed mid-cleanup with the bunqueue lock-token throw before `dispatchEpic` could return. Without these, every dispatch whose `launch-and-drive` fails (which is most early-iteration runs) leaves the process in an inconsistent exit state.
 **Evidence:** Full suite 105 pass; tests use the in-memory engine + stub adapter where the close-race doesn't manifest, but the same `dispatchEpic` path is exercised by `runDispatch` integration tests (including the EADDRINUSE failure path).
+
+## `mm doctor` — Phase-1 preflight for external tools
+**File(s):** `packages/cli/src/commands/doctor.ts`, `packages/dispatcher/src/tmux.ts`
+**Date:** 2026-05-15
+
+**Decision:** Ship a small `mm doctor` subcommand even though the build spec parks it in
+Phase 11. The command shells `bun --version`, `tmux -V`, `claude --version`, `git
+--version`, `gh --version`, `gh auth status`, parses each, and prints a one-line
+pass/warn/fail per tool. Fail is anything missing or broken; warn is "installed but below
+the threshold middle expects" — currently tmux < 3.5 (the version that supports
+`extended-keys-format = csi-u`, needed for clean Shift-Tab / extended-key passthrough to
+Claude when an operator attaches).
+**Why:** The Phase 1 manual end-to-end test surfaced two pure-environment puzzles
+(`extended-keys-format` in a < 3.5 `.tmux.conf`, the consequence of running on tmux 3.4)
+that took longer to diagnose than the dispatch path's own bugs. A doctor command turns
+those into one obvious `mm doctor` output. The full `mm doctor` (build-spec Phase 11) adds
+schema validation, db row counts, recent retention runs — those are unaffected by this
+Phase 1 stub and can extend the same checks list.
+**Evidence:** `bun packages/cli/src/index.ts doctor` returns 0 on a healthy machine,
+listing one check per tool. `parseTmuxVersion` / `tmuxVersionAtLeast` are unit-tested
+(release versions, `next-` pre-releases, `3.5a` patches, garbage rejection). The doctor
+test runs the happy path on this machine where the full toolchain is present.

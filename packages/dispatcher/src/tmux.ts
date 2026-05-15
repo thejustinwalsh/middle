@@ -128,3 +128,31 @@ export async function killSession(sessionName: string): Promise<void> {
   if (!(await hasSession(sessionName))) return;
   await tmux(["kill-session", "-t", sessionName]);
 }
+
+export type TmuxVersion = { major: number; minor: number; raw: string };
+
+/** Minimum tmux version we expect operators to run. */
+export const MIN_TMUX_VERSION: TmuxVersion = { major: 3, minor: 5, raw: "3.5" };
+
+/**
+ * Parse a `tmux -V` line — `tmux 3.5a` / `tmux 3.4` / `tmux next-3.6` etc. —
+ * into a comparable `{major, minor}` pair. Pre-release `next-` builds are
+ * accepted at face value. Returns null when the version field is unrecognized.
+ */
+export function parseTmuxVersion(versionLine: string): TmuxVersion | null {
+  const match = /tmux\s+(?:next-)?(\d+)\.(\d+)/i.exec(versionLine);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), raw: match[0]! };
+}
+
+/** Shell out to `tmux -V` and parse the result. Returns null if tmux is missing. */
+export async function getTmuxVersion(): Promise<TmuxVersion | null> {
+  const result = await runTmux(["-V"]);
+  if (result.exitCode !== 0) return null;
+  return parseTmuxVersion(result.stdout.trim());
+}
+
+/** True when `v` is at least `min`. */
+export function tmuxVersionAtLeast(v: TmuxVersion, min: TmuxVersion): boolean {
+  return v.major > min.major || (v.major === min.major && v.minor >= min.minor);
+}

@@ -2,6 +2,7 @@
 // @middle/cli — the `mm` binary. commander wiring over the command functions.
 import { Command } from "commander";
 import { runDispatch } from "./commands/dispatch.ts";
+import { runDoctor } from "./commands/doctor.ts";
 import { runStart } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
@@ -28,6 +29,11 @@ program
   .command("status")
   .description("One-screen summary of repos and workflow states")
   .action(() => process.exit(runStatus()));
+
+program
+  .command("doctor")
+  .description("Check tmux/claude/git/gh preconditions for `mm dispatch`")
+  .action(async () => process.exit(await runDoctor()));
 
 program
   .command("dispatch")

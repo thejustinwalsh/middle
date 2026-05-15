@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   capturePane,
+  getTmuxVersion,
   hasSession,
   killSession,
+  MIN_TMUX_VERSION,
   newSession,
+  parseTmuxVersion,
   sendEnter,
   sendText,
   status,
   TmuxError,
+  tmuxVersionAtLeast,
 } from "../src/tmux.ts";
 
 const TMUX = Bun.which("tmux");
@@ -86,5 +90,42 @@ d("tmux session lifecycle", () => {
     await expect(newSession({ sessionName: name, command: ["cat"] })).rejects.toBeInstanceOf(
       TmuxError,
     );
+  });
+
+  test("getTmuxVersion parses the installed tmux's version", async () => {
+    const v = await getTmuxVersion();
+    expect(v).not.toBeNull();
+    expect(v!.major).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("parseTmuxVersion", () => {
+  test("parses release versions", () => {
+    expect(parseTmuxVersion("tmux 3.5")).toEqual({ major: 3, minor: 5, raw: "tmux 3.5" });
+    expect(parseTmuxVersion("tmux 3.4")).toEqual({ major: 3, minor: 4, raw: "tmux 3.4" });
+  });
+
+  test("parses pre-release builds (next-X.Y, X.Ya)", () => {
+    const next = parseTmuxVersion("tmux next-3.6");
+    expect(next?.major).toBe(3);
+    expect(next?.minor).toBe(6);
+    const patched = parseTmuxVersion("tmux 3.5a");
+    expect(patched?.major).toBe(3);
+    expect(patched?.minor).toBe(5);
+  });
+
+  test("returns null on garbage input", () => {
+    expect(parseTmuxVersion("")).toBeNull();
+    expect(parseTmuxVersion("not tmux at all")).toBeNull();
+  });
+});
+
+describe("tmuxVersionAtLeast", () => {
+  test("compares major then minor against the threshold", () => {
+    expect(tmuxVersionAtLeast({ major: 3, minor: 5, raw: "" }, MIN_TMUX_VERSION)).toBe(true);
+    expect(tmuxVersionAtLeast({ major: 3, minor: 6, raw: "" }, MIN_TMUX_VERSION)).toBe(true);
+    expect(tmuxVersionAtLeast({ major: 4, minor: 0, raw: "" }, MIN_TMUX_VERSION)).toBe(true);
+    expect(tmuxVersionAtLeast({ major: 3, minor: 4, raw: "" }, MIN_TMUX_VERSION)).toBe(false);
+    expect(tmuxVersionAtLeast({ major: 2, minor: 9, raw: "" }, MIN_TMUX_VERSION)).toBe(false);
   });
 });
