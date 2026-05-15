@@ -155,12 +155,26 @@ export function createImplementationWorkflow(
       console.error(`${tag} launching tmux session: ${argv.join(" ")} (cwd=${handle.path})`);
       await deps.tmux.newSession({ sessionName, command: argv, cwd: handle.path, env });
 
-      // drive: SessionStart yields session_id + transcript_path, then auto mode + prompt
+      // Claude pops a bypass-mode warning at boot; SessionStart cannot fire
+      // until it is dismissed. Run the dismisser in *parallel* with the
+      // SessionStart wait — when it detects the prompt it sends Down+Enter and
+      // Claude proceeds past the warning. Fire-and-forget with .catch so a
+      // dismiss-side error never becomes an unhandled rejection.
+      console.error(`${tag} starting bypass-prompt dismisser (parallel to SessionStart wait)`);
+      const dismissPromise = adapter.enterAutoMode({ sessionName }).catch((err: unknown) => {
+        console.error(`${tag} enterAutoMode failed: ${(err as Error).message}`);
+      });
+
+      // drive: SessionStart yields session_id + transcript_path
       console.error(`${tag} waiting for SessionStart hook (timeout ${launchTimeout}ms)`);
       const startPayload = await deps.sessionGate.awaitSessionStart(sessionName, launchTimeout);
       console.error(
         `${tag} SessionStart received — session_id=${startPayload.session_id ?? "<missing>"}`,
       );
+      // dismissPromise will resolve on its own (answered the prompt, or never
+      // saw it within the polling window). No further enterAutoMode call.
+      void dismissPromise;
+
       const transcriptPath = adapter.resolveTranscriptPath(startPayload);
       updateWorkflow(deps.db, ctx.executionId, {
         state: "running",
@@ -169,8 +183,6 @@ export function createImplementationWorkflow(
         transcriptPath,
       });
 
-      console.error(`${tag} entering auto mode`);
-      await adapter.enterAutoMode({ sessionName });
       const promptText = adapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: "initial",

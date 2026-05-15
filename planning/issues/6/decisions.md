@@ -244,3 +244,22 @@ narrowly scoped here to answering one well-known prompt.
 **Evidence:** `detectBypassPrompt` unit tests on representative confirmation strings
 (positive) and ordinary Claude pane content (negative); `enterAutoMode`'s
 missing-session early-return verified to settle in under 2s.
+
+## enterAutoMode runs in PARALLEL with awaitSessionStart, not after
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`, `packages/adapters/claude/src/index.ts`
+**Date:** 2026-05-15
+
+**Decision:** The bypass-prompt dismisser is kicked off *before* `awaitSessionStart`,
+fire-and-forget with a `.catch` for error logging. The polling window is bumped to 90s
+(matching `launchTimeout`). The post-readiness `enterAutoMode` call is removed.
+**Why:** Claude's `SessionStart` hook does not fire until the agent is past the
+bypass-mode warning screen — the warning gates the entire hook system. Calling
+`enterAutoMode` *after* `awaitSessionStart` was a chicken-and-egg: the dismisser waited
+for the very event the warning was blocking. With the dismisser running concurrently,
+the polling capture-pane sees and answers the prompt while `awaitSessionStart` is still
+waiting; Claude then proceeds past the warning and fires the hook.
+**Evidence:** Empirically discovered during the manual end-to-end run on Epic #27 —
+operator observed the warning sitting un-answered while the workflow logs showed
+`waiting for SessionStart hook` indefinitely (then timed out). After the fix, the
+expected order in stderr is: tmux launch → dismisser starts → SessionStart waits →
+(prompt detected → Down+Enter sent) → SessionStart received.

@@ -24,8 +24,12 @@ export function detectBypassPrompt(paneContent: string): boolean {
   return BYPASS_PROMPT_RE.test(paneContent);
 }
 
-const BYPASS_DETECT_TIMEOUT_MS = 5000;
-const BYPASS_POLL_INTERVAL_MS = 150;
+// Polls for the duration of the launch window — SessionStart is gated on the
+// warning being dismissed, so this poller needs to outlast Claude's slowest
+// boot. Caller fires this in parallel with awaitSessionStart; whichever happens
+// first proceeds the workflow.
+const BYPASS_DETECT_TIMEOUT_MS = 90_000;
+const BYPASS_POLL_INTERVAL_MS = 200;
 
 /**
  * Poll `tmux capture-pane` for up to a few seconds looking for the bypass-mode
