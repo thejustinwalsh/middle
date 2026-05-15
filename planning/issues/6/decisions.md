@@ -73,3 +73,55 @@ keystroke call is two tokens of `tmux` — not worth a shared abstraction. Not u
 in Phase 1 (needs a live tmux session); exercised by #12's workflow integration.
 **Evidence:** dependency graph stays `adapters/* → core`; #9 acceptance does not require
 an `enterAutoMode` unit test.
+
+## Minimal hook receiver handles two events, not just SessionStart
+**File(s):** `packages/dispatcher/src/hook-server.ts:19`
+**Date:** 2026-05-14
+
+**Decision:** The Phase 1 `HookServer` receives both `session.started` (readiness +
+`session_id`/`transcript_path` discovery) and `agent.stopped` (the turn boundary) — not
+SessionStart alone.
+**Why:** Build sequence item 10 names it the "minimal SessionStart hook receiver", but
+#12's `launch-and-drive` must "react to the Stop boundary via classifyStop", and the
+Phase 1 acceptance gate is "the agent hits a Stop; classifyStop runs". A SessionStart-only
+receiver could not drive the 3-step workflow to its acceptance gate. "Minimal" still holds
+relative to Phase 2: no HMAC auth, no events-table persistence, no full taxonomy — just
+the two load-bearing events the launch→drive→observe loop cannot run without.
+**Evidence:** `hook-server.test.ts` covers both event types; `implementation-workflow.test.ts`
+drives the full loop through a stub `SessionGate`.
+
+## Workflow factory + structural deps; failure state is `compensated`, agent-failure is `failed`
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts:78`
+**Date:** 2026-05-14
+
+**Decision:** `createImplementationWorkflow(deps)` is a factory closing over a `deps`
+bundle (db, adapter registry, `SessionGate`, structural `TmuxOps`/`WorktreeOps`, path
+resolvers). `launch-and-drive` wraps its body in try/catch and kills the session on any
+throw before rethrowing. Terminal DB states: a step that *throws* ends `compensated` (set
+by the prepare-worktree compensation); a clean run whose `classifyStop` returns `failed`
+ends `failed`. The bunqueue execution id doubles as `workflows.id`.
+**Why:** bunqueue's `StepContext` carries only input/steps/signals — ambient collaborators
+must come via closure, and a factory keeps the workflow a pure builder the dispatcher and
+tests configure identically. Structural `TmuxOps`/`WorktreeOps` let the end-to-end test
+stub tmux while using the *real* worktree helpers, so "no worktree leak" is genuinely
+verified. The catch-kill is needed because bunqueue runs compensation only for *completed*
+steps — a step that fails mid-launch would otherwise leak its tmux session. Separating
+`compensated` (workflow error, rolled back) from `failed` (agent reported failure, ran to
+completion) keeps the terminal state honest about *what* failed.
+**Evidence:** `implementation-workflow.test.ts` — happy path → `completed`, `failed`
+classifyStop → `failed`, launch throw → `compensated`; all three assert zero worktree and
+session leaks. bunqueue retries the failing step by default; the leak check tolerates that
+by asserting every *distinct* created session was killed.
+
+## bunqueue runs in-memory in tests (no dataPath)
+**File(s):** `packages/dispatcher/test/implementation-workflow.test.ts:38`
+**Date:** 2026-05-14
+
+**Decision:** The test `Engine` is constructed `{ embedded: true }` with no `dataPath`.
+**Why:** With a `dataPath`, bunqueue's `SqliteStorage` opens a file-backed queue DB; under
+a `mkdtemp` dir on macOS its write-buffer flushes during the retry path hit
+`SQLITE_IOERR_VNODE` ("disk I/O error"). Omitting `dataPath` makes both the queue and the
+workflow store in-memory — isolated per `Engine`, no vnode churn. The production dispatcher
+(Phase 1 CLI / Phase 2) supplies a real `dataPath`; only the test runs in-memory.
+**Evidence:** the I/O error reproduced reliably on the compensation (retry) test with a
+temp-dir `dataPath` and vanished once `dataPath` was dropped.
