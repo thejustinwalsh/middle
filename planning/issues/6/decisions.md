@@ -125,3 +125,27 @@ workflow store in-memory — isolated per `Engine`, no vnode churn. The producti
 (Phase 1 CLI / Phase 2) supplies a real `dataPath`; only the test runs in-memory.
 **Evidence:** the I/O error reproduced reliably on the compensation (retry) test with a
 temp-dir `dataPath` and vanished once `dataPath` was dropped.
+
+## `mm dispatch` is self-contained; `dispatchEpic` lives in the dispatcher with an injected adapter registry
+**File(s):** `packages/dispatcher/src/dispatch.ts:46`, `packages/cli/src/commands/dispatch.ts:30`
+**Date:** 2026-05-14
+
+**Decision:** `mm dispatch` does not talk to the long-running `mm start` process — it
+calls `dispatchEpic` (in `@middle/dispatcher`), which stands up its *own* hook server +
+bunqueue engine for the run and tears them down when the workflow settles. `dispatchEpic`
+takes a `getAdapter` registry function as a parameter; the CLI supplies
+`(name) => claudeAdapter`. The CLI never imports `bunqueue` or the workflow internals —
+only `dispatchEpic` and `openDb`.
+**Why:** Routing a force-dispatch into the running dispatcher needs an IPC/HTTP trigger
+endpoint, which is Phase 8 (auto-dispatch loop) territory — Phase 1's minimal hook server
+is the only HTTP surface and it has no control plane. A self-contained `mm dispatch` meets
+the Phase 1 acceptance gate ("spawns Claude in tmux … workflow finalizes … worktree
+cleaned up") with no Phase 8 machinery. Putting `dispatchEpic` in the dispatcher package
+(not the CLI) keeps `bunqueue`/tmux/worktree/workflow coupling contained; passing
+`getAdapter` in keeps `@middle/dispatcher` free of any concrete-adapter dependency, so the
+dependency graph stays `cli → {dispatcher, adapter-claude}` with no `dispatcher → adapter-*`
+edge. Phase 8 will add the HTTP trigger that lets `mm dispatch` enqueue into the running
+process instead.
+**Evidence:** `bun run typecheck` clean with the layered imports; `cli/test/dispatch.test.ts`
+covers the fail-fast validation; the real Claude end-to-end is a manual verification step
+(see the reviewer's brief — it needs the `claude` binary, GitHub auth, and a real repo).
