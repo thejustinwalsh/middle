@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookPayload } from "@middle/core";
-import { claudeAdapter } from "../src/index.ts";
+import { claudeAdapter, detectBypassPrompt } from "../src/index.ts";
 
 let dir: string;
 
@@ -294,11 +294,28 @@ describe("installHooks", () => {
   });
 });
 
+describe("detectBypassPrompt", () => {
+  test("matches representative bypass-mode confirmation strings", () => {
+    expect(detectBypassPrompt("You are entering Bypass Permissions mode")).toBe(true);
+    expect(detectBypassPrompt("skip permissions checks?")).toBe(true);
+    expect(detectBypassPrompt("Running --dangerously-skip-permissions")).toBe(true);
+  });
+
+  test("does not match normal Claude pane content", () => {
+    expect(detectBypassPrompt("> ")).toBe(false);
+    expect(detectBypassPrompt("Welcome to Claude Code 2.1.142")).toBe(false);
+    expect(detectBypassPrompt("")).toBe(false);
+  });
+});
+
 describe("enterAutoMode", () => {
-  test("is a no-op — auto mode is set at launch by --permission-mode", async () => {
-    // Doesn't touch tmux, doesn't throw even for a session that does not exist.
+  test("returns immediately when the target session does not exist", async () => {
+    // capture-pane against a missing session fails → enterAutoMode bails fast,
+    // never blocking the workflow when tmux state is unexpectedly gone
+    const start = Date.now();
     await expect(
       claudeAdapter.enterAutoMode({ sessionName: "middle-does-not-exist" }),
     ).resolves.toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(2000);
   });
 });

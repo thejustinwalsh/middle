@@ -222,3 +222,25 @@ Phase 1 stub and can extend the same checks list.
 listing one check per tool. `parseTmuxVersion` / `tmuxVersionAtLeast` are unit-tested
 (release versions, `next-` pre-releases, `3.5a` patches, garbage rejection). The doctor
 test runs the happy path on this machine where the full toolchain is present.
+
+## Bypass-mode prompt: detect + answer via Down+Enter
+**File(s):** `packages/adapters/claude/src/index.ts:18`
+**Date:** 2026-05-15
+
+**Decision:** `enterAutoMode` polls `tmux capture-pane` against the live session every
+~150ms (capped at 5s) for Claude's one-time bypass-mode confirmation, recognized via
+`/bypass\s+permissions?|skip\s+permissions?|dangerously/i`. On match it sends
+`tmux send-keys Down Enter` to select "Yes, I accept" and returns. If the prompt is
+never seen within the window (or `capture-pane` fails — session gone, tmux missing) it
+returns silently with no destructive keystrokes.
+**Why:** Current Claude pops the bypass confirmation at boot even with
+`--dangerously-skip-permissions` set, and autonomous dispatch has no human to answer it.
+The flag still belongs on the launch argv (it makes the bypass mode the *intended* state),
+but the prompt is a UX safety gate we must dismiss programmatically. Pure send-keys-on-a-
+timer would be destructive if the prompt isn't actually showing (Enter on a ready prompt
+input submits an empty turn); detection via capture-pane is the same gate the spec
+describes ("capture-pane is a thin fallback if the transcript signal is ambiguous"),
+narrowly scoped here to answering one well-known prompt.
+**Evidence:** `detectBypassPrompt` unit tests on representative confirmation strings
+(positive) and ordinary Claude pane content (negative); `enterAutoMode`'s
+missing-session early-return verified to settle in under 2s.

@@ -16,14 +16,65 @@ import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
  */
 const AUTO_MODE_FLAG = "--dangerously-skip-permissions";
 
+/** Marker text that identifies Claude's one-time bypass-mode confirmation. */
+const BYPASS_PROMPT_RE = /bypass\s+permissions?|skip\s+permissions?|dangerously/i;
+
+/** Whether a captured pane shows Claude's bypass-mode confirmation prompt. */
+export function detectBypassPrompt(paneContent: string): boolean {
+  return BYPASS_PROMPT_RE.test(paneContent);
+}
+
+const BYPASS_DETECT_TIMEOUT_MS = 5000;
+const BYPASS_POLL_INTERVAL_MS = 150;
+
 /**
- * No-op: the launch flag above puts the session in auto mode at start time, so
- * there is nothing keystroke-cyclable left to do when `SessionStart` fires.
- * The method stays on the interface as the per-CLI hook for any adapter whose
- * auto mode IS a post-launch keystroke gesture.
+ * Poll `tmux capture-pane` for up to a few seconds looking for the bypass-mode
+ * confirmation that Claude pops at first boot — current Claude still pops it
+ * even with `--dangerously-skip-permissions`. On match: send Down + Enter to
+ * select "Yes, I accept". If the session disappears (capture-pane fails) we
+ * exit immediately so a missing session never blocks the workflow. If the
+ * prompt never appears within the window we return silently — no destructive
+ * keystrokes are sent.
  */
-async function enterAutoMode(_opts: { sessionName: string }): Promise<void> {
-  // intentionally empty — see PERMISSION_MODE on buildLaunchCommand
+async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
+  const deadline = Date.now() + BYPASS_DETECT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const pane = await capturePane(opts.sessionName);
+    if (pane === null) return; // session gone or tmux missing — nothing to do
+    if (detectBypassPrompt(pane)) {
+      await sendKeys(opts.sessionName, ["Down", "Enter"]);
+      return;
+    }
+    await Bun.sleep(BYPASS_POLL_INTERVAL_MS);
+  }
+}
+
+async function capturePane(sessionName: string): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(["tmux", "capture-pane", "-p", "-t", sessionName], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    return exitCode === 0 ? stdout : null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendKeys(sessionName: string, keys: string[]): Promise<void> {
+  try {
+    const proc = Bun.spawn(["tmux", "send-keys", "-t", sessionName, ...keys], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await proc.exited;
+  } catch {
+    // best-effort: answering the bypass prompt is recoverable. If it fails the
+    // workflow proceeds anyway; classifyStop's downstream signals will catch
+    // a session that never reached an interactive ready state.
+  }
 }
 
 export const claudeAdapter: AgentAdapter = {
