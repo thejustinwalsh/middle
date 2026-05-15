@@ -24,3 +24,21 @@ under a `mkdtempSync` temp dir rather than `:memory:`.
 `:memory:` test would assert `journal_mode = "memory"` and either fail or force a weaker
 assertion. A real temp file is the only way to verify the production WAL path.
 **Evidence:** `openDb opens a file database in WAL mode` test asserts `journal_mode = "wal"`.
+
+## Config merge is a generic deep merge; per-repo sections are optional on the type
+**File(s):** `packages/core/src/config.ts:126`
+**Date:** 2026-05-14
+
+**Decision:** `loadConfig` deep-merges the raw parsed tables (per-repo over global,
+arrays/scalars replaced wholesale) *before* mapping to the typed object. Global-derived
+sections (`global`, `adapters`, `dashboard`) are always present — `GLOBAL_DEFAULTS`
+fills any gap — while per-repo sections (`repo`, `limits`, `recommender`, `stateIssue`,
+`bootstrap`) are typed `T | undefined` and populated only when the per-repo file exists.
+**Why:** The spec says "per-repo overrides global" but the two files have almost
+disjoint sections — a literal field-by-field override list would be brittle. A generic
+deep merge means a per-repo file *can* override any global key (e.g. drop in its own
+`[global]` block) for free, and the disjoint common case still works. Making per-repo
+sections optional is honest: there is no sensible default for `repo.owner`, so a
+global-only load leaves them `undefined` rather than inventing values.
+**Evidence:** `per-repo values override global on a colliding key` test (repo file with
+its own `[global]` block wins); `global only` and `missing files` tests.
