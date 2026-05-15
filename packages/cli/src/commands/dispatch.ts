@@ -68,16 +68,26 @@ export async function runDispatch(
   }
 
   const repoSlug = await deriveRepoSlug(repoPath);
-  const result = await dispatchEpic({
-    repoPath,
-    repoSlug,
-    epicNumber,
-    adapterName,
-    getAdapter,
-    dbPath: config.global.dbPath,
-    worktreeRoot: config.global.worktreeRoot,
-    dispatcherPort: config.global.dispatcherPort,
-  });
+  let result: Awaited<ReturnType<typeof dispatchEpic>>;
+  try {
+    result = await dispatchEpic({
+      repoPath,
+      repoSlug,
+      epicNumber,
+      adapterName,
+      getAdapter,
+      dbPath: config.global.dbPath,
+      worktreeRoot: config.global.worktreeRoot,
+      dispatcherPort: config.global.dispatcherPort,
+    });
+  } catch (error) {
+    // Most likely: EADDRINUSE when `mm start` is already holding the dispatcher
+    // port, or a SQLite open/migration failure. Surface a friendly message in
+    // the same `mm dispatch: …` style as the other failure paths rather than
+    // letting commander dump the raw JS error.
+    console.error(`mm dispatch: failed — ${(error as Error).message}`);
+    return 1;
+  }
 
   console.log(
     `mm dispatch: ${repoSlug} epic #${epicNumber} → workflow ${result.workflowId} settled — ${result.state}`,
