@@ -40,11 +40,17 @@ export interface AgentAdapter {
   /** Read activity, state, and context/token usage from the transcript. */
   readTranscriptState(transcriptPath: string): TranscriptState;
 
-  /** Classify the agent's state at a Stop hook. */
+  /**
+   * Classify the agent's state at a Stop hook. `worktree` is the workstream's
+   * root (where `.middle/` lives) — sentinel files are resolved from here,
+   * never from `payload.cwd`, which may be a subdirectory the agent has
+   * `cd`'d into.
+   */
   classifyStop(opts: {
     payload: HookPayload;
     transcriptPath: string;
     sentinelPresent: boolean;
+    worktree: string;
   }): StopClassification;
 
   /** Optional: detect a rate-limit message in a Stop-hook payload or transcript. */

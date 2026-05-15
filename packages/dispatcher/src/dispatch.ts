@@ -32,12 +32,23 @@ export type DispatchEpicResult = {
   state: string;
 };
 
-async function waitForSettle(engine: Engine, executionId: string): Promise<Execution | null> {
+/** A generous outer guard so the loop cannot spin forever if bunqueue ever
+ * reports `null` for the execution (engine-state corruption). The workflow's
+ * own `stopTimeoutMs` (4h default) is the intended backstop in normal flow;
+ * this is the recoverable failsafe beyond it. */
+const SETTLE_DEADLINE_MS = 5 * 60 * 60 * 1000;
+
+async function waitForSettle(
+  engine: Engine,
+  executionId: string,
+  deadlineAt: number = Date.now() + SETTLE_DEADLINE_MS,
+): Promise<Execution | null> {
   for (;;) {
     const execution = engine.getExecution(executionId);
     if (execution && execution.state !== "running" && execution.state !== "compensating") {
       return execution;
     }
+    if (Date.now() >= deadlineAt) return execution ?? null;
     await Bun.sleep(200);
   }
 }
@@ -47,15 +58,37 @@ async function waitForSettle(engine: Engine, executionId: string): Promise<Execu
  * stand up a hook receiver and engine, dispatch the agent, wait for the
  * workflow to settle, then tear everything down. Self-contained — the caller
  * (`mm dispatch`) just supplies validated inputs and an adapter registry.
+ *
+ * Cleanup is stack-based: every acquired resource pushes its teardown onto
+ * `cleanups` as soon as it is acquired. A throw anywhere — including from
+ * `hookServer.start()` if the port is already bound — still runs every cleanup
+ * pushed before the throw, so the db never leaks.
  */
 export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchEpicResult> {
   mkdirSync(dirname(opts.dbPath), { recursive: true });
-  const db = openAndMigrate(opts.dbPath);
-  const hookServer = new HookServer();
-  hookServer.start(opts.dispatcherPort);
-  const engine = new Engine({ embedded: true });
+
+  const cleanups: Array<() => Promise<void> | void> = [];
+  const runCleanups = async (): Promise<void> => {
+    while (cleanups.length > 0) {
+      try {
+        await cleanups.pop()!();
+      } catch {
+        // best-effort: one failing teardown must not block the rest
+      }
+    }
+  };
 
   try {
+    const db = openAndMigrate(opts.dbPath);
+    cleanups.push(() => db.close());
+
+    const hookServer = new HookServer();
+    hookServer.start(opts.dispatcherPort);
+    cleanups.push(() => hookServer.stop());
+
+    const engine = new Engine({ embedded: true });
+    cleanups.push(() => engine.close(true));
+
     engine.register(
       createImplementationWorkflow({
         db,
@@ -77,8 +110,6 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     const execution = await waitForSettle(engine, handle.id);
     return { workflowId: handle.id, state: execution?.state ?? "failed" };
   } finally {
-    hookServer.stop();
-    await engine.close(true);
-    db.close();
+    await runCleanups();
   }
 }

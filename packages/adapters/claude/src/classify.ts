@@ -9,6 +9,11 @@ const USAGE_LIMIT_RE = /You've hit your usage limit\. Resets at (.+?)\./;
  * exit between turns, so this — not an exit code — is the signal the workflow
  * reacts to. Order matters: an open question outranks everything else.
  *
+ * All three sentinel paths are anchored at `<worktree>/.middle/`, not at
+ * `payload.cwd`. The Claude session's `cwd` at Stop time may be a subdirectory
+ * the agent has `cd`'d into (e.g. `worktree/src/`); only the worktree root is
+ * the stable home of the workstream's sentinel files.
+ *
  * Phase 1 detects `done`/`failed` via `.middle/done.json` / `.middle/failed.json`
  * sentinels, parallel to the `.middle/blocked.json` question sentinel. Phase 4
  * replaces the `done` path with the mechanically-enforced PR-ready hook gate.
@@ -17,9 +22,9 @@ export function classifyStop(opts: {
   payload: HookPayload;
   transcriptPath: string;
   sentinelPresent: boolean;
+  worktree: string;
 }): StopClassification {
-  const cwd = typeof opts.payload.cwd === "string" ? opts.payload.cwd : "";
-  const middleDir = join(cwd, ".middle");
+  const middleDir = join(opts.worktree, ".middle");
 
   if (opts.sentinelPresent) {
     return { kind: "asked-question", sentinelPath: join(middleDir, "blocked.json") };

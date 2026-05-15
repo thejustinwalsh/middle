@@ -177,6 +177,7 @@ export function createImplementationWorkflow(
         payload: stopPayload,
         transcriptPath,
         sentinelPresent,
+        worktree: handle.path,
       });
       return { classification, sessionName };
     } catch (error) {

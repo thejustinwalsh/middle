@@ -156,12 +156,13 @@ function writeMiddleDir(): { cwd: string; middle: string; transcript: string } {
 }
 
 describe("classifyStop", () => {
-  test("sentinelPresent → asked-question, with the blocked.json path", () => {
+  test("sentinelPresent → asked-question, with the worktree-anchored blocked.json path", () => {
     const { cwd, transcript } = writeMiddleDir();
     const result = claudeAdapter.classifyStop({
       payload: { cwd },
       transcriptPath: transcript,
       sentinelPresent: true,
+      worktree: cwd,
     });
     expect(result.kind).toBe("asked-question");
     if (result.kind === "asked-question") {
@@ -188,6 +189,7 @@ describe("classifyStop", () => {
       payload: { cwd },
       transcriptPath: transcript,
       sentinelPresent: false,
+      worktree: cwd,
     });
     expect(result.kind).toBe("rate-limited");
     if (result.kind === "rate-limited") {
@@ -202,6 +204,7 @@ describe("classifyStop", () => {
       payload: { cwd },
       transcriptPath: transcript,
       sentinelPresent: false,
+      worktree: cwd,
     });
     expect(result.kind).toBe("done");
   });
@@ -213,11 +216,28 @@ describe("classifyStop", () => {
       payload: { cwd },
       transcriptPath: transcript,
       sentinelPresent: false,
+      worktree: cwd,
     });
     expect(result.kind).toBe("failed");
     if (result.kind === "failed") {
       expect(result.reason).toBe("3 consecutive denials");
     }
+  });
+
+  test("sentinels are found even when payload.cwd is a worktree subdirectory", () => {
+    // Regression: agent did `cd src/` before stopping. `done.json` lives at the
+    // worktree root and must still resolve `done`, not `bare-stop`.
+    const { cwd: worktree, middle, transcript } = writeMiddleDir();
+    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 73 }));
+    const subdir = join(worktree, "src");
+    mkdirSync(subdir);
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd: subdir },
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree,
+    });
+    expect(result.kind).toBe("done");
   });
 
   test("nothing notable → bare-stop", () => {
@@ -226,15 +246,14 @@ describe("classifyStop", () => {
       payload: { cwd },
       transcriptPath: transcript,
       sentinelPresent: false,
+      worktree: cwd,
     });
     expect(result.kind).toBe("bare-stop");
   });
 });
 
 describe("installHooks", () => {
-  test("writes a SessionStart-only .claude/settings.json into the worktree", async () => {
-    const worktree = join(dir, "wt");
-    mkdirSync(worktree, { recursive: true });
+  async function installInto(worktree: string): Promise<void> {
     await claudeAdapter.installHooks({
       worktree,
       hookScriptPath: ".middle/hooks/hook.sh",
@@ -243,11 +262,40 @@ describe("installHooks", () => {
       sessionToken: "tok",
       epicNumber: 6,
     });
+  }
+
+  test("registers both SessionStart and Stop hooks in .claude/settings.json", async () => {
+    const worktree = join(dir, "wt-events");
+    mkdirSync(worktree, { recursive: true });
+    await installInto(worktree);
     const settings = JSON.parse(
       await Bun.file(join(worktree, ".claude", "settings.json")).text(),
     ) as { hooks: Record<string, unknown[]> };
-    expect(Object.keys(settings.hooks)).toEqual(["SessionStart"]);
-    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(".middle/hooks/hook.sh");
-    expect(JSON.stringify(settings.hooks.SessionStart)).toContain("session.started");
+    expect(Object.keys(settings.hooks).sort()).toEqual(["SessionStart", "Stop"]);
+    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(".middle/hooks/hook.sh session.started");
+    expect(JSON.stringify(settings.hooks.Stop)).toContain(".middle/hooks/hook.sh agent.stopped");
+  });
+
+  test("writes an executable hook.sh into the worktree at the configured path", async () => {
+    const worktree = join(dir, "wt-script");
+    mkdirSync(worktree, { recursive: true });
+    await installInto(worktree);
+    const scriptPath = join(worktree, ".middle/hooks/hook.sh");
+    const contents = await Bun.file(scriptPath).text();
+    expect(contents).toStartWith("#!/bin/sh");
+    expect(contents).toContain("curl");
+    expect(contents).toContain("${MIDDLE_DISPATCHER_URL}");
+    const mode = (await import("node:fs/promises")).stat(scriptPath);
+    expect(((await mode).mode & 0o111) !== 0).toBe(true); // some exec bit set
+  });
+});
+
+const TMUX = Bun.which("tmux");
+const tmuxDescribe = describe.skipIf(!TMUX);
+
+tmuxDescribe("enterAutoMode failure surfacing", () => {
+  test("throws when the target tmux session does not exist", async () => {
+    const sessionName = `middle-noexistent-${crypto.randomUUID().slice(0, 8)}`;
+    await expect(claudeAdapter.enterAutoMode({ sessionName })).rejects.toThrow();
   });
 });

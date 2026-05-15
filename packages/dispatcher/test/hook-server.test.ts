@@ -43,6 +43,15 @@ describe("HookServer — SessionStart", () => {
     expect(payload.session_id).toBe("early");
   });
 
+  test("duplicate pre-await arrivals keep the FIRST payload, not the last", async () => {
+    // a retry scenario could fire SessionStart twice with overlapping payloads;
+    // the second must not silently overwrite the first
+    await postHook("session.started", "middle-9", { session_id: "first" });
+    await postHook("session.started", "middle-9", { session_id: "second" });
+    const payload = await server.awaitSessionStart("middle-9", 1000);
+    expect(payload.session_id).toBe("first");
+  });
+
   test("waiters are keyed by session — one session's event does not satisfy another", async () => {
     const pending = server.awaitSessionStart("middle-8", 300);
     await postHook("session.started", "middle-DIFFERENT", { session_id: "x" });

@@ -149,3 +149,19 @@ process instead.
 **Evidence:** `bun run typecheck` clean with the layered imports; `cli/test/dispatch.test.ts`
 covers the fail-fast validation; the real Claude end-to-end is a manual verification step
 (see the reviewer's brief — it needs the `claude` binary, GitHub auth, and a real repo).
+
+## Review response (2026-05-15): six hot-path fixes
+**File(s):** multiple
+**Date:** 2026-05-15
+
+**Decision:** Six fixes from Greptile review on PR #73:
+
+1. **`Stop` hook registration** (`packages/adapters/claude/src/hooks.ts`) — `installHooks` now registers both `SessionStart` → `session.started` *and* `Stop` → `agent.stopped`. It also writes an executable `.middle/hooks/hook.sh` (the universal `curl` POST script from the spec) into the worktree. Without these, a real Claude session would never POST `agent.stopped`, the workflow's `awaitStop` would time out after 4 hours, and every real dispatch would compensate instead of completing.
+2. **Sentinel paths anchored to the worktree** (`packages/core/src/adapter.ts`, `packages/adapters/claude/src/classify.ts`, `packages/dispatcher/src/workflows/implementation.ts`) — `classifyStop`'s opts now take `worktree: string`; `.middle/{blocked,done,failed}.json` are resolved from there, not from `payload.cwd` (which may be a subdirectory the agent `cd`'d into, and was falling back to `""` when absent). The caller now passes `handle.path`, matching the anchor already used for `sentinelPresent`.
+3. **Resource cleanup on early failure** (`packages/dispatcher/src/dispatch.ts`) — `dispatchEpic` uses a cleanups-stack pattern (`cleanups.push(...)` as each resource is acquired, popped in reverse in a single `finally`). A throw from `hookServer.start()` (e.g. port already bound by a running `mm start` dispatcher) now still closes the db.
+4. **`enterAutoMode` throws on non-zero `tmux` exit** (`packages/adapters/claude/src/index.ts`) — the exit code is now checked and stderr captured; a missing session or missing `tmux` binary surfaces as an error so `launchAndDrive`'s catch kills the session and the workflow compensates, instead of silently proceeding to send the prompt into a session that never entered auto mode.
+5. **`waitForSettle` outer deadline** (`packages/dispatcher/src/dispatch.ts`) — a 5-hour outer guard (workflow's 4h `stopTimeoutMs` + buffer) so a `null` execution from bunqueue cannot spin the loop forever.
+6. **Hook-server stash keeps the first arrival** (`packages/dispatcher/src/hook-server.ts`) — duplicate pre-await hooks no longer overwrite earlier payloads. Matters most for `session.started`, whose payload commits `session_id`/`transcript_path` onto the workflow row.
+
+**Why:** Items 1 and 2 are correctness-blocking for the real-binary dispatch path the Phase 1 acceptance gate exercises. Items 3–6 are hardening on edge cases (port collision, missing tmux, engine-state corruption, retry-storm duplicate hooks) the real environment will inevitably exercise.
+**How to apply:** Regression coverage added: subdir-cwd sentinel test, `enterAutoMode` rejects on missing tmux session, `installHooks` registers both events and writes an executable hook.sh, duplicate-pre-await stash keeps first. Full suite: 104 pass, `tsc` clean.

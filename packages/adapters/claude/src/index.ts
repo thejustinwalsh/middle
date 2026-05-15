@@ -11,13 +11,24 @@ import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
  * into the live tmux session. The adapter shells out to `tmux` directly rather
  * than depending on the dispatcher's richer helper module — entering auto mode
  * is intrinsically a per-CLI keystroke concern the adapter owns.
+ *
+ * A non-zero exit from `tmux send-keys` (missing session, tmux not on PATH)
+ * throws so `launchAndDrive`'s catch can kill the session and compensate —
+ * otherwise the workflow would silently proceed to send the prompt into a
+ * session that never entered auto mode and never reaches `Stop`.
  */
 async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   const proc = Bun.spawn(["tmux", "send-keys", "-t", opts.sessionName, "S-Tab", "S-Tab"], {
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: "pipe",
   });
-  await proc.exited;
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    throw new Error(
+      `enterAutoMode: tmux send-keys to "${opts.sessionName}" failed (exit ${exitCode}): ${stderr.trim()}`,
+    );
+  }
 }
 
 export const claudeAdapter: AgentAdapter = {

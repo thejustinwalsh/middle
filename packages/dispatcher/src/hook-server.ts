@@ -80,7 +80,11 @@ export class HookServer implements SessionGate {
       clearTimeout(waiter.timer);
       this.#waiters.delete(key);
       waiter.resolve(payload);
-    } else {
+    } else if (!this.#stashed.has(key)) {
+      // Keep the first arrival. A duplicate fires during a retry scenario and
+      // would otherwise silently overwrite the original — most acutely for
+      // `session.started`, where the payload carries `session_id` /
+      // `transcript_path` the workflow then commits to.
       this.#stashed.set(key, payload);
     }
   }
