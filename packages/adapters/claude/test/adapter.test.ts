@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -312,10 +312,15 @@ describe("enterAutoMode", () => {
   test("returns immediately when the target session does not exist", async () => {
     // capture-pane against a missing session fails → enterAutoMode bails fast,
     // never blocking the workflow when tmux state is unexpectedly gone
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
     const start = Date.now();
-    await expect(
-      claudeAdapter.enterAutoMode({ sessionName: "middle-does-not-exist" }),
-    ).resolves.toBeUndefined();
+    try {
+      await expect(
+        claudeAdapter.enterAutoMode({ sessionName: "middle-does-not-exist" }),
+      ).resolves.toBeUndefined();
+    } finally {
+      errSpy.mockRestore();
+    }
     expect(Date.now() - start).toBeLessThan(2000);
   });
 });

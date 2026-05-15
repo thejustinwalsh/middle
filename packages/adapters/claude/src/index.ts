@@ -38,15 +38,33 @@ const BYPASS_POLL_INTERVAL_MS = 150;
  */
 async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   const deadline = Date.now() + BYPASS_DETECT_TIMEOUT_MS;
+  const tag = `[claude:${opts.sessionName}]`;
+  let iter = 0;
   while (Date.now() < deadline) {
+    iter++;
     const pane = await capturePane(opts.sessionName);
-    if (pane === null) return; // session gone or tmux missing — nothing to do
-    if (detectBypassPrompt(pane)) {
+    if (pane === null) {
+      console.error(`${tag} enterAutoMode iter ${iter}: capture-pane failed, exiting`);
+      return;
+    }
+    const preview = pane
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(-300); // tail; the prompt is the last thing rendered
+    const matched = detectBypassPrompt(pane);
+    console.error(
+      `${tag} enterAutoMode iter ${iter}: paneLen=${pane.length} match=${matched} tail="${preview}"`,
+    );
+    if (matched) {
+      console.error(`${tag} sending Down+Enter to accept bypass mode`);
       await sendKeys(opts.sessionName, ["Down", "Enter"]);
       return;
     }
     await Bun.sleep(BYPASS_POLL_INTERVAL_MS);
   }
+  console.error(
+    `${tag} enterAutoMode: bypass prompt never matched within ${BYPASS_DETECT_TIMEOUT_MS}ms`,
+  );
 }
 
 async function capturePane(sessionName: string): Promise<string | null> {
