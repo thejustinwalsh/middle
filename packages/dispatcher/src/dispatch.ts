@@ -116,11 +116,11 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     cleanups.push(() => hookServer.stop());
 
     const engine = new Engine({ embedded: true });
-    // close(false): wait for the worker to finish any in-flight job-failure
-    // finalization. close(true) was racing bunqueue's `handleJobFailure` and
-    // surfaced as an unhandled "Invalid or expired lock token" on repeated
-    // dispatches when the workflow ended via the failure path.
-    cleanups.push(() => engine.close(false));
+    // NB: engine.close is NOT in the cleanups stack — it must run BEFORE the
+    // hookServer/db teardown so any in-flight compensation has live deps to
+    // talk to. bunqueue's executor sets exec.state='failed' BEFORE awaiting
+    // compensation, so `waitForSettle` returns mid-flight and the finally
+    // would otherwise rip out the db/hookServer the compensation still needs.
 
     engine.register(
       createImplementationWorkflow({
@@ -140,7 +140,25 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
       epicNumber: opts.epicNumber,
       adapter: opts.adapterName,
     });
+    console.error(`[dispatch] workflow ${handle.id} enqueued`);
     const execution = await waitForSettle(engine, handle.id);
+    console.error(
+      `[dispatch] waitForSettle returned — state=${execution?.state ?? "<null>"}; draining engine`,
+    );
+
+    // Drain in-flight work (compensations, handleJobFailure) BEFORE the
+    // finally runs and tears down db/hookServer. Capped at 10s so a hung
+    // bunqueue internal can't block the whole dispatch indefinitely.
+    await Promise.race([
+      engine.close(false).catch((err: unknown) => {
+        console.error(`[dispatch] engine.close errored: ${(err as Error).message}`);
+      }),
+      Bun.sleep(10_000).then(() => {
+        console.error(`[dispatch] engine.close drain timed out after 10s — proceeding`);
+      }),
+    ]);
+    console.error(`[dispatch] engine drained`);
+
     return { workflowId: handle.id, state: execution?.state ?? "failed" };
   } finally {
     await runCleanups();
