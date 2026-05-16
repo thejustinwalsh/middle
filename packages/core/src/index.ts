@@ -24,3 +24,6 @@ export type {
   StopClassification,
   RateLimitDetection,
 } from "./adapter.ts";
+
+export { capturePane, sendText, sendKeys, pollPaneFor } from "./tmux-tui.ts";
+export type { SendKeysOpts, PollPaneOpts } from "./tmux-tui.ts";

@@ -263,3 +263,40 @@ operator observed the warning sitting un-answered while the workflow logs showed
 `waiting for SessionStart hook` indefinitely (then timed out). After the fix, the
 expected order in stderr is: tmux launch → dismisser starts → SessionStart waits →
 (prompt detected → Down+Enter sent) → SessionStart received.
+
+## Shared TUI primitives in @middle/core; login detection; plan-style prompt
+**File(s):** `packages/core/src/tmux-tui.ts`, `packages/adapters/claude/src/index.ts`, `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-16
+
+**Decision:** Three coordinated changes:
+
+1. **Shared TUI primitives in `@middle/core/src/tmux-tui.ts`** — `capturePane`,
+   `sendText`, `sendKeys` (with `delayBetweenMs`), and the load-bearing `pollPaneFor<T>`
+   (predicate-based polling with optional `tag` for per-iteration stderr diagnostics).
+   Adapters import from `@middle/core` so they stay free of the dispatcher dep; the
+   dispatcher's `tmux.ts` keeps the session-lifecycle ops (`newSession`, `hasSession`,
+   `status`, `killSession`) which it owns alone.
+2. **`detectNeedsLogin` + integration** — claude adapter exports both `detectBypassPrompt`
+   and `detectNeedsLogin`. `enterAutoMode` becomes a single `pollPaneFor` whose predicate
+   returns the discriminated `'bypass-prompt' | 'needs-login'` outcome. On `needs-login`
+   it throws a clean "claude is not authenticated — run claude interactively to sign in,
+   then retry the dispatch" so `mm dispatch` exits with a useful message instead of
+   hanging on the 90s SessionStart timeout.
+3. **`ensurePromptFile` in `launchAndDrive`** — writes a plan-style placeholder
+   `<worktree>/.middle/prompt.md` if missing, directing Claude to use the
+   `implementing-github-issues` skill on Epic #N. A committed `.middle/prompt.md` in the
+   source repo (operator override) is left alone. Works out-of-box for middle's own
+   dogfood checkout (`.claude/skills/implementing-github-issues/` is already committed).
+   Phase 3 `mm init` will install the skill in non-dogfood target repos.
+
+**Why:** TUI driving is "likely not a one-off" — login screens, ongoing prompts, and any
+future "watch the pane, react to it" flow needs the same predicate-poll-then-send shape.
+Centralizing once removes the ad-hoc duplication the bypass-prompt iterations accumulated.
+The login state is essential: without it, a no-auth Claude hangs the dispatch on a 90s
+timeout with a useless "step failed: timed out" message. The placeholder prompt closes the
+"agent runs but does nothing" gap that surfaced during the first successful dispatch.
+
+**Evidence:** `bun test` 123 pass (10 new tests: `detectNeedsLogin` matching, the four
+`pollPaneFor` paths — match / timeout / session-gone / tag-logs-stderr, capture/send
+helpers against live tmux sessions). `tsc --noEmit` clean. `enterAutoMode` is now half its
+previous line count, all the diagnostic logging is free via `pollPaneFor`'s `tag`.

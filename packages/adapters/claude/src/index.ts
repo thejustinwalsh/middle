@@ -1,118 +1,78 @@
 // @middle/adapter-claude — implements AgentAdapter for the Claude CLI.
 import type { AgentAdapter } from "@middle/core";
+import { capturePane, pollPaneFor, sendKeys } from "@middle/core";
 import { classifyStop } from "./classify.ts";
 import { installHooks } from "./hooks.ts";
 import { buildPromptText } from "./prompt.ts";
 import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
 
 /**
- * `--dangerously-skip-permissions` is the explicit "skip all checks AND the
- * one-time bypass-mode confirmation" flag. `--permission-mode bypassPermissions`
- * has the same runtime semantics but still pops a one-time UI confirmation when
- * the session boots — fine for a human, fatal for autonomous dispatch (the
- * agent would hang on the prompt because middle has no readiness gate to
- * answer it). The keystroke path (`S-Tab S-Tab`) is the spec's documented
- * fallback if Claude ever drops this flag from interactive mode.
+ * `--dangerously-skip-permissions` is the auto-mode flag — runtime-equivalent
+ * to bypassPermissions, but still pops a one-time "are you sure?" warning at
+ * boot. `enterAutoMode` dismisses it.
  */
 const AUTO_MODE_FLAG = "--dangerously-skip-permissions";
 
-/** Marker text that identifies Claude's one-time bypass-mode confirmation. */
 const BYPASS_PROMPT_RE = /bypass\s+permissions?|skip\s+permissions?|dangerously/i;
+const NEEDS_LOGIN_RE =
+  /please\s+(?:run\s+|use\s+)?(?:claude\s+)?\/?(?:login|sign[ -]?in)|not\s+(?:logged\s+in|authenticated|signed\s+in)|welcome\s+to\s+claude\s+code.*sign|invalid\s+(?:api\s+key|credentials)/i;
 
 /** Whether a captured pane shows Claude's bypass-mode confirmation prompt. */
 export function detectBypassPrompt(paneContent: string): boolean {
   return BYPASS_PROMPT_RE.test(paneContent);
 }
 
-// Polls for the duration of the launch window — SessionStart is gated on the
-// warning being dismissed, so this poller needs to outlast Claude's slowest
-// boot. Caller fires this in parallel with awaitSessionStart; whichever happens
-// first proceeds the workflow.
-const BYPASS_DETECT_TIMEOUT_MS = 90_000;
-const BYPASS_POLL_INTERVAL_MS = 200;
+/** Whether a captured pane shows a "you need to log in" message. */
+export function detectNeedsLogin(paneContent: string): boolean {
+  return NEEDS_LOGIN_RE.test(paneContent);
+}
+
+/** Long polling window — covers Claude's slowest boot up to launchTimeout. */
+const BOOT_DETECT_TIMEOUT_MS = 90_000;
+
+type BootOutcome = "bypass-prompt" | "needs-login";
 
 /**
- * Poll `tmux capture-pane` for up to a few seconds looking for the bypass-mode
- * confirmation that Claude pops at first boot — current Claude still pops it
- * even with `--dangerously-skip-permissions`. On match: send Down + Enter to
- * select "Yes, I accept". If the session disappears (capture-pane fails) we
- * exit immediately so a missing session never blocks the workflow. If the
- * prompt never appears within the window we return silently — no destructive
- * keystrokes are sent.
+ * Pre-SessionStart boot polling. Runs in parallel with `awaitSessionStart`
+ * because Claude does not fire SessionStart until past the bypass-mode
+ * warning. Two outcomes drive action:
+ *
+ * - `bypass-prompt`: send Down + Enter (split with a 100ms delay so the menu
+ *   has time to advance selection between keys) to select "Yes, I accept".
+ *   Claude proceeds and fires SessionStart shortly after.
+ * - `needs-login`: throw a clean error so `mm dispatch` exits with a useful
+ *   "claude is not authenticated" message instead of hanging on a 90s
+ *   SessionStart timeout.
  */
 async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
-  const deadline = Date.now() + BYPASS_DETECT_TIMEOUT_MS;
-  const tag = `[claude:${opts.sessionName}]`;
-  let iter = 0;
-  while (Date.now() < deadline) {
-    iter++;
-    const pane = await capturePane(opts.sessionName);
-    if (pane === null) {
-      console.error(`${tag} enterAutoMode iter ${iter}: capture-pane failed, exiting`);
-      return;
-    }
-    const preview = pane
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(-300); // tail; the prompt is the last thing rendered
-    const matched = detectBypassPrompt(pane);
-    console.error(
-      `${tag} enterAutoMode iter ${iter}: paneLen=${pane.length} match=${matched} tail="${preview}"`,
-    );
-    if (matched) {
-      console.error(`${tag} bypass prompt detected — settling 200ms then Down then Enter`);
-      // Settle the menu before sending — Claude's TUI may still be wiring its
-      // input handler when the prompt first paints.
-      await Bun.sleep(200);
-      await sendKeys(opts.sessionName, ["Down"]);
-      // Separate keystrokes with a delay; one combined send-keys arrives too
-      // fast for the menu to advance selection between Down and Enter.
-      await Bun.sleep(100);
-      await sendKeys(opts.sessionName, ["Enter"]);
-      // Capture the pane after the keystrokes so we can SEE whether the menu
-      // moved (selection on "Yes, I accept" or "No, exit" reveals it).
-      await Bun.sleep(300);
-      const after = await capturePane(opts.sessionName);
-      const afterTail = (after ?? "<capture failed>")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(-300);
-      console.error(`${tag} post-keystroke pane tail: "${afterTail}"`);
-      return;
-    }
-    await Bun.sleep(BYPASS_POLL_INTERVAL_MS);
-  }
-  console.error(
-    `${tag} enterAutoMode: bypass prompt never matched within ${BYPASS_DETECT_TIMEOUT_MS}ms`,
+  const tag = `claude:${opts.sessionName}`;
+  const outcome = await pollPaneFor<BootOutcome>(
+    opts.sessionName,
+    (pane) => {
+      if (detectNeedsLogin(pane)) return "needs-login";
+      if (detectBypassPrompt(pane)) return "bypass-prompt";
+      return null;
+    },
+    { timeoutMs: BOOT_DETECT_TIMEOUT_MS, pollIntervalMs: 200, tag },
   );
-}
 
-async function capturePane(sessionName: string): Promise<string | null> {
-  try {
-    const proc = Bun.spawn(["tmux", "capture-pane", "-p", "-t", sessionName], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    return exitCode === 0 ? stdout : null;
-  } catch {
-    return null;
+  if (outcome === "needs-login") {
+    throw new Error(
+      "claude is not authenticated — run `claude` interactively in a normal terminal to sign in, then retry the dispatch",
+    );
   }
-}
-
-async function sendKeys(sessionName: string, keys: string[]): Promise<void> {
-  try {
-    const proc = Bun.spawn(["tmux", "send-keys", "-t", sessionName, ...keys], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    await proc.exited;
-  } catch {
-    // best-effort: answering the bypass prompt is recoverable. If it fails the
-    // workflow proceeds anyway; classifyStop's downstream signals will catch
-    // a session that never reached an interactive ready state.
+  if (outcome === "bypass-prompt") {
+    console.error(`[${tag}] bypass prompt detected — settling then Down then Enter`);
+    await Bun.sleep(200);
+    await sendKeys(opts.sessionName, ["Down", "Enter"], { delayBetweenMs: 100 });
+    // Post-keystroke capture confirms whether the menu actually advanced.
+    await Bun.sleep(300);
+    const after = await capturePane(opts.sessionName);
+    const afterTail = (after ?? "<capture failed>").replace(/\s+/g, " ").trim().slice(-300);
+    console.error(`[${tag}] post-keystroke pane tail: "${afterTail}"`);
   }
+  // outcome null: neither prompt nor login screen appeared. SessionStart should
+  // already have fired (or be about to). enterAutoMode has nothing else to do.
 }
 
 export const claudeAdapter: AgentAdapter = {
@@ -121,10 +81,9 @@ export const claudeAdapter: AgentAdapter = {
   installHooks,
   buildLaunchCommand(opts) {
     // Interactive — no `-p`, no prompt. `--dangerously-skip-permissions`
-    // engages auto mode AND suppresses the one-time bypass-mode confirmation
-    // prompt at boot (which `--permission-mode bypassPermissions` would still
-    // pop — fatal for autonomous dispatch with no readiness gate to answer
-    // it). Env is injected by tmux at spawn time.
+    // engages auto mode AND suppresses the API-permission gate (the bypass
+    // confirmation TUI is separate, dismissed via enterAutoMode). Env is
+    // injected by tmux at spawn time.
     return {
       argv: ["claude", AUTO_MODE_FLAG],
       env: {

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter, StopClassification } from "@middle/core";
@@ -58,6 +58,35 @@ const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 /** Session names are deterministic so compensations can recompute them. */
 function sessionNameFor(input: ImplementationInput): string {
   return `middle-${input.epicNumber}`;
+}
+
+/**
+ * Write a plan-style placeholder `.middle/prompt.md` into the worktree if one
+ * is not already present. An operator (or Phase 3+ `mm init` / Phase 7's
+ * recommender) can override by committing a real prompt in the source repo —
+ * the worktree inherits it and this writer leaves it alone.
+ */
+function ensurePromptFile(worktreePath: string, epicNumber: number): void {
+  const middleDir = join(worktreePath, ".middle");
+  const promptPath = join(middleDir, "prompt.md");
+  if (existsSync(promptPath)) return;
+  mkdirSync(middleDir, { recursive: true });
+  writeFileSync(
+    promptPath,
+    `# middle dispatch — Epic #${epicNumber}
+
+You are dispatched by middle (the autonomous GitHub-issue dispatcher) to work
+on Epic #${epicNumber} in this repository.
+
+Use the \`implementing-github-issues\` skill — it is available in this worktree
+at \`.claude/skills/implementing-github-issues/SKILL.md\`. Invoke it via the
+Skill tool with name \`implementing-github-issues\` and input \`implement #${epicNumber}\`.
+
+If the skill is not present in this worktree (the target repo has not been
+\`mm init\`'d and is not middle's own dogfood checkout), write a brief
+explanation to \`.middle/failed.json\` as \`{ "reason": "<message>" }\` and stop.
+`,
+  );
 }
 
 function finalStateFor(classification: StopClassification): WorkflowState {
@@ -133,6 +162,9 @@ export function createImplementationWorkflow(
     updateWorkflow(deps.db, ctx.executionId, { state: "launching", sessionName, sessionToken });
 
     try {
+      console.error(`${tag} ensuring .middle/prompt.md exists in worktree`);
+      ensurePromptFile(handle.path, ctx.input.epicNumber);
+
       console.error(`${tag} installing hooks in ${handle.path}`);
       await adapter.installHooks({
         worktree: handle.path,

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookPayload } from "@middle/core";
-import { claudeAdapter, detectBypassPrompt } from "../src/index.ts";
+import { claudeAdapter, detectBypassPrompt, detectNeedsLogin } from "../src/index.ts";
 
 let dir: string;
 
@@ -305,6 +305,23 @@ describe("detectBypassPrompt", () => {
     expect(detectBypassPrompt("> ")).toBe(false);
     expect(detectBypassPrompt("Welcome to Claude Code 2.1.142")).toBe(false);
     expect(detectBypassPrompt("")).toBe(false);
+  });
+});
+
+describe("detectNeedsLogin", () => {
+  test("matches representative not-authenticated messages", () => {
+    expect(detectNeedsLogin("Please run claude login to authenticate")).toBe(true);
+    expect(detectNeedsLogin("You are not logged in")).toBe(true);
+    expect(detectNeedsLogin("Not authenticated — please sign in")).toBe(true);
+    expect(detectNeedsLogin("Welcome to Claude Code — please sign in to continue")).toBe(true);
+    expect(detectNeedsLogin("Invalid API key")).toBe(true);
+  });
+
+  test("does not match the bypass prompt or normal pane content", () => {
+    expect(detectNeedsLogin("Bypass Permissions mode")).toBe(false);
+    expect(detectNeedsLogin("> ")).toBe(false);
+    expect(detectNeedsLogin("Loaded skill: implementing-github-issues")).toBe(false);
+    expect(detectNeedsLogin("")).toBe(false);
   });
 });
 
