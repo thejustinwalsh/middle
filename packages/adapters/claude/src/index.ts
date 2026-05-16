@@ -60,8 +60,24 @@ async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
       `${tag} enterAutoMode iter ${iter}: paneLen=${pane.length} match=${matched} tail="${preview}"`,
     );
     if (matched) {
-      console.error(`${tag} sending Down+Enter to accept bypass mode`);
-      await sendKeys(opts.sessionName, ["Down", "Enter"]);
+      console.error(`${tag} bypass prompt detected — settling 200ms then Down then Enter`);
+      // Settle the menu before sending — Claude's TUI may still be wiring its
+      // input handler when the prompt first paints.
+      await Bun.sleep(200);
+      await sendKeys(opts.sessionName, ["Down"]);
+      // Separate keystrokes with a delay; one combined send-keys arrives too
+      // fast for the menu to advance selection between Down and Enter.
+      await Bun.sleep(100);
+      await sendKeys(opts.sessionName, ["Enter"]);
+      // Capture the pane after the keystrokes so we can SEE whether the menu
+      // moved (selection on "Yes, I accept" or "No, exit" reveals it).
+      await Bun.sleep(300);
+      const after = await capturePane(opts.sessionName);
+      const afterTail = (after ?? "<capture failed>")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(-300);
+      console.error(`${tag} post-keystroke pane tail: "${afterTail}"`);
       return;
     }
     await Bun.sleep(BYPASS_POLL_INTERVAL_MS);
