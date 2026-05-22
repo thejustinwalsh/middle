@@ -1,0 +1,113 @@
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runDispatch } from "../src/commands/dispatch.ts";
+
+type BunServer = ReturnType<typeof Bun.serve>;
+
+// The full `mm dispatch` happy path spawns a real Claude session in tmux and is
+// verified manually (see the reviewer's brief). These tests cover the input
+// validation that fails fast, before any process is spawned.
+
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "middle-cli-dispatch-"));
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+function silenceError(): () => void {
+  const err = spyOn(console, "error").mockImplementation(() => {});
+  return () => err.mockRestore();
+}
+
+describe("runDispatch — input validation", () => {
+  test("rejects a non-integer epic number", async () => {
+    const restore = silenceError();
+    try {
+      expect(await runDispatch(dir, "not-a-number")).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects an epic number below 1", async () => {
+    const restore = silenceError();
+    try {
+      expect(await runDispatch(dir, "0")).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects a path that is not a git repository", async () => {
+    const restore = silenceError();
+    try {
+      expect(await runDispatch(dir, "6")).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("runDispatch — dispatchEpic failure path", () => {
+  test("surfaces a friendly 'mm dispatch: failed —' message and returns 1 on EADDRINUSE", async () => {
+    // make `repoPath` a real git repo so input validation passes
+    const repoPath = join(realpathSync(dir), "repo");
+    {
+      // Deterministic identity via env (not `-c`) so the fixture commit doesn't
+      // depend on host-level git config.
+      const gitEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "middle-test",
+        GIT_AUTHOR_EMAIL: "middle-test@example.invalid",
+        GIT_COMMITTER_NAME: "middle-test",
+        GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
+      };
+      const init = Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" });
+      expect(await init.exited).toBe(0);
+      const commit = Bun.spawn(
+        ["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"],
+        { stdout: "ignore", stderr: "ignore", env: gitEnv },
+      );
+      expect(await commit.exited).toBe(0);
+    }
+
+    // bind the port (on the same 127.0.0.1 interface HookServer uses) so
+    // dispatchEpic's hookServer.start() reliably throws EADDRINUSE
+    const blocker: BunServer = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("ok"),
+    });
+    const configPath = join(dir, "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        "[global]",
+        `dispatcher_port = ${blocker.port}`,
+        `db_path = "${join(dir, "db.sqlite3")}"`,
+        `worktree_root = "${join(dir, "worktrees")}"`,
+        `log_dir = "${join(dir, "logs")}"`,
+        "",
+      ].join("\n"),
+    );
+
+    const errLines: string[] = [];
+    const errSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errLines.push(args.join(" "));
+    });
+    try {
+      const code = await runDispatch(repoPath, "6", { configPath });
+      expect(code).toBe(1);
+      expect(errLines.join("\n")).toContain("mm dispatch: failed");
+    } finally {
+      errSpy.mockRestore();
+      blocker.stop(true);
+    }
+  });
+});

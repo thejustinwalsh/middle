@@ -30,6 +30,7 @@
         "mm": "src/index.ts",
       },
       "dependencies": {
+        "@middle/adapter-claude": "workspace:*",
         "@middle/core": "workspace:*",
         "@middle/dispatcher": "workspace:*",
         "commander": "^14.0.3",
