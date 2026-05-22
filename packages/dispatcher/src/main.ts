@@ -32,9 +32,23 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    hookServer.stop();
-    await engine.close(true);
-    db.close();
+    // Guard each teardown so a throw/rejection can't skip process.exit and
+    // leak as an unhandledRejection (there's no swallower in this entrypoint).
+    try {
+      hookServer.stop();
+    } catch (error) {
+      console.error(`shutdown: hookServer.stop failed — ${(error as Error).message}`);
+    }
+    try {
+      await engine.close(true);
+    } catch (error) {
+      console.error(`shutdown: engine.close failed — ${(error as Error).message}`);
+    }
+    try {
+      db.close();
+    } catch (error) {
+      console.error(`shutdown: db.close failed — ${(error as Error).message}`);
+    }
     console.log("middle dispatcher stopped");
     process.exit(0);
   };

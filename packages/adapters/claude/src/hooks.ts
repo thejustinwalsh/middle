@@ -47,12 +47,14 @@ export async function installHooks(opts: InstallHookOpts): Promise<void> {
   // Absolute path: Claude fires hooks from whatever directory the agent has
   // `cd`'d into, so a relative `.middle/hooks/hook.sh` would fail to resolve
   // from a subdirectory and silently skip the POST (→ awaitStop times out).
+  // Double-quote the path so a worktree under a home dir with spaces
+  // (e.g. /Users/Jane Doe/...) doesn't mis-parse the hook command.
   const settings = {
     hooks: {
       SessionStart: [
-        { hooks: [{ type: "command", command: `${scriptPath} session.started` }] },
+        { hooks: [{ type: "command", command: `"${scriptPath}" session.started` }] },
       ],
-      Stop: [{ hooks: [{ type: "command", command: `${scriptPath} agent.stopped` }] }],
+      Stop: [{ hooks: [{ type: "command", command: `"${scriptPath}" agent.stopped` }] }],
     },
   };
 

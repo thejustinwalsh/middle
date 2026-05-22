@@ -20,8 +20,22 @@ let worktreeRoot: string;
 let db: Database;
 let engine: Engine;
 
+// Deterministic identity for the throwaway fixture repo via env (not `-c`),
+// so `git commit` doesn't depend on host-level git config.
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: "middle-test",
+  GIT_AUTHOR_EMAIL: "middle-test@example.invalid",
+  GIT_COMMITTER_NAME: "middle-test",
+  GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
+};
+
 async function git(cwd: string, args: string[]): Promise<void> {
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe" });
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: GIT_ENV,
+  });
   if ((await proc.exited) !== 0) {
     throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
   }

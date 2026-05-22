@@ -59,11 +59,20 @@ describe("runDispatch — dispatchEpic failure path", () => {
     // make `repoPath` a real git repo so input validation passes
     const repoPath = join(realpathSync(dir), "repo");
     {
+      // Deterministic identity via env (not `-c`) so the fixture commit doesn't
+      // depend on host-level git config.
+      const gitEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "middle-test",
+        GIT_AUTHOR_EMAIL: "middle-test@example.invalid",
+        GIT_COMMITTER_NAME: "middle-test",
+        GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
+      };
       const init = Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" });
       await init.exited;
       const commit = Bun.spawn(
         ["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"],
-        { stdout: "ignore", stderr: "ignore" },
+        { stdout: "ignore", stderr: "ignore", env: gitEnv },
       );
       await commit.exited;
     }

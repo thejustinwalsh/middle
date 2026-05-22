@@ -39,21 +39,32 @@ describe("dispatcher main", () => {
       stderr: "pipe",
     });
 
-    // wait for the readiness line
-    const reader = proc.stdout.getReader();
-    const decoder = new TextDecoder();
-    let output = "";
-    const deadline = Date.now() + 5000;
-    while (!output.includes("dispatcher up") && Date.now() < deadline) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      output += decoder.decode(value);
-    }
-    reader.releaseLock();
-    expect(output).toContain("middle dispatcher up");
+    try {
+      // Wait for the readiness line, with a real wall-clock cap: race each
+      // read against the remaining time so a blocking read can't outlast the
+      // deadline.
+      const reader = proc.stdout.getReader();
+      const decoder = new TextDecoder();
+      let output = "";
+      const deadline = Date.now() + 5000;
+      while (!output.includes("dispatcher up") && Date.now() < deadline) {
+        const result = await Promise.race([
+          reader.read(),
+          Bun.sleep(deadline - Date.now()).then(() => "timed-out" as const),
+        ]);
+        if (typeof result === "string") break; // timed out
+        if (result.done) break;
+        output += decoder.decode(result.value);
+      }
+      reader.releaseLock();
+      expect(output).toContain("middle dispatcher up");
 
-    proc.kill("SIGTERM");
-    const exitCode = await proc.exited;
-    expect(exitCode).toBe(0);
+      proc.kill("SIGTERM");
+      const exitCode = await proc.exited;
+      expect(exitCode).toBe(0);
+    } finally {
+      // Always reap the spawned dispatcher, even if an assertion above threw.
+      proc.kill("SIGKILL");
+    }
   });
 });

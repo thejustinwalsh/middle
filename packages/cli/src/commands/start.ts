@@ -11,6 +11,9 @@ export type StartOptions = {
 
 /** Whether a process with this pid is currently alive. */
 function isAlive(pid: number): boolean {
+  // Reject pid <= 0: process.kill(0, …) signals the caller's whole process
+  // group and negative pids target other groups — never what we mean here.
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;

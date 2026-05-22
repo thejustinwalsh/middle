@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 /**
  * git worktree helpers. Concurrent workflows are isolated by one git worktree
@@ -116,6 +116,13 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
   const root = resolveRoot(opts.worktreeRoot);
   const unit = unitName(opts.issueNumber);
   const path = join(root, opts.repo, unit);
+  // Guard against a malicious/garbled `repo` (e.g. "../../x" from a crafted
+  // git remote) escaping the worktree root — otherwise destroyWorktree's
+  // rmSync could later delete directories outside it.
+  const rel = relative(root, path);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new WorktreeError(`repo "${opts.repo}" resolves outside the worktree root`);
+  }
   const branch = opts.branch ?? `middle-${unit}`;
   const handle: WorktreeHandle = { repoPath, path, branch, repo: opts.repo, unit };
 

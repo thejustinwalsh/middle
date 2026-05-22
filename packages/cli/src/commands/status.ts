@@ -41,9 +41,15 @@ export function runStatus(opts: StatusOptions = {}): number {
             ORDER BY repo, state`,
         )
         .all() as StateCount[];
-    } catch {
-      console.log("middle: database has no workflows table yet — nothing in flight.");
-      return 0;
+    } catch (error) {
+      const message = (error as Error).message ?? "";
+      if (/no such table/i.test(message)) {
+        console.log("middle: database has no workflows table yet — nothing in flight.");
+        return 0;
+      }
+      // Corruption / lock / permission errors are real — surface them.
+      console.error(`mm status: failed to read workflows — ${message}`);
+      return 1;
     }
 
     if (rows.length === 0) {

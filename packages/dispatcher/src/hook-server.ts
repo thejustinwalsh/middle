@@ -75,7 +75,13 @@ export class HookServer implements SessionGate {
     const sessionName =
       req.headers.get("X-Middle-Session") ??
       (typeof payload.sessionName === "string" ? payload.sessionName : "");
-    console.error(`[hook-server] received ${event}:${sessionName || "<unknown>"}`);
+    if (sessionName === "") {
+      // No session identity → nothing can ever await this. Reject rather than
+      // stash an unreachable entry under an empty key.
+      console.error(`[hook-server] rejected ${event} with no session identity`);
+      return new Response("missing session", { status: 400 });
+    }
+    console.error(`[hook-server] received ${event}:${sessionName}`);
     this.#deliver(`${event}:${sessionName}`, payload);
     return new Response("ok");
   }

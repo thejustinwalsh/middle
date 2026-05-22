@@ -139,7 +139,11 @@ function readToml(path: string | undefined): RawTable {
 }
 
 function expandTilde(value: string): string {
-  return value.startsWith("~") ? join(homedir(), value.slice(1)) : value;
+  // Only bare `~` and `~/...` expand to the current home. Leave `~user/...`
+  // (another user's home) untouched rather than wrongly rewriting it.
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return value;
 }
 
 function asTable(value: unknown): RawTable {

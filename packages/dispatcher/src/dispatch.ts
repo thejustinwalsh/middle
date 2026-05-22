@@ -116,11 +116,24 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     cleanups.push(() => hookServer.stop());
 
     const engine = new Engine({ embedded: true });
-    // NB: engine.close is NOT in the cleanups stack — it must run BEFORE the
-    // hookServer/db teardown so any in-flight compensation has live deps to
-    // talk to. bunqueue's executor sets exec.state='failed' BEFORE awaiting
-    // compensation, so `waitForSettle` returns mid-flight and the finally
-    // would otherwise rip out the db/hookServer the compensation still needs.
+    // Push the engine drain onto the cleanups stack LAST, so it pops FIRST —
+    // ahead of hookServer.stop / db.close. That ordering matters two ways:
+    //  - on the failure path (engine.register/start/waitForSettle throws), the
+    //    engine is still drained instead of leaking live bunqueue workers;
+    //  - bunqueue's executor sets exec.state='failed' BEFORE awaiting
+    //    compensation, so the drain must finish (compensation included) while
+    //    hookServer/db are still alive — which they are, since they pop after.
+    // Capped at 10s so a hung bunqueue internal can't block the dispatch.
+    cleanups.push(async () => {
+      await Promise.race([
+        engine.close(false).catch((err: unknown) => {
+          console.error(`[dispatch] engine.close errored: ${(err as Error).message}`);
+        }),
+        Bun.sleep(10_000).then(() => {
+          console.error(`[dispatch] engine.close drain timed out after 10s — proceeding`);
+        }),
+      ]);
+    });
 
     engine.register(
       createImplementationWorkflow({
@@ -142,23 +155,9 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     });
     console.error(`[dispatch] workflow ${handle.id} enqueued`);
     const execution = await waitForSettle(engine, handle.id);
-    console.error(
-      `[dispatch] waitForSettle returned — state=${execution?.state ?? "<null>"}; draining engine`,
-    );
-
-    // Drain in-flight work (compensations, handleJobFailure) BEFORE the
-    // finally runs and tears down db/hookServer. Capped at 10s so a hung
-    // bunqueue internal can't block the whole dispatch indefinitely.
-    await Promise.race([
-      engine.close(false).catch((err: unknown) => {
-        console.error(`[dispatch] engine.close errored: ${(err as Error).message}`);
-      }),
-      Bun.sleep(10_000).then(() => {
-        console.error(`[dispatch] engine.close drain timed out after 10s — proceeding`);
-      }),
-    ]);
-    console.error(`[dispatch] engine drained`);
-
+    console.error(`[dispatch] waitForSettle returned — state=${execution?.state ?? "<null>"}`);
+    // The engine drain runs in `finally` via the cleanups stack (popped first,
+    // before hookServer/db), covering both success and failure paths.
     return { workflowId: handle.id, state: execution?.state ?? "failed" };
   } finally {
     await runCleanups();

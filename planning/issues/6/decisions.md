@@ -337,3 +337,45 @@ cross-repo concurrency). All cheap; none warranted pushback.
 **Evidence:** `bun test` 123 pass, `tsc` clean. Session-name test updated to
 `middle-thejustinwalsh-middle-6`; EADDRINUSE test's blocker now binds 127.0.0.1 to match
 the hook server's interface so the port conflict is deterministic.
+
+## CodeRabbit review round — 13 fixes (2026-05-22)
+**File(s):** multiple
+**Date:** 2026-05-22
+
+CodeRabbit (Greptile retired) flagged 13; all valid, all fixed. Notably it caught a
+regression I introduced in the bunqueue-lifecycle work:
+
+1. **Engine leak on the failure path** (`dispatch.ts`) — when I pulled `engine.close` out
+   of the cleanups stack (to drain inline before teardown), I left the throw-path
+   uncovered: a throw in `engine.register`/`start`/`waitForSettle` skipped the drain. Fix:
+   push the drain onto the cleanups stack LAST (pops FIRST, before hookServer/db), capped
+   at 10s. Covers both paths and preserves the "compensation runs while deps alive"
+   ordering. Removed the now-redundant inline drain.
+2. **pid <= 0 guards** (`start.ts`, `stop.ts`) — `process.kill(0|negative, …)` targets
+   process *groups*. Reject non-positive pids before any `process.kill`.
+3. **ESRCH vs EPERM in `runStop`** — only treat ESRCH as "not running" (clear pid file,
+   exit 0); EPERM/other keeps the pid file and exits 1, so a still-alive dispatcher isn't
+   silently abandoned.
+4. **`mm status` swallowed all query errors** — now only "no such table" → clean exit 0;
+   corruption/lock/permission errors print + exit 1.
+5. **`expandTilde`** — only `~` and `~/...` expand; `~user/...` left untouched.
+6. **`openAndMigrate` leaked the db handle on migration failure** — close before rethrow.
+7. **Hook server accepted empty session identity** — reject with 400 instead of stashing
+   an unreachable entry.
+8. **`main.ts` shutdown** — each teardown wrapped in try/catch so `process.exit(0)` always
+   runs (no swallower in that entrypoint).
+9. **Worktree path traversal** — `createWorktree` rejects a `repo` that resolves outside
+   the worktree root (a crafted `../../x` remote slug could otherwise make
+   `destroyWorktree`'s rmSync delete unintended dirs).
+10. **Quoted hook script path** (`hooks.ts`) — `"<path>" <event>` so a home dir with
+    spaces doesn't mis-parse the command.
+11. **`main.test.ts`** — readiness read now races a real wall-clock cap; spawned dispatcher
+    reaped in a `finally` even on assertion failure.
+12. **Test git identity** — the three scratch-repo fixtures set `GIT_AUTHOR_*` /
+    `GIT_COMMITTER_*` via **env** (not `-c`, per the repo's git-identity rule) so commits
+    don't depend on host git config.
+
+**Why:** 1, 2, 3, 9 are correctness/safety on the dispatch hot path and cleanup; the rest
+are robustness + test hermeticity. None warranted pushback.
+**Evidence:** `bun test` 123 pass, `tsc` clean. Adapter hook-command test updated for the
+quoted-path form; session/EADDRINUSE/expandTilde tests still green.

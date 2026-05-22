@@ -65,6 +65,13 @@ export function runMigrations(db: Database, dir: string = MIGRATIONS_DIR): numbe
 /** Open the database and bring it to the latest schema version in one call. */
 export function openAndMigrate(path: string, dir: string = MIGRATIONS_DIR): Database {
   const db = openDb(path);
-  runMigrations(db, dir);
+  try {
+    runMigrations(db, dir);
+  } catch (error) {
+    // Don't leak the handle — an open db keeps the sqlite file locked, which
+    // would block retries after a migration failure.
+    db.close();
+    throw error;
+  }
   return db;
 }

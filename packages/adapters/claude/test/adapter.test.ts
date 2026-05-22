@@ -276,8 +276,13 @@ describe("installHooks", () => {
       await Bun.file(join(worktree, ".claude", "settings.json")).text(),
     ) as { hooks: Record<string, unknown[]> };
     expect(Object.keys(settings.hooks).sort()).toEqual(["SessionStart", "Stop"]);
-    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(".middle/hooks/hook.sh session.started");
-    expect(JSON.stringify(settings.hooks.Stop)).toContain(".middle/hooks/hook.sh agent.stopped");
+    // absolute, quoted path: "<worktree>/.middle/hooks/hook.sh" <event>
+    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(
+      `${join(worktree, ".middle/hooks/hook.sh")}\\" session.started`,
+    );
+    expect(JSON.stringify(settings.hooks.Stop)).toContain(
+      `${join(worktree, ".middle/hooks/hook.sh")}\\" agent.stopped`,
+    );
   });
 
   test("writes an executable hook.sh into the worktree at the configured path", async () => {

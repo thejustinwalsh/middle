@@ -20,19 +20,31 @@ export function runStop(opts: StopOptions = {}): number {
   }
 
   const pid = Number(readFileSync(pidFile, "utf8").trim());
-  rmSync(pidFile, { force: true });
 
-  if (!Number.isInteger(pid)) {
+  // Reject pid <= 0: process.kill(0, …) / negative pids target process groups,
+  // not the single dispatcher. A malformed pid file is cleared as junk.
+  if (!Number.isInteger(pid) || pid <= 0) {
+    rmSync(pidFile, { force: true });
     console.error("mm stop: pid file was malformed — cleared it");
     return 1;
   }
 
   try {
     process.kill(pid, "SIGTERM");
-  } catch {
-    console.log(`mm stop: dispatcher (pid ${pid}) was not running — cleared pid file`);
-    return 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      // No such process — already gone. Safe to clear the stale pid file.
+      rmSync(pidFile, { force: true });
+      console.log(`mm stop: dispatcher (pid ${pid}) was not running — cleared pid file`);
+      return 0;
+    }
+    // EPERM or anything else: the process may still be alive. Do NOT clear the
+    // pid file (that would orphan a live dispatcher from `mm stop`'s view).
+    console.error(`mm stop: failed to signal pid ${pid} — ${(error as Error).message}`);
+    return 1;
   }
+
+  rmSync(pidFile, { force: true });
   console.log(`mm stop: dispatcher stopped (pid ${pid})`);
   return 0;
 }
