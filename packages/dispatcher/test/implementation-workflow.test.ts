@@ -146,7 +146,7 @@ describe("implementation workflow — happy path", () => {
     const record = getWorkflow(db, id)!;
     expect(record.state).toBe("completed");
     expect(record.epicNumber).toBe(6);
-    expect(record.sessionName).toBe("middle-6");
+    expect(record.sessionName).toBe("middle-thejustinwalsh-middle-6");
     expect(record.sessionId).toBe("stub-session");
     expect(record.transcriptPath).toBe("/tmp/stub.jsonl");
 

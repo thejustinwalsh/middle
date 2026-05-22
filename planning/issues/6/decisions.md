@@ -300,3 +300,40 @@ timeout with a useless "step failed: timed out" message. The placeholder prompt 
 `pollPaneFor` paths — match / timeout / session-gone / tag-logs-stderr, capture/send
 helpers against live tmux sessions). `tsc --noEmit` clean. `enterAutoMode` is now half its
 previous line count, all the diagnostic logging is free via `pollPaneFor`'s `tag`.
+
+## Second Greptile review round — six hardening fixes (2026-05-22)
+**File(s):** multiple
+**Date:** 2026-05-22
+
+Six new Greptile findings, all valid, all fixed:
+
+1. **`hook.sh` `|| exit 0` was dead code after `exec`** (`hooks.ts`) — `exec curl` replaces
+   the shell, so a non-zero curl exit (refused/timeout/DNS) propagated as a failed hook,
+   contradicting "failure is a no-op". Dropped `exec`; curl now runs as a child and the
+   script ends `|| true; exit 0`.
+2. **Relative hook command broke Stop delivery from a subdirectory** (`hooks.ts`) — the
+   `.claude/settings.json` command was `.middle/hooks/hook.sh agent.stopped`, relative to
+   the agent's cwd at hook-fire time. Claude fires hooks from wherever the agent `cd`'d to,
+   so it could fail to resolve → no POST → `awaitStop` times out. Now an absolute path
+   (`join(worktree, hookScriptPath)`).
+3. **`mm start` orphan window** (`start.ts`) — `proc.unref()` ran before the pid-file write;
+   a write failure left a detached dispatcher with no pid file (`mm stop` can't find it, a
+   second `mm start` duplicates it). Write the pid file first, then `unref()`.
+4. **Hook server bound 0.0.0.0** (`hook-server.ts`) — no HMAC + predictable session names
+   meant any host on the network could POST a fake `agent.stopped`/`session.started` and
+   hijack a workflow. Now `hostname: "127.0.0.1"` (matches the hardcoded `dispatcherUrl`).
+5. **`git branch -D` failure silently discarded** (`worktree.ts`) — a failed branch delete
+   left the branch on disk; the next `createWorktree`'s `-b` failed cryptically. Now throws
+   `WorktreeError` with the git stderr.
+6. **Session-name collision across repos** (`implementation.ts`) — `middle-${epicNumber}`
+   had no repo component, so `dispatch /repo-a 7` and `dispatch /repo-b 7` both owned
+   `middle-7`; the second's failure-path `killSession` tore down the first's live session.
+   Now `middle-${repoSlug}-${epicNumber}`, matching the repo-namespaced worktree layout.
+
+**Why:** Findings 1, 2, and 4 are correctness/security-blocking for real dispatch (silent
+hook failures, network-exposed control plane). 3, 5, 6 are robustness on edge cases the
+real environment will hit (orphaned dispatchers, re-dispatch after a failed cleanup,
+cross-repo concurrency). All cheap; none warranted pushback.
+**Evidence:** `bun test` 123 pass, `tsc` clean. Session-name test updated to
+`middle-thejustinwalsh-middle-6`; EADDRINUSE test's blocker now binds 127.0.0.1 to match
+the hook server's interface so the port conflict is deterministic.

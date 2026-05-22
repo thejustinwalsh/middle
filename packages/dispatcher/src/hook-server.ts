@@ -33,7 +33,12 @@ export class HookServer implements SessionGate {
   readonly #stashed = new Map<string, HookPayload>();
 
   start(port: number): void {
+    // Bind localhost only. The Phase 1 receiver has no HMAC auth and uses
+    // predictable session names, so a 0.0.0.0 bind (Bun's default) would let
+    // any host on the network POST a fake agent.stopped / session.started and
+    // hijack a running workflow. The dispatcherUrl is 127.0.0.1 everywhere.
     this.#server = Bun.serve({
+      hostname: "127.0.0.1",
       port,
       fetch: (req) => this.#handle(req),
     });

@@ -156,7 +156,15 @@ export async function destroyWorktree(handle: WorktreeHandle): Promise<void> {
       `refs/heads/${handle.branch}`,
     ]);
     if (branchCheck.exitCode === 0) {
-      await runGit(handle.repoPath, ["branch", "-D", handle.branch]);
+      const deleteResult = await runGit(handle.repoPath, ["branch", "-D", handle.branch]);
+      if (deleteResult.exitCode !== 0) {
+        // Surface the failure clearly — a silently-undeleted branch makes the
+        // next createWorktree's `git worktree add -b <branch>` fail with a
+        // cryptic "branch already exists" on re-dispatch.
+        throw new WorktreeError(
+          `git branch -D ${handle.branch} failed: ${deleteResult.stderr.trim()}`,
+        );
+      }
     }
   }
 

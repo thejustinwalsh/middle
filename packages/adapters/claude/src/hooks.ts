@@ -7,16 +7,21 @@ import type { InstallHookOpts } from "@middle/core";
  * `$1` is the normalized event name. Never blocks the agent (3s timeout,
  * failure → exit 0). Source of truth: build spec → "Normalized event taxonomy".
  */
+// curl runs as a child (not `exec`) so the trailing `|| exit 0` actually fires:
+// with `exec`, the shell is replaced by curl and a non-zero curl exit (refused
+// connection, 3s timeout, DNS) would propagate as a failed hook. As a child,
+// any curl failure is swallowed and the hook exits 0 — "failure is a no-op".
 const HOOK_SCRIPT = `#!/bin/sh
 # .middle/hooks/hook.sh — POSTs hook payloads to the middle dispatcher.
 # Args: $1 = normalized event name. Never blocks the agent; failure is a no-op.
 EVENT="$1"
-exec curl -sS -X POST "\${MIDDLE_DISPATCHER_URL}/hooks/\${EVENT}" \\
+curl -sS -X POST "\${MIDDLE_DISPATCHER_URL}/hooks/\${EVENT}" \\
   -H "X-Middle-Session: \${MIDDLE_SESSION}" \\
   -H "X-Middle-Token: \${MIDDLE_SESSION_TOKEN}" \\
   -H "X-Middle-Epic: \${MIDDLE_EPIC}" \\
   -H "Content-Type: application/json" \\
-  --data-binary @- --max-time 3 || exit 0
+  --data-binary @- --max-time 3 || true
+exit 0
 `;
 
 /**
@@ -39,14 +44,15 @@ export async function installHooks(opts: InstallHookOpts): Promise<void> {
   const claudeDir = join(opts.worktree, ".claude");
   await mkdir(claudeDir, { recursive: true });
 
+  // Absolute path: Claude fires hooks from whatever directory the agent has
+  // `cd`'d into, so a relative `.middle/hooks/hook.sh` would fail to resolve
+  // from a subdirectory and silently skip the POST (→ awaitStop times out).
   const settings = {
     hooks: {
       SessionStart: [
-        { hooks: [{ type: "command", command: `${opts.hookScriptPath} session.started` }] },
+        { hooks: [{ type: "command", command: `${scriptPath} session.started` }] },
       ],
-      Stop: [
-        { hooks: [{ type: "command", command: `${opts.hookScriptPath} agent.stopped` }] },
-      ],
+      Stop: [{ hooks: [{ type: "command", command: `${scriptPath} agent.stopped` }] }],
     },
   };
 

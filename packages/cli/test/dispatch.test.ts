@@ -68,8 +68,13 @@ describe("runDispatch — dispatchEpic failure path", () => {
       await commit.exited;
     }
 
-    // bind the port so dispatchEpic's hookServer.start() throws EADDRINUSE
-    const blocker: BunServer = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    // bind the port (on the same 127.0.0.1 interface HookServer uses) so
+    // dispatchEpic's hookServer.start() reliably throws EADDRINUSE
+    const blocker: BunServer = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("ok"),
+    });
     const configPath = join(dir, "config.toml");
     writeFileSync(
       configPath,

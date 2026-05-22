@@ -47,10 +47,15 @@ export function runStart(opts: StartOptions = {}): number {
     stdout: "inherit",
     stderr: "inherit",
   });
-  proc.unref();
 
+  // Write the pid file BEFORE unref-ing. If the write throws (disk full,
+  // permissions), the exception propagates while Bun still tracks the child —
+  // we never end up with a detached, orphaned dispatcher that `mm stop` can't
+  // find and that a second `mm start` would duplicate.
   mkdirSync(dirname(pidFile), { recursive: true });
   writeFileSync(pidFile, String(proc.pid));
+  proc.unref();
+
   console.log(`mm start: dispatcher started (pid ${proc.pid})`);
   return 0;
 }

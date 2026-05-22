@@ -55,9 +55,16 @@ export type ImplementationDeps = {
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
-/** Session names are deterministic so compensations can recompute them. */
+/**
+ * Session names are deterministic so compensations can recompute them, and
+ * namespaced by repo so concurrent dispatches of the same issue number across
+ * different repos don't collide on one tmux session (which would make the
+ * second dispatch's failure-path `killSession` tear down the first's live
+ * session). Matches the repo-namespaced worktree path layout.
+ */
 function sessionNameFor(input: ImplementationInput): string {
-  return `middle-${input.epicNumber}`;
+  const repoSlug = input.repo.replace(/[^A-Za-z0-9_-]/g, "-");
+  return `middle-${repoSlug}-${input.epicNumber}`;
 }
 
 /**
