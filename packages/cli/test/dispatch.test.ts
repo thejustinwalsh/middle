@@ -69,12 +69,12 @@ describe("runDispatch — dispatchEpic failure path", () => {
         GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
       };
       const init = Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" });
-      await init.exited;
+      expect(await init.exited).toBe(0);
       const commit = Bun.spawn(
         ["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"],
         { stdout: "ignore", stderr: "ignore", env: gitEnv },
       );
-      await commit.exited;
+      expect(await commit.exited).toBe(0);
     }
 
     // bind the port (on the same 127.0.0.1 interface HookServer uses) so
