@@ -1,0 +1,123 @@
+```
+ ███╗   ███╗ ██╗ ██████╗  ██████╗  ██╗      ███████╗
+ ████╗ ████║ ██║ ██╔══██╗ ██╔══██╗ ██║      ██╔════╝
+ ██╔████╔██║ ██║ ██║  ██║ ██║  ██║ ██║      █████╗
+ ██║╚██╔╝██║ ██║ ██║  ██║ ██║  ██║ ██║      ██╔══╝
+ ██║ ╚═╝ ██║ ██║ ██████╔╝ ██████╔╝ ███████╗ ███████╗
+ ╚═╝     ╚═╝ ╚═╝ ╚═════╝  ╚═════╝  ╚══════╝ ╚══════╝
+ ───────────────────────────────────────────────────
+   m i d d l e   m a n a g e m e n t   f o r   y o u r
+              c o d i n g   a g e n t s
+ ───────────────────────────────────────────────────
+  "Yeahhh... if you could go ahead and ship that Epic,
+   that'd be greaaat."                — middle, probably
+```
+
+> **MEMO** — TO: your coding agents · FROM: middle (your manager) · RE: the TPS reports
+>
+> middle is a manager. It does not write code. It assigns the code, watches the code get
+> written, collects the status reports, sends people back to fix the review comments, and
+> escalates the calls it isn't paid to make. It will *not* sign off on its own work — the
+> merge is your signature, boss, not its.
+
+**middle** dispatches coding agents (Claude today, Codex on the roadmap) at GitHub **Epics**. It spins each Epic up in its own worktree and `tmux` session, hands the agent a brief, watches the agent's hooks like a hawk over a cubicle wall, drives the work through every phase, and stops at exactly the moment a decision needs a real human: scope calls beyond its pay grade, and the final review + merge. One Epic → one branch → one PR. The agents do the work; middle does the *managing*; you do the *deciding*.
+
+---
+
+## How the org chart works
+
+```
+        you  (the executive — scope calls, final review, the merge)
+         ▲
+         │  escalates · reports up · "did you get the memo?"
+         │
+       middle  (the manager — dispatch, track, nudge, escalate)
+         │
+         │  delegates the TPS reports (Epics) · drives · watches hooks
+         ▼
+   your coding agents  (the ones who actually do the work)
+```
+
+- **One Epic = one branch = one PR.** The Epic's open sub-issues are the workstream's phases. The agent works *down* them on a single branch.
+- **The PR opens as a draft** and stays draft until every phase passes its mechanical verification gates. Then the agent marks it ready for review and writes you a reviewer's brief.
+- **middle never merges.** Signing off on its own reports is, frankly, above its pay grade. The final review and merge are yours.
+- **Stuck ≠ guess.** If the agent hits ambiguous acceptance criteria, or a decision with more candidate forks than the configured complexity ceiling, it parks, writes `.middle/blocked.json`, frees its desk for someone else, and escalates to you on the issue. You reply; it resumes.
+- **Code review is a loop.** Changes requested (by a human, or by a review bot like CodeRabbit) → the agent goes back and addresses them, up to 5 rounds before it escalates to you. Approved → it ends the loop and pings you to merge.
+
+---
+
+## Prerequisites (corporate onboarding)
+
+middle shells out to a few tools. `mm doctor` checks all of them for you.
+
+- **[Bun](https://bun.sh) ≥ 1.3.12** — the runtime. middle runs TypeScript directly; there is no build step.
+- **tmux ≥ 3.5** — the open-plan office. Agents run as interactive `tmux` sessions; `< 3.5` degrades the keyboard interactivity middle relies on.
+- **git** and **[GitHub CLI](https://cli.github.com) (`gh`)** — authenticated (`gh auth login`). middle reads and writes Epics, sub-issues, and PRs through `gh`.
+- **[Claude Code](https://claude.com/claude-code) (`claude`)** — the worker. middle launches it; it writes the code.
+
+---
+
+## Setup (your first day)
+
+```bash
+git clone https://github.com/thejustinwalsh/middle.git
+cd middle
+bun install
+
+# expose the `mm` CLI on your PATH (one-time)
+cd packages/cli && bun link && cd ../..
+
+# "did you get that memo?" — verify bun / tmux / claude / git / gh + gh auth
+mm doctor
+```
+
+Configuration is optional — middle ships with working defaults. To override, drop a `~/.middle/config.toml` (defaults shown):
+
+```toml
+[global]
+dispatcher_port = 8822               # the hook server agents report to
+max_concurrent  = 4                  # how many agents in the office at once
+default_adapter = "claude"
+worktree_root   = "~/.middle/worktrees"
+db_path         = "~/.middle/db.sqlite3"
+log_dir         = "~/.middle/logs"
+
+[adapters.claude]
+binary          = "claude"
+permission_mode = "auto"
+```
+
+---
+
+## Running the office
+
+```bash
+mm start                    # open the office: dispatcher = hook server + workflow engine
+mm dispatch <repo> <epic>   # "I'm gonna need you to go ahead and take this Epic, mmkay"
+mm status                   # the standup: who's working, who's blocked, who's parked
+mm doctor                   # the system check (did you get the memo?)
+mm stop                     # everybody go home
+```
+
+`mm dispatch <repo> <epic>` takes the path to a local repo checkout and an Epic (or standalone issue) number. For local development you can also run the dispatcher in the foreground with `scripts/dev.sh`.
+
+**What a dispatch actually does:** middle creates a fresh worktree (a clean cubicle), launches the agent in `tmux`, hands it the dispatch brief (`.middle/prompt.md`), and listens to its hooks — the turn-by-turn TPS reports — while a watchdog keeps an eye out for anyone asleep at their desk. The agent works the Epic's sub-issues phase by phase, closing each one as it lands, pushes commits to the draft PR, and when every phase passes the mechanical gates it flips the PR to ready-for-review and posts a reviewer's brief on both the Epic and the PR. Then it stops and waits for you.
+
+---
+
+## We eat our own dog food (yes, really)
+
+This is the part where the manager assigns themselves a performance review.
+
+From Phase 3 of its own build plan onward, **every feature of middle is filed as a GitHub Epic on this very repo and shipped *by middle itself*.** The bot you just set up is, somewhere right now, building the next version of the bot you just set up. There is a half-finished Epic on the board with middle's name in the dispatch log as we speak — a middle-dispatched agent wrote the code while a human (hi) reviewed the PR and pressed merge.
+
+If you want to see it: browse the open [Epics](https://github.com/thejustinwalsh/middle/issues?q=is%3Aissue+label%3Aepic) — the ones labeled `dogfood` are the workstreams flowing through middle. The `planning/middle-management-build-spec.md` is the authoritative blueprint the whole thing is being built from, one self-assigned Epic at a time.
+
+---
+
+## Going deeper
+
+- **`planning/middle-management-build-spec.md`** — the authoritative design: architecture, the adapter interface, the dispatch lifecycle, the state-issue schema, and the full build sequence (phases 0–11).
+- **`CLAUDE.md`** — the working conventions every contributor and every dispatched agent follows (Conventional Commits, the Epic/PR workflow, the byte-identical state-issue round-trip invariant).
+
+Now, if you could go ahead and come in on the merges, that'd be greaaat.
