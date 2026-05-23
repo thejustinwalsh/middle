@@ -92,3 +92,17 @@ dispatcher's `installHooks` also uses) rather than reading
 `bootstrap-assets/hooks/hook.sh`.
 **Why:** Single source of truth for the script bytes; the bootstrap-time and
 dispatch-time hook scripts are then guaranteed identical.
+
+## Initial state-issue body: empty sections, rate limits UNKNOWN
+**File(s):** `packages/cli/src/bootstrap/state-issue-body.ts`
+**Date:** 2026-05-23
+
+**Decision:** `mm init` seeds the state issue with every section at its documented
+empty state, rate limits = `UNKNOWN` (nothing measured yet), slots zeroed, runId
+`00000000`.
+**Why:** The body must pass `validate()` from day one but carry no fabricated
+data. `UNKNOWN` is the honest initial rate-limit value; the recommender replaces
+the whole body on its first run and the dispatcher only edits its three owned
+sections. Verified the body round-trips byte-identically (the keystone invariant)
+even with a millisecond `generated` timestamp.
+**Evidence:** `packages/cli/test/state-issue-body.test.ts`.
