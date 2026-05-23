@@ -8,6 +8,10 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(pnpm:*), Bash(mkdir:*), Read, Write
 
 End-to-end workflow for taking a GitHub issue from "assigned" to "PR open with verification evidence, marked ready for human review." All phases of one issue land on **one branch** and **one PR**; the PR is the long-lasting context for the workstream.
 
+## Dispatch brief (read first)
+
+Before anything else, check for `.middle/prompt.md` in the working directory. If it exists, it is **middle's dispatch brief** — read it and honor it. It carries the operating framing for an autonomous run (work continuously, don't stop to ask questions you can resolve yourself, terminal state is PR-ready), plus any per-dispatch operator notes (plan changes, scope adjustments, "skip X"). Operator notes in the brief override the defaults below. If the file is absent, you're being run interactively by a human — proceed normally.
+
 ## Core principles
 
 **The code shows WHAT. The PR explains WHY.** Code comments are reserved for non-obvious constraints. Reasoning, alternatives considered, and tradeoffs go in the **decisions log** (`planning/issues/<num>/decisions.md`), then get distilled into PR review comments and the PR description.

@@ -68,10 +68,11 @@ function sessionNameFor(input: ImplementationInput): string {
 }
 
 /**
- * Write a plan-style placeholder `.middle/prompt.md` into the worktree if one
- * is not already present. An operator (or Phase 3+ `mm init` / Phase 7's
- * recommender) can override by committing a real prompt in the source repo —
- * the worktree inherits it and this writer leaves it alone.
+ * Write the default dispatch brief to `.middle/prompt.md` if one isn't already
+ * present. The skill (invoked by the slash command) reads this file as its
+ * operating brief — framing, not "use the skill" (the slash command already
+ * did that). An operator-supplied brief (committed in the repo, or written by a
+ * future `mm dispatch --note` / the recommender) is left untouched.
  */
 function ensurePromptFile(worktreePath: string, epicNumber: number): void {
   const middleDir = join(worktreePath, ".middle");
@@ -80,18 +81,21 @@ function ensurePromptFile(worktreePath: string, epicNumber: number): void {
   mkdirSync(middleDir, { recursive: true });
   writeFileSync(
     promptPath,
-    `# middle dispatch — Epic #${epicNumber}
+    `# middle dispatch brief — Epic #${epicNumber}
 
-You are dispatched by middle (the autonomous GitHub-issue dispatcher) to work
-on Epic #${epicNumber} in this repository.
+You are running autonomously under middle. There is no human watching in real
+time. Operating rules for this dispatch:
 
-Use the \`implementing-github-issues\` skill — it is available in this worktree
-at \`.claude/skills/implementing-github-issues/SKILL.md\`. Invoke it via the
-Skill tool with name \`implementing-github-issues\` and input \`implement #${epicNumber}\`.
+- Work through every phase continuously. The mechanical verification gates are
+  the gates between phases — do not pause for confirmation between them.
+- Do not stop to ask questions you can resolve yourself. Pause only if you are
+  genuinely blocked: ambiguous acceptance criteria, or a decision needing more
+  candidate forks than the complexity ceiling.
+- The terminal state is: every phase verified, the PR marked ready for review,
+  and the reviewer's brief posted on both the Epic and the PR. Then stop.
 
-If the skill is not present in this worktree (the target repo has not been
-\`mm init\`'d and is not middle's own dogfood checkout), write a brief
-explanation to \`.middle/failed.json\` as \`{ "reason": "<message>" }\` and stop.
+## Operator notes for this dispatch
+(none)
 `,
   );
 }
@@ -230,6 +234,7 @@ export function createImplementationWorkflow(
       const promptText = adapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: "initial",
+        epicNumber: ctx.input.epicNumber,
       });
       console.error(`${tag} sending prompt: "${promptText}"`);
       await deps.tmux.sendText(sessionName, promptText);
