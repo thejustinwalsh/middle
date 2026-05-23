@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptState } from "@middle/core";
 import { openAndMigrate } from "../src/db.ts";
-import { createWorkflowRecord, getWorkflow } from "../src/workflow-record.ts";
+import { createWorkflowRecord, getWorkflow, recordEvent } from "../src/workflow-record.ts";
 import {
   FAILED_EVENT,
   IDLE_EVENT,
@@ -135,6 +135,33 @@ describe("watchdog — launch timeout", () => {
     const id = seed({ state: "launching", updatedAt: NOW - 10_000 });
     await runWatchdog(baseDeps({}));
     expect(getWorkflow(db, id)!.state).toBe("launching");
+  });
+});
+
+describe("watchdog — prompt not accepted", () => {
+  test("a running session that went ready but never started a turn is failed 'prompt-not-accepted'", async () => {
+    const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
+    recordEvent(db, { workflowId: id, ts: NOW - 2 * 90_000, type: "session.started", payloadJson: null });
+    const tmux = makeTmux(true);
+    await runWatchdog(baseDeps({ tmux: tmux.ops }));
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("prompt-not-accepted");
+    expect(tmux.killed).toContain("middle-14");
+  });
+
+  test("a running session whose prompt landed (turn.started present) is not failed", async () => {
+    const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
+    recordEvent(db, { workflowId: id, ts: NOW - 2 * 90_000, type: "session.started", payloadJson: null });
+    recordEvent(db, { workflowId: id, ts: NOW - 2 * 90_000 + 1, type: "turn.started", payloadJson: null });
+    await runWatchdog(baseDeps({ tmux: makeTmux(true).ops }));
+    expect(getWorkflow(db, id)!.state).toBe("running");
+  });
+
+  test("a running session still within the launch window is not yet failed", async () => {
+    const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
+    recordEvent(db, { workflowId: id, ts: NOW - 10_000, type: "session.started", payloadJson: null });
+    await runWatchdog(baseDeps({ tmux: makeTmux(true).ops }));
+    expect(getWorkflow(db, id)!.state).toBe("running");
   });
 });
 

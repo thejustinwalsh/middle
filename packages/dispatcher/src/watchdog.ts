@@ -4,6 +4,8 @@ import type { Database } from "bun:sqlite";
 import type { TranscriptState } from "@middle/core";
 import {
   armWaitForSignal,
+  firstEventTs,
+  hasEventOfType,
   isWaitForArmed,
   latestEventType,
   recordEvent,
@@ -17,7 +19,10 @@ import {
  * It reconciles every `launching`/`running` workflow on a fixed cadence:
  *
  *   1. launch-timeout — a `launching` workflow that never reached `running`
- *      (no `session.started` arrived) within the launch window is `stuck-launching`.
+ *      (no `session.started` arrived) within the launch window is
+ *      `stuck-launching`; a `running` workflow that went ready but whose driven
+ *      prompt never landed (no `turn.started` within the window) is
+ *      `prompt-not-accepted`.
  *   2. tmux liveness — a `running` workflow whose session has died is failed
  *      (`tmux session disappeared`) and compensation is triggered.
  *   3. activity freshness — `now − freshest(activity)`, cross-checked against
@@ -142,6 +147,24 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
         acted++;
         continue;
       }
+    }
+
+    // 2b. prompt-not-accepted — the session went ready (session.started
+    // recorded) but no turn ever started within the launch window, so the
+    // driven prompt never landed. `turn.started` (UserPromptSubmit) is the
+    // confirmation the prompt was submitted; its absence past the window is the
+    // failure. Measured from the session.started event, not updated_at (which
+    // heartbeats bump).
+    const startedTs = firstEventTs(deps.db, row.id, "session.started");
+    if (
+      startedTs !== null &&
+      now - startedTs >= launchTimeout &&
+      !hasEventOfType(deps.db, row.id, "turn.started")
+    ) {
+      if (row.session_name) await deps.tmux.killSession(row.session_name);
+      failWorkflow(deps, row.id, "prompt-not-accepted", now);
+      acted++;
+      continue;
     }
 
     // 3. activity freshness — skipped while a human is driving the session.

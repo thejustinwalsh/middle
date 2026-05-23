@@ -139,6 +139,22 @@ export function touchHeartbeat(db: Database, id: string, ts: number): void {
   db.run("UPDATE workflows SET last_heartbeat = ?, updated_at = ? WHERE id = ?", [ts, ts, id]);
 }
 
+/** Whether any `events` row of this type exists for the workflow. */
+export function hasEventOfType(db: Database, workflowId: string, type: string): boolean {
+  const row = db
+    .query("SELECT 1 AS n FROM events WHERE workflow_id = ? AND type = ? LIMIT 1")
+    .get(workflowId, type) as { n: number } | null;
+  return row !== null;
+}
+
+/** Timestamp of the earliest `events` row of this type for the workflow, or null. */
+export function firstEventTs(db: Database, workflowId: string, type: string): number | null {
+  const row = db
+    .query("SELECT ts FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts ASC LIMIT 1")
+    .get(workflowId, type) as { ts: number } | null;
+  return row?.ts ?? null;
+}
+
 /** The `type` of the most recent `events` row for a workflow, or null if none. */
 export function latestEventType(db: Database, workflowId: string): string | null {
   const row = db
