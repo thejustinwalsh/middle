@@ -106,3 +106,33 @@ the whole body on its first run and the dispatcher only edits its three owned
 sections. Verified the body round-trips byte-identically (the keystone invariant)
 even with a millisecond `generated` timestamp.
 **Evidence:** `packages/cli/test/state-issue-body.test.ts`.
+
+## Dispatcher edits the state issue via parse → patch-owned-sections → render
+**File(s):** `packages/dispatcher/src/state-issue.ts`
+**Date:** 2026-05-23
+
+**Decision:** The dispatcher reads the state issue, parses it, replaces only
+`inFlight`/`rateLimits`/`slotUsage` (a partial patch — omit a field to keep it),
+re-renders, and writes back. Recommender-owned sections and the `generated`
+metadata are never reconstructed.
+**Why:** `renderStateIssue(parseStateIssue(body)) === body` for any valid body,
+so re-rendering after touching only the owned fields reproduces every other
+section byte-for-byte. This is exactly the invariant the schema doc promises lets
+the dispatcher edit one section without disturbing the recommender's output. The
+gh read/write is behind an injectable `StateIssueGateway` so the round-trip is
+tested without GitHub.
+**Evidence:** `packages/dispatcher/test/state-issue.test.ts` — "recommender-owned
+sections come back byte-identical" (and remain so with a dispatcher-tick marker
+inserted); ticks don't accumulate across updates.
+
+## Dispatcher-tick marker placed before the first section header
+**File(s):** `packages/dispatcher/src/state-issue.ts` (`insertDispatcherTick`)
+**Date:** 2026-05-23
+
+**Decision:** Insert the optional `<!-- dispatcher-tick: <ts> -->` marker just
+above the first `## ` section, dropping any prior tick first.
+**Why:** The schema permits ticks "between sections" and parsers ignore them.
+Placing it once at the top (not per-section) keeps the body tidy; dropping the
+prior tick prevents accumulation across eager updates. Verified the parser still
+round-trips and the recommender sections stay byte-identical with the marker
+present.
