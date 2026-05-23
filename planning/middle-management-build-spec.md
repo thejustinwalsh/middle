@@ -808,14 +808,15 @@ All adapters emit these. The hook script POSTs `{type, sessionName, payload}` to
 | `tool.post` | PostToolUse | command hook (success) |
 | `tool.failed` | PostToolUseFailure | command hook (failure) |
 | `agent.notification` | Notification | n/a |
-| `agent.stopped` | Stop / SubagentStop | turn-end hook |
+| `agent.stopped` | Stop | turn-end hook |
+| `agent.subagent-stopped` | SubagentStop | (subagent turn-end) |
 | `session.ended` | SessionEnd | shutdown hook |
 | `rate-limit.detected` | (synthetic from Stop) | (synthetic from Stop) |
 
 Two events are **load-bearing for dispatch**, not merely observational:
 
 - `session.started` carries `session_id` and `transcript_path` in its payload. It is how the dispatcher discovers the on-disk transcript at all, and it triggers the launch→drive transition (enter auto mode, confirm readiness, send the prompt).
-- `agent.stopped` is the turn boundary the workflow reacts to. Because the interactive process does not exit between turns, this — not a process exit — is the signal the dispatcher classifies (`classifyStop`).
+- `agent.stopped` is the turn boundary the workflow reacts to. Because the interactive process does not exit between turns, this — not a process exit — is the signal the dispatcher classifies (`classifyStop`). It is fired only by the **main** agent's Stop. A `SubagentStop` (e.g. an Explore agent the implementer spawned finishing) is **not** a main-agent turn boundary — the main agent is still working — so it maps to the separate, observational `agent.subagent-stopped` and never resolves the workflow's stop awaiter. Conflating the two would let the first subagent's completion classify a premature `bare-stop` and tear the dispatch down mid-work.
 
 The hook script is uniform across both:
 

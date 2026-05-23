@@ -341,7 +341,7 @@ describe("installHooks", () => {
     expect(cmd("PostToolUse")).toBe(`"${abs}" tool.post`);
     expect(cmd("Notification")).toBe(`"${abs}" agent.notification`);
     expect(cmd("Stop")).toBe(`"${abs}" agent.stopped`);
-    expect(cmd("SubagentStop")).toBe(`"${abs}" agent.stopped`);
+    expect(cmd("SubagentStop")).toBe(`"${abs}" agent.subagent-stopped`);
     expect(cmd("SessionEnd")).toBe(`"${abs}" session.ended`);
   });
 
