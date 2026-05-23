@@ -17,6 +17,8 @@ export { loadConfig } from "./config.ts";
 export type { NormalizedEvent, HookPayload, HookEnvelope } from "./events.ts";
 export { NORMALIZED_EVENTS, isNormalizedEvent } from "./events.ts";
 
+export { HOOK_SH } from "./hook-script.ts";
+
 export type {
   AgentAdapter,
   InstallHookOpts,

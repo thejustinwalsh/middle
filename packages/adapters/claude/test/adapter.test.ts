@@ -279,21 +279,42 @@ describe("installHooks", () => {
     });
   }
 
-  test("registers both SessionStart and Stop hooks in .claude/settings.json", async () => {
+  test("registers the full Claude hook event set in .claude/settings.json", async () => {
     const worktree = join(dir, "wt-events");
     mkdirSync(worktree, { recursive: true });
     await installInto(worktree);
     const settings = JSON.parse(
       await Bun.file(join(worktree, ".claude", "settings.json")).text(),
-    ) as { hooks: Record<string, unknown[]> };
-    expect(Object.keys(settings.hooks).sort()).toEqual(["SessionStart", "Stop"]);
-    // absolute, quoted path: "<worktree>/.middle/hooks/hook.sh" <event>
-    expect(JSON.stringify(settings.hooks.SessionStart)).toContain(
-      `${join(worktree, ".middle/hooks/hook.sh")}\\" session.started`,
-    );
-    expect(JSON.stringify(settings.hooks.Stop)).toContain(
-      `${join(worktree, ".middle/hooks/hook.sh")}\\" agent.stopped`,
-    );
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    expect(Object.keys(settings.hooks).sort()).toEqual([
+      "Notification",
+      "PostToolUse",
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+      "Stop",
+      "SubagentStop",
+      "UserPromptSubmit",
+    ]);
+  });
+
+  test("each entry maps its Claude event to the normalized taxonomy via the absolute hook path", async () => {
+    const worktree = join(dir, "wt-map");
+    mkdirSync(worktree, { recursive: true });
+    await installInto(worktree);
+    const settings = JSON.parse(
+      await Bun.file(join(worktree, ".claude", "settings.json")).text(),
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const abs = join(worktree, ".middle/hooks/hook.sh");
+    const cmd = (event: string): string => settings.hooks[event]![0]!.hooks[0]!.command;
+    expect(cmd("SessionStart")).toBe(`"${abs}" session.started`);
+    expect(cmd("UserPromptSubmit")).toBe(`"${abs}" turn.started`);
+    expect(cmd("PreToolUse")).toBe(`"${abs}" tool.pre`);
+    expect(cmd("PostToolUse")).toBe(`"${abs}" tool.post`);
+    expect(cmd("Notification")).toBe(`"${abs}" agent.notification`);
+    expect(cmd("Stop")).toBe(`"${abs}" agent.stopped`);
+    expect(cmd("SubagentStop")).toBe(`"${abs}" agent.stopped`);
+    expect(cmd("SessionEnd")).toBe(`"${abs}" session.ended`);
   });
 
   test("writes an executable hook.sh into the worktree at the configured path", async () => {

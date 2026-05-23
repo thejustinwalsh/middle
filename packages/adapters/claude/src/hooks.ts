@@ -1,62 +1,62 @@
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { InstallHookOpts } from "@middle/core";
+import type { InstallHookOpts, NormalizedEvent } from "@middle/core";
+import { HOOK_SH } from "@middle/core";
 
 /**
- * The universal hook script — POSTs the hook payload to the dispatcher. Args:
- * `$1` is the normalized event name. Never blocks the agent (3s timeout,
- * failure → exit 0). Source of truth: build spec → "Normalized event taxonomy".
+ * Map each Claude hook event to the normalized taxonomy. Order is the order the
+ * entries appear in `settings.json`. Source of truth: build spec → "Normalized
+ * event taxonomy".
+ *
+ * Two entries are **load-bearing for dispatch**, not merely observational:
+ *   - `SessionStart` → `session.started` carries `session_id`/`transcript_path`
+ *     and triggers the launch→drive transition.
+ *   - `Stop` → `agent.stopped` is the turn boundary the workflow classifies.
+ * `SubagentStop` also normalizes to `agent.stopped` (per the taxonomy); the
+ * dispatcher correlates by session, so a subagent turn boundary is treated as a
+ * stop signal for the session.
  */
-// curl runs as a child (not `exec`) so the trailing `|| exit 0` actually fires:
-// with `exec`, the shell is replaced by curl and a non-zero curl exit (refused
-// connection, 3s timeout, DNS) would propagate as a failed hook. As a child,
-// any curl failure is swallowed and the hook exits 0 — "failure is a no-op".
-const HOOK_SCRIPT = `#!/bin/sh
-# .middle/hooks/hook.sh — POSTs hook payloads to the middle dispatcher.
-# Args: $1 = normalized event name. Never blocks the agent; failure is a no-op.
-EVENT="$1"
-curl -sS -X POST "\${MIDDLE_DISPATCHER_URL}/hooks/\${EVENT}" \\
-  -H "X-Middle-Session: \${MIDDLE_SESSION}" \\
-  -H "X-Middle-Token: \${MIDDLE_SESSION_TOKEN}" \\
-  -H "X-Middle-Epic: \${MIDDLE_EPIC}" \\
-  -H "Content-Type: application/json" \\
-  --data-binary @- --max-time 3 || true
-exit 0
-`;
+const CLAUDE_EVENT_MAP: ReadonlyArray<[claudeEvent: string, normalized: NormalizedEvent]> = [
+  ["SessionStart", "session.started"],
+  ["UserPromptSubmit", "turn.started"],
+  ["PreToolUse", "tool.pre"],
+  ["PostToolUse", "tool.post"],
+  ["Notification", "agent.notification"],
+  ["Stop", "agent.stopped"],
+  ["SubagentStop", "agent.stopped"],
+  ["SessionEnd", "session.ended"],
+];
 
 /**
- * Phase 1 install: write the universal hook script into the worktree and a
- * minimal `.claude/settings.json` registering the two load-bearing events the
- * `implementation` workflow depends on:
+ * Write the full Claude hook configuration into the worktree: the universal
+ * `hook.sh` (single-sourced from `@middle/core`), plus a `.claude/settings.json`
+ * registering every event in the taxonomy. Each entry invokes
+ * `"<abs>/hook.sh" <normalized-event>` and forwards the hook's stdin payload.
  *
- * - `SessionStart` → `session.started` — discovers `session_id` + `transcript_path`
- * - `Stop` → `agent.stopped` — the turn boundary `classifyStop` reacts to
+ * The settings reference an **absolute** hook path: Claude fires hooks from
+ * whatever directory the agent has `cd`'d into, so a relative
+ * `.middle/hooks/hook.sh` would fail to resolve from a subdirectory and silently
+ * skip the POST. The path is double-quoted so a worktree under a home dir with
+ * spaces (e.g. `/Users/Jane Doe/...`) doesn't mis-parse the hook command.
  *
- * Phase 2 expands to the full event taxonomy, HMAC auth, and merging into any
- * pre-existing settings file.
+ * The env vars the script reads (`MIDDLE_DISPATCHER_URL`, `MIDDLE_SESSION`,
+ * `MIDDLE_SESSION_TOKEN`, `MIDDLE_EPIC`) are injected by tmux at spawn time.
  */
 export async function installHooks(opts: InstallHookOpts): Promise<void> {
   const scriptPath = join(opts.worktree, opts.hookScriptPath);
   await mkdir(dirname(scriptPath), { recursive: true });
-  await Bun.write(scriptPath, HOOK_SCRIPT);
+  await Bun.write(scriptPath, HOOK_SH);
   await chmod(scriptPath, 0o755);
 
   const claudeDir = join(opts.worktree, ".claude");
   await mkdir(claudeDir, { recursive: true });
 
-  // Absolute path: Claude fires hooks from whatever directory the agent has
-  // `cd`'d into, so a relative `.middle/hooks/hook.sh` would fail to resolve
-  // from a subdirectory and silently skip the POST (→ awaitStop times out).
-  // Double-quote the path so a worktree under a home dir with spaces
-  // (e.g. /Users/Jane Doe/...) doesn't mis-parse the hook command.
-  const settings = {
-    hooks: {
-      SessionStart: [
-        { hooks: [{ type: "command", command: `"${scriptPath}" session.started` }] },
-      ],
-      Stop: [{ hooks: [{ type: "command", command: `"${scriptPath}" agent.stopped` }] }],
-    },
-  };
+  const hooks: Record<string, Array<{ hooks: Array<{ type: "command"; command: string }> }>> = {};
+  for (const [claudeEvent, normalized] of CLAUDE_EVENT_MAP) {
+    hooks[claudeEvent] = [
+      { hooks: [{ type: "command", command: `"${scriptPath}" ${normalized}` }] },
+    ];
+  }
 
-  await Bun.write(join(claudeDir, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
+  await Bun.write(join(claudeDir, "settings.json"), `${JSON.stringify({ hooks }, null, 2)}\n`);
 }
