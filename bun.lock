@@ -33,7 +33,9 @@
         "@middle/adapter-claude": "workspace:*",
         "@middle/core": "workspace:*",
         "@middle/dispatcher": "workspace:*",
+        "@middle/state-issue": "workspace:*",
         "commander": "^14.0.3",
+        "smol-toml": "^1.6.1",
       },
     },
     "packages/core": {

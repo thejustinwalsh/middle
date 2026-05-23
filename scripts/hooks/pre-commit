@@ -1,0 +1,8 @@
+#!/bin/sh
+# middle pre-commit hook. Installed via `core.hooksPath = scripts/hooks` (set by
+# the root package.json `prepare` script on `bun install`).
+#
+# Enforces the two-copies skills invariant: packages/skills/ (canonical) and
+# packages/cli/src/bootstrap-assets/skills/ (the copy `mm init` stamps) must stay
+# byte-identical. On drift, fail and tell the committer to re-sync.
+bun scripts/sync-skills.ts --check || exit 1

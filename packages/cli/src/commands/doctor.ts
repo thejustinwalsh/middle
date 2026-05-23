@@ -3,6 +3,7 @@ import {
   MIN_TMUX_VERSION,
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
+import { BOOTSTRAP_SKILLS_DIR, CANONICAL_SKILLS_DIR, diffSkills } from "../bootstrap/skills-sync.ts";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type Check = { name: string; status: CheckStatus; detail: string };
@@ -75,6 +76,25 @@ async function checkGhAuth(): Promise<Check> {
 }
 
 /**
+ * Flag drift between the canonical `packages/skills/` and the
+ * `bootstrap-assets/skills/` mirror that `mm init` stamps. The pre-commit hook
+ * is the hard enforcement; here it's a warning so a stale mirror is visible to
+ * an operator without blocking `mm dispatch` on a tooling precondition.
+ */
+function checkSkillsDrift(): Check {
+  const { inSync, changed } = diffSkills({
+    canonicalDir: CANONICAL_SKILLS_DIR,
+    mirrorDir: BOOTSTRAP_SKILLS_DIR,
+  });
+  if (inSync) return { name: "skills", status: "pass", detail: "bootstrap mirror in sync" };
+  return {
+    name: "skills",
+    status: "warn",
+    detail: `${changed.length} file(s) drifted from packages/skills/ — run \`bun run sync-skills\``,
+  };
+}
+
+/**
  * `mm doctor` — run a system check for every external tool the dispatcher
  * shells out to: `bun`, `tmux` (≥ 3.5), `claude`, `git`, `gh`, and `gh` auth.
  * Exits 0 when no check fails; 1 if anything is missing or broken. Warnings
@@ -88,6 +108,7 @@ export async function runDoctor(): Promise<number> {
     await checkBinary("git", ["git", "--version"]),
     await checkBinary("gh", ["gh", "--version"]),
     await checkGhAuth(),
+    checkSkillsDrift(),
   ];
 
   console.log("middle — system check\n");
@@ -104,7 +125,7 @@ export async function runDoctor(): Promise<number> {
     return 1;
   }
   if (warns.length > 0) {
-    console.log(`${warns.length} warning(s) — mm will run, but interactive UX is degraded.`);
+    console.log(`${warns.length} warning(s) — mm will run, but something is degraded (see above).`);
     return 0;
   }
   console.log("all checks pass.");

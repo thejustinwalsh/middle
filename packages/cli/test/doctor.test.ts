@@ -22,7 +22,7 @@ describe("runDoctor — happy path", () => {
 
     const output = lines.join("\n");
     expect(output).toContain("middle — system check");
-    for (const name of ["bun", "tmux", "claude", "git", "gh", "gh auth"]) {
+    for (const name of ["bun", "tmux", "claude", "git", "gh", "gh auth", "skills"]) {
       expect(output).toContain(name);
     }
   });
