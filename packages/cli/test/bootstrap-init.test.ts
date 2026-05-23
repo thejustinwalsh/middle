@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isParseError, parseStateIssue, validate } from "@middle/state-issue";
 import { initRepo } from "../src/bootstrap/init.ts";
 import { uninitRepo } from "../src/bootstrap/uninit.ts";
-import type { BootstrapDeps } from "../src/bootstrap/types.ts";
+import { BOOTSTRAP_VERSION, type BootstrapDeps } from "../src/bootstrap/types.ts";
 
 type Calls = {
   ensureLabel: number;
@@ -137,6 +137,31 @@ describe("mm init — validation", () => {
     deps.getRemoteUrl = async () => null;
     await expect(initRepo(repo, deps, { dryRun: false })).rejects.toThrow(/no .*origin.* remote/);
   });
+
+  test("fails fast on a malformed existing config instead of re-initializing fresh", async () => {
+    const { deps, calls } = makeFakeDeps();
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    writeFileSync(join(repo, ".middle/config.toml"), "this is = not [[[ valid toml");
+    await expect(initRepo(repo, deps, { dryRun: false })).rejects.toThrow(/malformed/);
+    expect(calls.created).toHaveLength(0); // never mints a second state issue
+  });
+});
+
+describe("mm init — existing config without a usable state issue", () => {
+  test("a matching-version re-init with no issue number mints one and persists it", async () => {
+    const { deps, calls } = makeFakeDeps();
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    writeFileSync(
+      join(repo, ".middle/config.toml"),
+      `[bootstrap]\nversion = ${BOOTSTRAP_VERSION}\n\n[state_issue]\nnumber = 0\n`,
+    );
+    const result = await initRepo(repo, deps, { dryRun: false });
+    expect(result.mode).toBe("reinit");
+    expect(result.stateIssue).toBe(142);
+    expect(calls.created).toHaveLength(1);
+    // the freshly-minted number must be written back to the config
+    expect(readFileSync(join(repo, ".middle/config.toml"), "utf8")).toContain("number = 142");
+  });
 });
 
 describe("mm uninit", () => {
@@ -156,6 +181,17 @@ describe("mm uninit", () => {
     // since the file is now empty, deletes it. Either way it must not survive with the line.
     const gi = join(repo, ".gitignore");
     if (existsSync(gi)) expect(readFileSync(gi, "utf8")).not.toContain(".middle/");
+  });
+
+  test("closes the state issue even when [repo] metadata is missing (deps fallback)", async () => {
+    const { deps, calls } = makeFakeDeps();
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    // a config with an issue number but no [repo] block
+    writeFileSync(join(repo, ".middle/config.toml"), "[state_issue]\nnumber = 142\n");
+    const result = await uninitRepo(repo, deps, { dryRun: false });
+    expect(result.stateIssue).toBe(142);
+    expect(calls.closed).toHaveLength(1);
+    expect(calls.closed[0]!.issue).toBe(142);
   });
 
   test("dry run removes nothing", async () => {

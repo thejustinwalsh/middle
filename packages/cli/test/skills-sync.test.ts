@@ -51,6 +51,22 @@ describe("syncSkills", () => {
     expect(result.inSync).toBe(false);
     expect(() => readFileSync(join(mirror, "skill-b/STALE.md"))).toThrow();
   });
+
+  test("detects and removes an orphaned skill DIRECTORY present only in the mirror", () => {
+    syncSkills({ canonicalDir: canonical, mirrorDir: mirror, check: false });
+    // A whole skill dir with no canonical counterpart — the case the union over
+    // canonical-only dirs missed, silently breaking byte-identity.
+    mkdirSync(join(mirror, "skill-orphan"), { recursive: true });
+    writeFileSync(join(mirror, "skill-orphan/SKILL.md"), "orphan\n");
+
+    const drift = diffSkills({ canonicalDir: canonical, mirrorDir: mirror });
+    expect(drift.inSync).toBe(false);
+    expect(drift.changed).toContain("skill-orphan/SKILL.md");
+
+    const result = syncSkills({ canonicalDir: canonical, mirrorDir: mirror, check: false });
+    expect(result.inSync).toBe(false);
+    expect(() => readFileSync(join(mirror, "skill-orphan/SKILL.md"))).toThrow();
+  });
 });
 
 describe("diffSkills / check mode", () => {

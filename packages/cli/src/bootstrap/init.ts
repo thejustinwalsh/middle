@@ -18,23 +18,29 @@ import {
 
 type ExistingConfig = { version: number | null; stateIssueNumber: number };
 
+class BootstrapError extends Error {}
+
 /** Read `[bootstrap] version` and `[state_issue] number` from an existing config. */
 function readExistingConfig(repo: string): ExistingConfig | null {
   const path = join(repo, ".middle", "config.toml");
   if (!existsSync(path)) return null;
+  let raw: Record<string, unknown>;
   try {
-    const raw = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
-    const bootstrap = (raw.bootstrap ?? {}) as Record<string, unknown>;
-    const stateIssue = (raw.state_issue ?? {}) as Record<string, unknown>;
-    const version = typeof bootstrap.version === "number" ? bootstrap.version : null;
-    const number = typeof stateIssue.number === "number" ? stateIssue.number : 0;
-    return { version, stateIssueNumber: number };
-  } catch {
-    return null;
+    raw = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch (error) {
+    // A present-but-unparseable config means the repo is already (at least
+    // partly) bootstrapped. Treating it as a `fresh` install would create a
+    // *second* state issue and clobber the existing metadata — so fail fast.
+    throw new BootstrapError(
+      `existing .middle/config.toml is malformed and cannot be parsed (${(error as Error).message}); fix or remove it before re-running mm init`,
+    );
   }
+  const bootstrap = (raw.bootstrap ?? {}) as Record<string, unknown>;
+  const stateIssue = (raw.state_issue ?? {}) as Record<string, unknown>;
+  const version = typeof bootstrap.version === "number" ? bootstrap.version : null;
+  const number = typeof stateIssue.number === "number" ? stateIssue.number : 0;
+  return { version, stateIssueNumber: number };
 }
-
-class BootstrapError extends Error {}
 
 async function validateTarget(repo: string, deps: BootstrapDeps): Promise<RepoInfo> {
   if (!existsSync(join(repo, ".git"))) {
@@ -90,10 +96,13 @@ export async function initRepo(
     await writeCodexHookConfig(repo, hookScriptPath);
   }
 
-  // Steps 5-6: create the label + state issue (fresh install only — a re-init
-  // keeps the existing issue).
+  // Steps 5-6: create the label + state issue. A fresh install always needs one;
+  // a reinit/migrate whose config carries no usable issue number (missing or 0)
+  // also needs one — otherwise the repo is left without a state issue and
+  // downstream dispatch/uninit have nothing to act on.
   let stateIssue = existing?.stateIssueNumber ?? 0;
-  if (mode === "fresh") {
+  const needsStateIssue = stateIssue <= 0;
+  if (needsStateIssue) {
     note("create the agent-queue:state label (if absent)");
     note("create the state issue and capture its number");
     if (!dry) {
@@ -105,8 +114,9 @@ export async function initRepo(
     note(`keep existing state issue #${stateIssue}`);
   }
 
-  // Write config. Fresh/migrate rewrite it; a matching re-init keeps it as-is.
-  if (mode !== "reinit") {
+  // Write config. Fresh/migrate rewrite it; a matching re-init keeps it as-is —
+  // unless we just minted a state issue for it, whose number must be persisted.
+  if (mode !== "reinit" || needsStateIssue) {
     note("write .middle/config.toml");
     if (!dry) {
       const installedAt = deps.now().toISOString();

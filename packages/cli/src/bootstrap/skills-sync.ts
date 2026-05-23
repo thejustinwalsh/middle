@@ -63,7 +63,10 @@ function listFilesRecursive(dir: string): string[] {
  * present only in the mirror is a stale copy that sync must delete.
  */
 function unionSkillFiles(canonicalDir: string, mirrorDir: string): string[] {
-  const skills = listSkillDirs(canonicalDir);
+  // Union the skill dirs from BOTH trees. A skill dir present only in the mirror
+  // (its canonical counterpart was removed) is stale; it must still be enumerated
+  // so sync can delete it — otherwise the orphan silently breaks byte-identity.
+  const skills = new Set([...listSkillDirs(canonicalDir), ...listSkillDirs(mirrorDir)]);
   const seen = new Set<string>();
   for (const skill of skills) {
     for (const rel of listFilesRecursive(join(canonicalDir, skill))) {

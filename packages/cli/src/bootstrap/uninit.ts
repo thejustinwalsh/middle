@@ -55,9 +55,17 @@ export async function uninitRepo(
   const dry = opts.dryRun;
   const note = (line: string) => actions.push(dry ? `would ${line}` : line);
 
-  if (stateIssue > 0 && info) {
-    note(`close state issue #${stateIssue}`);
-    if (!dry) await deps.github.closeStateIssue(info, stateIssue, "Removed via `mm uninit`.");
+  if (stateIssue > 0) {
+    // The config may carry a state-issue number but no (valid) [repo] block;
+    // fall back to resolving the repo identity from its remote so we never leave
+    // the GitHub issue orphaned open.
+    const target = info ?? (await deps.resolveRepoInfo(repo).catch(() => null));
+    if (target) {
+      note(`close state issue #${stateIssue}`);
+      if (!dry) await deps.github.closeStateIssue(target, stateIssue, "Removed via `mm uninit`.");
+    } else {
+      note(`state issue #${stateIssue}: could not resolve repo identity — left open, close it manually`);
+    }
   }
 
   const hookScriptPath = join(repo, ".middle", "hooks", "hook.sh");

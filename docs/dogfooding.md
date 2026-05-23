@@ -45,7 +45,8 @@ mm init . --dry-run
 #    hook.sh, per-CLI hook config, and .middle/config.toml (with the issue number).
 mm init .
 
-# 3. Commit the shared skills (.claude/skills/ is committed; .middle/ is gitignored).
+# 3. Commit the shared skills (.claude/skills/ and .codex/skills/ are committed;
+#    .middle/ is gitignored).
 git add .claude/skills .codex/skills .gitignore
 git commit -m "chore: install middle skills (dogfooding crossover)"
 
@@ -55,11 +56,29 @@ gh issue list --repo thejustinwalsh/middle --label agent-queue:state
 
 # 5. Start the dispatcher and dispatch a manually created Epic against middle.
 mm start
-mm dispatch . <epic-number>     # an Epic (issue with sub-issues) you created by hand
+mm dispatch . <epic-number>     # the Epic (see "Creating a dispatchable Epic" below)
 
 # To reverse the crossover entirely:
 mm uninit .                     # closes the state issue, removes staged files
 ```
+
+### Creating a dispatchable Epic
+
+`mm dispatch . <epic-number>` expects an **Epic**: a GitHub issue that has
+**sub-issues**, where each sub-issue is one phase of the work and carries its own
+acceptance criteria. The agent works the open sub-issues down, one per phase, on a
+single branch/PR.
+
+Don't hand-author these ad hoc — use the **`creating-github-issues`** skill (in
+`.claude/skills/creating-github-issues/`): give it a plan and it files the parent
+Epic plus sub-issues with acceptance criteria, the right labels, and the proper
+parent/child hierarchy that the recommender and implementer expect. Minimum the
+dispatch needs:
+
+- a **parent** issue with one or more **sub-issues** attached (the phases),
+- **acceptance criteria** on each sub-issue (an Epic whose children lack them is
+  classified `needs-human` and won't be dispatched),
+- optionally a `phase:N` / `dogfood` label for grouping (not required to dispatch).
 
 `mm init` is idempotent: a re-run with a matching `bootstrap.version` refreshes
 skills/hooks but keeps the config and the existing state issue.

@@ -125,7 +125,7 @@ export async function runDoctor(): Promise<number> {
     return 1;
   }
   if (warns.length > 0) {
-    console.log(`${warns.length} warning(s) — mm will run, but interactive UX is degraded.`);
+    console.log(`${warns.length} warning(s) — mm will run, but something is degraded (see above).`);
     return 0;
   }
   console.log("all checks pass.");
