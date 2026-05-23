@@ -1020,6 +1020,11 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
     .path('done', (w) => w
       .step('verify-acceptance-gate', verifyAcceptanceGate)  // skill enforcement: all sub-issue criteria
       .step('mark-pr-ready', markPRReady)
+      .waitFor((ctx) => `epic-${ctx.input.epicNumber}-review-resolved`, {
+        timeout: 7 * 24 * 3600 * 1000,  // 1 week
+      })
+      .step('resume-with-review-changes', resumeAgent)  // CHANGES_REQUESTED → fresh session re-primed with the PR review threads; APPROVED ends the loop; bounded to 5 rounds, then waiting-human
+      // and loop back via re-enqueue
     )
     .path('asked-question', (w) => w
       // agent paused at a sub-issue — ambiguity, or a decision exceeding complexity_ceiling
@@ -1036,7 +1041,7 @@ export const implementationWorkflow = new Workflow<ImplementationInput>('impleme
   .step('finalize', finalizeAndCleanup);
 ```
 
-Each step is small, well-named, and individually testable. The agent-spawning steps (`plan`, `implement-loop`) follow the launch → drive → observe model from "Dispatch lifecycle" — launch the interactive CLI, await readiness, `enterAutoMode`, `send-keys` the prompt, then react to `Stop` via `classifyStop`. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause`: the agent pauses at the current sub-issue, the session **ends to free its slot**, the Epic's completed sub-issues stay done on the branch, and a human reply resumes the workstream as a fresh session (or `--resume`, per "Dispatch lifecycle").
+Each step is small, well-named, and individually testable. The agent-spawning steps (`plan`, `implement-loop`) follow the launch → drive → observe model from "Dispatch lifecycle" — launch the interactive CLI, await readiness, `enterAutoMode`, `send-keys` the prompt, then react to `Stop` via `classifyStop`. Compensations roll back PR changes (close draft, label `agent-blocked`), worktree cleanup, and session kill. The `asked-question` path covers both an ambiguous sub-issue and a `complexity pause`: the agent pauses at the current sub-issue, the session **ends to free its slot**, the Epic's completed sub-issues stay done on the branch, and a human reply resumes the workstream as a fresh session (or `--resume`, per "Dispatch lifecycle"). The `done` path is symmetric: after `mark-pr-ready` the workflow parks on `epic-N-review-resolved` rather than terminating — a `CHANGES_REQUESTED` review (CodeRabbit, a human, or the `changes-requested` label) resumes a fresh session re-primed with the PR's review threads to address feedback; `APPROVED` ends the loop (terminal — middle never merges, the human does); the loop is bounded to **5** rounds, after which it parks in `waiting-human`.
 
 ### `recommender` workflow
 
@@ -1339,14 +1344,20 @@ From here forward, middle's remaining work is dispatched by middle.
 
 **Acceptance:** Dispatch an Epic with deliberately bad agent behavior (skip plan comment); guard catches it. Try to flip the Epic PR ready without all sub-issue acceptance criteria; guard blocks. Tick a sub-issue checkbox without passing gates; dispatcher reverts.
 
-### Phase 5 — Human-in-loop
+### Phase 5 — Human-in-loop + review loop
 
-26. `waitFor` signal integration in the implementation workflow.
+The implementation workflow gains a **park → external-signal → resume** spine, parameterized by a **resume reason** so two pause kinds reuse the same machinery:
+- **asked-question** — the agent paused at a sub-issue (ambiguity or complexity pause); a human reply resumes it.
+- **review-changes** — the agent reached PR-ready; a `CHANGES_REQUESTED` review (CodeRabbit, a human, or the `changes-requested` label) resumes it to address feedback. `APPROVED` ends the loop (workflow terminal — **middle never merges**; the human does).
+
+This pulls the review loop forward from Phase 8: it is the *same* `waitFor`/poller/resume machinery with a review-state trigger instead of a comment trigger, so building it here costs little beyond the asked-question path it already requires.
+
+26. `waitFor` signal integration in the implementation workflow — the park/resume spine, keyed by resume reason (`answered-question` | `review-changes`). The `done` path parks on `epic-N-review-resolved` after `mark-pr-ready` instead of going terminal.
 27. Sentinel-file detection in `classifyStop`.
-28. GitHub comment poller (looks for human replies on issues with active wait signals).
-29. Resume logic — re-spawn agent with the answer fed into the prompt.
+28. GitHub poller — for Epics with an active wait, fires the signal on either trigger: a human reply on the issue (asked-question), or a PR review-state transition — `CHANGES_REQUESTED` / `changes-requested` label resumes, `APPROVED` ends the loop.
+29. Resume logic — re-spawn a fresh agent re-primed per reason: asked-question feeds the human's answer; review-changes pulls the PR's review threads into `.middle/prompt.md` behind an "address review" brief, increments a round counter, and after **5** rounds without approval parks in `waiting-human` and stops auto-resuming.
 
-**Acceptance:** Dispatch an Epic. Agent pauses at a sub-issue — writes blocked.json and exits. Dashboard shows "asked question." Reply on GitHub. Dispatcher signals the workflow. Agent re-spawns with the answer in context and continues from that sub-issue.
+**Acceptance:** (1) Dispatch an Epic; the agent pauses at a sub-issue (writes blocked.json, exits); the dashboard shows "asked question"; reply on GitHub; the dispatcher signals the workflow; the agent re-spawns with the answer in context and continues from that sub-issue. (2) The agent reaches PR-ready; CodeRabbit (or a human) submits `CHANGES_REQUESTED`; the dispatcher resumes the agent with the review threads in context; it pushes fixes, replies in-thread, and re-requests review; on `APPROVED` the loop ends and the human is pinged to merge; a never-satisfied loop stops at 5 rounds in `waiting-human`.
 
 ### Phase 6 — Mechanical verification
 
