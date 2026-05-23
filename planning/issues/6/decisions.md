@@ -404,3 +404,19 @@ Surfaced during the first real dispatch on a fresh machine:
 etc.) that would feed a heartbeat, plus the watchdog cron, are Phase 2 (Epic #14) — i.e.
 the very phase this dispatcher is bootstrapping. Phase 1's dispatcher is intentionally
 "dumb" until #14 lands.
+
+## Phase 1 follow-up (cont.): launch-and-drive step timeout
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-23
+
+**Bug:** the `launch-and-drive` step had no explicit `timeout`, so it inherited bunqueue's
+default 30s. But the step internally waits up to `launchTimeout` (90s) for SessionStart and
+`stopTimeout` (4h) for Stop — so bunqueue killed the step ~30s in, severing a live session
+while the agent was actively working.
+**Fix:** `timeout: launchTimeout + stopTimeout + 60_000` — a backstop just above the
+step's own internal waits, so `awaitSessionStart`/`awaitStop` stay the controlling
+timeouts (specific errors) and bunqueue no longer fires mid-work.
+**Note:** this gives the session the full ~4h work window; it is NOT an activity-based
+refresh. Keeping an actively-working agent alive indefinitely (and killing a *hung* one
+quickly on inactivity) is the Phase 2 watchdog — for now an Epic that needs >4h would raise
+`stopTimeoutMs`.

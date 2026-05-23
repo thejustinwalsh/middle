@@ -266,12 +266,20 @@ export function createImplementationWorkflow(
 
   return new Workflow<ImplementationInput>("implementation")
     .step("prepare-worktree", prepareWorktree, { compensate: cleanupWorktree })
+    // timeout: must exceed the step's OWN internal waits (launchTimeout for
+    // SessionStart + stopTimeout for Stop), or bunqueue's default 30s step
+    // timeout fires mid-work and kills the live session. The internal
+    // awaitSessionStart/awaitStop timeouts stay the controlling ones (they give
+    // specific errors); this is a backstop just above them.
     // retry: 1 — bunqueue's `retry` is `maxAttempts` (loop runs `attempt = 1
     // … <= retry`), not "retries after the first attempt". `1` means exactly
     // one attempt, no retries. Phase 1 fails fast and compensates: retrying a
     // launch piles up tmux/branch state and aggravates bunqueue's
     // job-lifecycle race on the failure path. The full workflow's retry
     // budgets (spec) live on `plan` / `implement-loop`.
-    .step("launch-and-drive", launchAndDrive, { retry: 1 })
+    .step("launch-and-drive", launchAndDrive, {
+      retry: 1,
+      timeout: launchTimeout + stopTimeout + 60_000,
+    })
     .step("cleanup", cleanup);
 }
