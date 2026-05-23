@@ -3,9 +3,11 @@
 import { Command } from "commander";
 import { runDispatch } from "./commands/dispatch.ts";
 import { runDoctor } from "./commands/doctor.ts";
+import { runInit } from "./commands/init.ts";
 import { runStart } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
+import { runUninit } from "./commands/uninit.ts";
 
 const VERSION = "0.0.0";
 
@@ -14,6 +16,24 @@ program
   .name("mm")
   .description("middle-management — autonomous GitHub issue dispatch")
   .version(VERSION);
+
+program
+  .command("init")
+  .description("Bootstrap middle into a target repo (skills, hooks, config, state issue)")
+  .argument("<path>", "path to the local repo checkout")
+  .option("--dry-run", "print planned actions without executing")
+  .action(async (path: string, options: { dryRun?: boolean }) =>
+    process.exit(await runInit(path, { dryRun: options.dryRun })),
+  );
+
+program
+  .command("uninit")
+  .description("Remove middle from a repo (reverse of `mm init`)")
+  .argument("<path>", "path to the local repo checkout")
+  .option("--dry-run", "print planned actions without executing")
+  .action(async (path: string, options: { dryRun?: boolean }) =>
+    process.exit(await runUninit(path, { dryRun: options.dryRun })),
+  );
 
 program
   .command("start")

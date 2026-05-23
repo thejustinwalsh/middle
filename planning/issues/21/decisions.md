@@ -50,3 +50,45 @@ markdown code fence.
 husky) and auto-installs for any contributor who runs `bun install`.
 **Evidence:** Verified the hook blocks a commit when the mirror drifts and passes
 when in sync.
+
+## mm init/uninit externals isolated behind an injectable `BootstrapDeps`
+**File(s):** `packages/cli/src/bootstrap/types.ts`, `deps.ts`, `init.ts`, `uninit.ts`
+**Date:** 2026-05-23
+
+**Decision:** All side-effecting externals (git clean check, remote URL, gh auth,
+repo-info resolution, and the GitHub label/issue mutations) go through a
+`BootstrapDeps` object. `realDeps` shells out to git/gh; tests inject a fake.
+Filesystem work runs against a real temp dir (fast, no mocking needed).
+**Why:** `mm init`/`mm uninit` are transactional and touch GitHub. Mocking only
+the network boundary keeps the filesystem behavior real (catches path/copy bugs)
+while keeping the suite hermetic and offline. The `github` sub-gateway is also
+the clean seam sub-issue #24 fills with the real issue/label creation.
+**Evidence:** `packages/cli/test/bootstrap-init.test.ts` — fresh/reinit/dry-run/
+uninit all pass with a fake gateway; the real binary's validation path is smoke-
+tested via `mm init --dry-run` against a scratch repo.
+
+## Codex hook config uses a sentinel-delimited block; Claude uses structured JSON
+**File(s):** `packages/cli/src/bootstrap/hook-config.ts`
+**Date:** 2026-05-23
+
+**Decision:** `.claude/settings.json` is edited structurally (parse JSON, add/strip
+only entries whose command references our `hook.sh`, preserve everything else).
+`.codex/config.toml` gets a `# >>> middle hooks >>>` … `# <<< … <<<` sentinel block
+that uninit strips by line range.
+**Why:** JSON round-trips losslessly, so structured edits are safe and let us
+leave foreign hook entries intact (a spec requirement). Codex's hook-config
+schema is a Phase-10 concern and underspecified; a sentinel block lets uninit
+remove exactly what init wrote without parsing/round-tripping arbitrary TOML we
+don't yet own.
+**Evidence:** `mm uninit` test "strips only middle's hook entries, preserving
+foreign ones" passes.
+
+## hook.sh sourced from `@middle/core`'s HOOK_SH, not the committed asset copy
+**File(s):** `packages/cli/src/bootstrap/assets.ts`
+**Date:** 2026-05-23
+
+**Decision:** `mm init` writes the hook script from `HOOK_SH` (the constant the
+dispatcher's `installHooks` also uses) rather than reading
+`bootstrap-assets/hooks/hook.sh`.
+**Why:** Single source of truth for the script bytes; the bootstrap-time and
+dispatch-time hook scripts are then guaranteed identical.
