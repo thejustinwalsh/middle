@@ -185,7 +185,7 @@ describe("watchdog — tmux liveness", () => {
     expect(getWorkflow(db, id)!.state).toBe("running");
   });
 
-  test("a status() error is inconclusive — the row is skipped, not failed", async () => {
+  test("a status() error is inconclusive — liveness is skipped, fresh row not failed", async () => {
     const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
     const tmux = {
       status: async () => {
@@ -194,8 +194,28 @@ describe("watchdog — tmux liveness", () => {
       killSession: async () => {},
     };
     await runWatchdog(baseDeps({ tmux }));
-    // inconclusive status must not fail the workflow — the next pass retries
+    // inconclusive status must not fail a fresh workflow on liveness grounds
     expect(getWorkflow(db, id)!.state).toBe("running");
+  });
+
+  test("a persistent status() error does NOT block rule 3 — a stale row still idle-times-out", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const tmux = {
+      status: async () => {
+        throw new Error("tmux server not running");
+      },
+      killSession: async () => {},
+    };
+    await runWatchdog(baseDeps({ tmux }));
+    // liveness is inconclusive, but the wall-clock backstop must still fire so
+    // a row whose status() keeps erroring can't stay 'running' forever
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("idle-timeout");
   });
 
   test("a status() error on one row does not abort reconciliation of others", async () => {

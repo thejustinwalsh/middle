@@ -152,21 +152,21 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
     }
 
     // 2. tmux liveness — a dead session under a 'running' workflow. A status
-    // *error* is inconclusive (not a confirmed-dead signal), so we skip the row
-    // this pass rather than fail it — the 30s cron retries, and rule 3 (activity
-    // freshness) is the backstop for a genuinely stuck agent. Skipping here also
-    // keeps one bad tmux call from aborting reconciliation for the other rows.
+    // *error* is inconclusive (not a confirmed-dead signal), so we only skip the
+    // liveness check (leaving status null), NOT the rest of the row's durable
+    // checks — falling through to rule 3 (activity freshness) is what lets the
+    // wall-clock backstop still idle-timeout a row whose status() keeps erroring.
+    // The per-call guards also keep one bad tmux call from aborting the pass.
+    let status: { alive: boolean; paneCount: number } | null = null;
     if (row.session_name) {
-      let status: { alive: boolean; paneCount: number };
       try {
         status = await deps.tmux.status(row.session_name);
       } catch (error) {
         console.error(
-          `[watchdog] status check failed for ${row.session_name}, skipping this pass: ${(error as Error).message}`,
+          `[watchdog] status check failed for ${row.session_name}, skipping liveness this pass: ${(error as Error).message}`,
         );
-        continue;
       }
-      if (!status.alive) {
+      if (status && !status.alive) {
         await safeKillSession(deps.tmux, row.session_name);
         failWorkflow(deps, row.id, "tmux session disappeared", now);
         acted++;
