@@ -136,3 +136,27 @@ Placing it once at the top (not per-section) keeps the body tidy; dropping the
 prior tick prevents accumulation across eager updates. Verified the parser still
 round-trips and the recommender sections stay byte-identical with the marker
 present.
+
+## #26 dogfooding crossover is an operator action, not an in-flight-agent action
+**File(s):** `docs/dogfooding.md`, `.gitignore`
+**Date:** 2026-05-23
+
+**Decision:** Deliver and verify the crossover *capability* (mm init/uninit, the
+state issue, the dispatcher integration — #22–#25), commit the committable slice
+of the self-bootstrap (gitignore `.middle/`, mm init's step 7) and an operator
+runbook, and surface the *live* crossover (`mm init .` + `mm dispatch . <issue>`)
+as a human-gated handoff via `.middle/blocked.json` rather than performing it
+from inside this dispatch.
+**Why:** Two hard constraints. (1) `mm dispatch . <issue>` spawns a nested agent
+(needs `mm start`/port 8822, a second worktree+session) and needs a
+human-created Epic — it cannot be run safely from within an active dispatch.
+(2) `mm init .` opens a live `agent-queue:state` issue+label on the real repo;
+from an unmerged branch that state is orphaned if the PR is reworked. The spec
+frames the crossover as the operator's deliberate chicken-and-egg handoff
+(dogfooding rule #5) and the state issue as "real from Phase 3" (rule #2) —
+created once, at the canonical checkout. Committing operational `.middle/`
+contents would also violate the hands-off-`.middle/` rule; gitignoring it is the
+correct committable slice.
+**Evidence:** `mm init . --dry-run` resolves the real `thejustinwalsh/middle`
+identity and validates a clean plan; `mm doctor` covers dispatch preconditions;
+the capability is fully unit/integration-tested across #22–#25.
