@@ -89,6 +89,22 @@ permission_mode = "auto"
 
 ---
 
+## Seeding the backlog
+
+middle is a manager, not the idea guy. It dispatches against the work *you* put on the board — well-formed **Epics**: a parent issue per phase, each with sub-issues that carry real acceptance criteria. It does not invent the backlog. Here's how middle's own backlog gets seeded, and how to seed yours:
+
+**1. Plan it.** Turn an idea into a spec and a phased plan. We use the **superpowers** Claude Code plugin's `brainstorming` → `writing-plans` skills (install it once from the plugin marketplace via `/plugin`). Any planning workflow works — the point is a structured plan with discrete phases.
+
+**2. File it as structured issues.** Hand the plan to the **`creating-github-issues`** skill and ask it to file all the work. It creates a parent Epic per phase with sub-issues underneath — each with acceptance criteria, the right labels, and proper parent/child hierarchy, exactly the shape middle's recommender and implementer expect. This skill lives in [`.claude/skills/creating-github-issues/`](.claude/skills/creating-github-issues) in this repo; copy it into your own repo's `.claude/skills/` (or `~/.claude/skills/`) to use it elsewhere.
+
+**3. Bootstrap the repo for middle.** `mm init <repo-path>` (a path to a local checkout, same as `mm dispatch`) stamps the `implementing-github-issues` + `recommending-github-issues` skills, installs the hooks, and creates the dispatch **state issue**. *(This is Phase 3 — being shipped right now by middle itself. Until it lands, middle's own repo carries the skills and each dispatch installs its hooks per-run.)*
+
+**4. Hand off to middle.** `mm dispatch <repo-path> <epic>`, and the manager takes it from there.
+
+In short: **you** (or a planning agent) decide *what* and file it as Epics; **middle** manages *getting it built*. middle never invents headcount or greenlights projects — that, too, is above its pay grade.
+
+---
+
 ## Running the office
 
 ```bash
