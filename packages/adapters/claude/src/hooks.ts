@@ -12,9 +12,13 @@ import { HOOK_SH } from "@middle/core";
  *   - `SessionStart` → `session.started` carries `session_id`/`transcript_path`
  *     and triggers the launch→drive transition.
  *   - `Stop` → `agent.stopped` is the turn boundary the workflow classifies.
- * `SubagentStop` also normalizes to `agent.stopped` (per the taxonomy); the
- * dispatcher correlates by session, so a subagent turn boundary is treated as a
- * stop signal for the session.
+ * `SubagentStop` maps to its own `agent.subagent-stopped` event — NOT
+ * `agent.stopped`. A subagent (e.g. an Explore agent the implementer spawned)
+ * finishing is not the *main* agent's turn boundary; the main agent is still
+ * working. Conflating the two let the first subagent's completion resolve
+ * `awaitStop`, which classified a `bare-stop` and tore the workflow down
+ * mid-research. `agent.subagent-stopped` is recorded but never resolves the
+ * stop awaiter.
  */
 const CLAUDE_EVENT_MAP: ReadonlyArray<[claudeEvent: string, normalized: NormalizedEvent]> = [
   ["SessionStart", "session.started"],
@@ -23,7 +27,7 @@ const CLAUDE_EVENT_MAP: ReadonlyArray<[claudeEvent: string, normalized: Normaliz
   ["PostToolUse", "tool.post"],
   ["Notification", "agent.notification"],
   ["Stop", "agent.stopped"],
-  ["SubagentStop", "agent.stopped"],
+  ["SubagentStop", "agent.subagent-stopped"],
   ["SessionEnd", "session.ended"],
 ];
 

@@ -68,6 +68,21 @@ describe("HookServer — Stop", () => {
     const payload = await pending;
     expect(payload.reason).toBe("turn-end");
   });
+
+  test("a subagent stop does NOT resolve awaitStop — only the main agent's Stop does", async () => {
+    // Regression: SubagentStop normalizes to agent.subagent-stopped, not
+    // agent.stopped. A spawned Explore agent finishing must not be mistaken for
+    // the main agent's turn boundary (which tore the workflow down mid-research).
+    const pending = server.awaitStop("middle-6", 300);
+    await postHook("agent.subagent-stopped", "middle-6", { reason: "subagent-done" });
+    // the subagent stop is accepted but does not satisfy the stop awaiter
+    await expect(pending).rejects.toThrow();
+
+    // the main agent's real Stop does resolve it
+    const next = server.awaitStop("middle-6", 1000);
+    await postHook("agent.stopped", "middle-6", { reason: "turn-end" });
+    expect((await next).reason).toBe("turn-end");
+  });
 });
 
 describe("HookServer — HMAC auth + event validation (with store)", () => {

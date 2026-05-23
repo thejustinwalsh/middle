@@ -11,6 +11,7 @@ export type NormalizedEvent =
   | "tool.failed"
   | "agent.notification"
   | "agent.stopped"
+  | "agent.subagent-stopped"
   | "session.ended"
   | "rate-limit.detected";
 
@@ -28,6 +29,7 @@ export const NORMALIZED_EVENTS: readonly NormalizedEvent[] = [
   "tool.failed",
   "agent.notification",
   "agent.stopped",
+  "agent.subagent-stopped",
   "session.ended",
   "rate-limit.detected",
 ];
