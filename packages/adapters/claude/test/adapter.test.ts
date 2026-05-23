@@ -56,16 +56,21 @@ describe("buildLaunchCommand", () => {
 });
 
 describe("buildPromptText", () => {
-  test("initial returns the bare @-reference one-liner", () => {
+  test("initial force-invokes the skill via slash command on the epic", () => {
     expect(
-      claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial" }),
-    ).toBe("@.middle/prompt.md");
+      claudeAdapter.buildPromptText({
+        promptFile: ".middle/prompt.md",
+        kind: "initial",
+        epicNumber: 14,
+      }),
+    ).toBe("/implementing-github-issues implement #14");
   });
 
   test("resume frames the @-reference as a continuation", () => {
     const text = claudeAdapter.buildPromptText({
       promptFile: ".middle/resume.md",
       kind: "resume",
+      epicNumber: 14,
     });
     expect(text).toContain("@.middle/resume.md");
     expect(text.toLowerCase()).toContain("resum");
@@ -75,6 +80,7 @@ describe("buildPromptText", () => {
     const text = claudeAdapter.buildPromptText({
       promptFile: ".middle/answer.md",
       kind: "answer",
+      epicNumber: 14,
     });
     expect(text).toContain("@.middle/answer.md");
     expect(text.toLowerCase()).toContain("answer");

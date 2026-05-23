@@ -21,11 +21,14 @@ export interface AgentAdapter {
 
   /**
    * The literal text to send-keys into the session to start or continue the
-   * agent — includes the `@`-reference to the on-disk prompt file.
+   * agent. `initial` invokes the implementing skill directly (a slash command);
+   * the skill reads the on-disk dispatch brief. `resume`/`answer` carry the
+   * `@`-reference to the brief for the fuller multi-turn workflow.
    */
   buildPromptText(opts: {
     promptFile: string; // path, relative to the worktree
     kind: "initial" | "resume" | "answer";
+    epicNumber: number; // the dispatched Epic/issue number
   }): string;
 
   /** Put the ready session into auto mode — a launch flag or post-ready keystrokes. */
