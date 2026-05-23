@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { HookPayload, StopClassification } from "@middle/core";
+import type { HookPayload, RateLimitDetection, StopClassification } from "@middle/core";
 
 const USAGE_LIMIT_RE = /You've hit your usage limit\. Resets at (.+?)\./;
 
@@ -41,6 +41,22 @@ export function classifyStop(opts: {
   }
 
   return { kind: "bare-stop" };
+}
+
+/**
+ * The Stop-hook rate-limit detector: the same usage-limit regex applied to the
+ * `Stop` hook's transcript tail, independent of the `classifyStop` ordering (so
+ * the dispatcher can update `rate_limit_state` immediately on every Stop, even
+ * when `classifyStop` returns a higher-priority classification like an open
+ * question). Returns null when no usage-limit message is present.
+ */
+export function detectRateLimit(opts: {
+  payload: HookPayload;
+  transcriptPath: string;
+}): RateLimitDetection | null {
+  const match = USAGE_LIMIT_RE.exec(readTail(opts.transcriptPath));
+  if (!match) return null;
+  return { resetAt: match[1]!, source: "stop-hook" };
 }
 
 function readTail(path: string): string {

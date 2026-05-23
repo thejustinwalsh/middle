@@ -5,6 +5,7 @@ import type { AgentAdapter, StopClassification } from "@middle/core";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import type { SessionGate } from "../hook-server.ts";
+import { markAvailableOnSuccess, parseResetAt, setRateLimited } from "../rate-limits.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
 import {
   createWorkflowRecord,
@@ -266,7 +267,26 @@ export function createImplementationWorkflow(
     const { classification, sessionName } = ctx.steps["launch-and-drive"] as DriveResult;
     await deps.tmux.killSession(sessionName);
     await deps.worktree.destroyWorktree(handle);
-    updateWorkflow(deps.db, ctx.executionId, { state: finalStateFor(classification) });
+
+    const finalState = finalStateFor(classification);
+    if (classification.kind === "rate-limited") {
+      // Reactive rate-limit: record the durable signal the auto-dispatch loop
+      // (Phase 8) reads to delay re-enqueue until reset_at. resetAt is the raw
+      // text the transcript carried after "Resets at "; parse it to unix ms,
+      // null when unrecognized (RATE_LIMITED with an unknown reset).
+      setRateLimited(deps.db, {
+        adapter: ctx.input.adapter,
+        resetAt: parseResetAt(classification.resetAt),
+        source: "transcript",
+        detail: classification.resetAt,
+      });
+    } else if (finalState === "completed") {
+      // Probe-via-real-work: a completed dispatch proves the adapter is serving
+      // again, so a previously RATE_LIMITED adapter reverts to AVAILABLE.
+      markAvailableOnSuccess(deps.db, ctx.input.adapter);
+    }
+
+    updateWorkflow(deps.db, ctx.executionId, { state: finalState });
   }
 
   return new Workflow<ImplementationInput>("implementation")

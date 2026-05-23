@@ -267,6 +267,34 @@ describe("classifyStop", () => {
   });
 });
 
+describe("detectRateLimit", () => {
+  test("matches a usage-limit message in the transcript tail", () => {
+    const transcript = join(dir, "rl.jsonl");
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "You've hit your usage limit. Resets at 2026-05-23T18:00:00Z." },
+          ],
+        },
+      }),
+    );
+    const result = claudeAdapter.detectRateLimit!({ payload: {}, transcriptPath: transcript });
+    expect(result).not.toBeNull();
+    expect(result!.resetAt).toBe("2026-05-23T18:00:00Z");
+    expect(result!.source).toBe("stop-hook");
+  });
+
+  test("returns null when no usage-limit message is present", () => {
+    const transcript = join(dir, "ok.jsonl");
+    writeFileSync(transcript, JSON.stringify({ type: "assistant", message: { content: "fine" } }));
+    expect(claudeAdapter.detectRateLimit!({ payload: {}, transcriptPath: transcript })).toBeNull();
+  });
+});
+
 describe("installHooks", () => {
   async function installInto(worktree: string): Promise<void> {
     await claudeAdapter.installHooks({
