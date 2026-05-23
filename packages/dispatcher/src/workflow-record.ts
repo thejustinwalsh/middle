@@ -82,6 +82,63 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
   db.run(`UPDATE workflows SET ${sets.join(", ")} WHERE id = ?`, values);
 }
 
+/**
+ * The terminal states. A workflow in one of these no longer owns its session,
+ * so its hooks are stale and must not be correlated to it — `session.started`
+ * for a *new* dispatch reusing a deterministic session name would otherwise
+ * attach to the corpse.
+ */
+const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as const;
+
+export type ActiveWorkflow = { id: string; sessionToken: string | null };
+
+/**
+ * The active (non-terminal) workflow owning `sessionName`, or null. Session
+ * names are deterministic and reused across dispatches, so this filters to
+ * non-terminal rows and takes the most recent — the one a live agent's hooks
+ * belong to.
+ */
+export function findActiveWorkflowBySession(
+  db: Database,
+  sessionName: string,
+): ActiveWorkflow | null {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const row = db
+    .query(
+      `SELECT id, session_token FROM workflows
+        WHERE session_name = ? AND state NOT IN (${placeholders})
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(sessionName, ...TERMINAL_STATES) as
+    | { id: string; session_token: string | null }
+    | null;
+  if (!row) return null;
+  return { id: row.id, sessionToken: row.session_token };
+}
+
+export type RecordEventInput = {
+  workflowId: string;
+  ts: number;
+  type: string;
+  payloadJson: string | null;
+};
+
+/** Append one `events` row. The payload is expected pre-truncated by the caller. */
+export function recordEvent(db: Database, input: RecordEventInput): void {
+  db.run("INSERT INTO events (workflow_id, ts, type, payload_json) VALUES (?, ?, ?, ?)", [
+    input.workflowId,
+    input.ts,
+    input.type,
+    input.payloadJson,
+  ]);
+}
+
+/** Advance a workflow's `last_heartbeat` (and `updated_at`) to `ts`. */
+export function touchHeartbeat(db: Database, id: string, ts: number): void {
+  db.run("UPDATE workflows SET last_heartbeat = ?, updated_at = ? WHERE id = ?", [ts, ts, id]);
+}
+
 type WorkflowRow = {
   id: string;
   kind: string;

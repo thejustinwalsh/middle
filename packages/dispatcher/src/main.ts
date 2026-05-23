@@ -10,6 +10,7 @@ import { loadConfig } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "./db.ts";
 import { HookServer } from "./hook-server.ts";
+import { DbHookStore } from "./hook-store.ts";
 
 async function main(): Promise<void> {
   const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
@@ -17,7 +18,7 @@ async function main(): Promise<void> {
   mkdirSync(dirname(config.global.dbPath), { recursive: true });
   const db = openAndMigrate(config.global.dbPath);
 
-  const hookServer = new HookServer();
+  const hookServer = new HookServer(new DbHookStore(db));
   hookServer.start(config.global.dispatcherPort);
 
   // In-memory engine for Phase 1 — durable queue persistence + crash recovery
