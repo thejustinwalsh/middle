@@ -6,11 +6,21 @@
 // spawns this; `mm stop` sends it SIGTERM.
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { claudeAdapter } from "@middle/adapter-claude";
+import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "./db.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
+import { killSession, status } from "./tmux.ts";
+import { startWatchdog } from "./watchdog-cron.ts";
+
+/** Phase 2 adapter registry — only `claude` is implemented. */
+function getAdapter(name: string): AgentAdapter {
+  if (name !== "claude") throw new Error(`unknown adapter: ${name}`);
+  return claudeAdapter;
+}
 
 async function main(): Promise<void> {
   const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
@@ -25,6 +35,15 @@ async function main(): Promise<void> {
   // arrive with the watchdog/reconciler in Phase 2.
   const engine = new Engine({ embedded: true });
 
+  // Watchdog cron: every 30s, correct transcript drift then reconcile every
+  // launching/running workflow (launch-timeout, tmux liveness, idle detection,
+  // sentinel re-arm). The reconcile logic is adapter-agnostic via getAdapter.
+  const stopWatchdog = await startWatchdog({
+    db,
+    tmux: { status, killSession },
+    getAdapter,
+  });
+
   console.log(
     `middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`,
   );
@@ -35,6 +54,11 @@ async function main(): Promise<void> {
     shuttingDown = true;
     // Guard each teardown so a throw/rejection can't skip process.exit and
     // leak as an unhandledRejection (there's no swallower in this entrypoint).
+    try {
+      await stopWatchdog();
+    } catch (error) {
+      console.error(`shutdown: stopWatchdog failed — ${(error as Error).message}`);
+    }
     try {
       hookServer.stop();
     } catch (error) {

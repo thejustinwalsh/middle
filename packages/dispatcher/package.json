@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/main.ts",
   "dependencies": {
+    "@middle/adapter-claude": "workspace:*",
     "@middle/core": "workspace:*",
     "@middle/state-issue": "workspace:*",
     "bunqueue": "^2.7.12"

@@ -139,6 +139,39 @@ export function touchHeartbeat(db: Database, id: string, ts: number): void {
   db.run("UPDATE workflows SET last_heartbeat = ?, updated_at = ? WHERE id = ?", [ts, ts, id]);
 }
 
+/** The `type` of the most recent `events` row for a workflow, or null if none. */
+export function latestEventType(db: Database, workflowId: string): string | null {
+  const row = db
+    .query("SELECT type FROM events WHERE workflow_id = ? ORDER BY id DESC LIMIT 1")
+    .get(workflowId) as { type: string } | null;
+  return row?.type ?? null;
+}
+
+/** Whether a `waitFor` signal is already armed for this workflow. */
+export function isWaitForArmed(db: Database, workflowId: string): boolean {
+  const row = db
+    .query("SELECT 1 AS n FROM waitfor_signals WHERE workflow_id = ? LIMIT 1")
+    .get(workflowId) as { n: number } | null;
+  return row !== null;
+}
+
+/**
+ * Arm a `waitFor` signal for a workflow. `signal_name` is the table's primary
+ * key, so this is a no-op if the same signal is already armed (the watchdog may
+ * re-run before the workflow advances).
+ */
+export function armWaitForSignal(
+  db: Database,
+  signalName: string,
+  workflowId: string,
+  payloadJson: string | null = null,
+): void {
+  db.run(
+    "INSERT OR IGNORE INTO waitfor_signals (signal_name, workflow_id, created_at, payload_json) VALUES (?, ?, ?, ?)",
+    [signalName, workflowId, Date.now(), payloadJson],
+  );
+}
+
 type WorkflowRow = {
   id: string;
   kind: string;
