@@ -60,12 +60,12 @@ state issue. Finally, middle is bootstrapped into its own repo.
 - Full `mm doctor` (Phase 11) — only the drift hook point here
 - Skill enforcement gates (Phase 4)
 
-## Open questions / risks
-- **#26 has irreversible external side effects** (creates a real `agent-queue:state`
-  issue + label on `thejustinwalsh/middle`, runs a real `mm dispatch`) and touches
-  `.middle/`, which is middle's operational dir for the in-flight dispatch. The
-  engineering (the `mm init` capability) is fully built and verified against a
-  scratch repo in phases #22–#25; whether the autonomous run performs the *live*
-  crossover on the real repo mid-PR vs. leaving that one operator action for
-  merge time is a judgement call I'll resolve when I reach #26, with the working
-  command in hand.
+## Open questions / risks — RESOLVED
+- **#26 is an operator-gated handoff, not an in-flight-agent action.** The
+  capability is built and verified (#22–#25). The *live* crossover can't be run
+  safely from inside this dispatch: `mm dispatch . <issue>` nests agents (needs
+  `mm start`, a second worktree+session, and a human-created Epic), and `mm init .`
+  opens a live state issue that would orphan from an unmerged branch. Resolution:
+  committed the committable slice (gitignore `.middle/` = mm init step 7) and an
+  operator runbook (`docs/dogfooding.md`), and surfaced the live run via
+  `.middle/blocked.json` for the operator. See `decisions.md`.
