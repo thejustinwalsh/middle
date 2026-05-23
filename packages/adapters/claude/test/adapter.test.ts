@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookPayload } from "@middle/core";
-import { claudeAdapter, detectBypassPrompt, detectNeedsLogin } from "../src/index.ts";
+import {
+  claudeAdapter,
+  detectBypassPrompt,
+  detectNeedsLogin,
+  detectTrustPrompt,
+} from "../src/index.ts";
 
 let dir: string;
 
@@ -310,6 +315,20 @@ describe("detectBypassPrompt", () => {
     expect(detectBypassPrompt("> ")).toBe(false);
     expect(detectBypassPrompt("Welcome to Claude Code 2.1.142")).toBe(false);
     expect(detectBypassPrompt("")).toBe(false);
+  });
+});
+
+describe("detectTrustPrompt", () => {
+  test("matches the first-run folder-trust dialog", () => {
+    expect(detectTrustPrompt("Do you trust the files in this folder?")).toBe(true);
+    expect(detectTrustPrompt("1. Yes, I trust this folder  2. No, exit")).toBe(true);
+    expect(detectTrustPrompt("Trust this directory and continue?")).toBe(true);
+  });
+
+  test("does not match the bypass dialog or normal content", () => {
+    expect(detectTrustPrompt("You are entering Bypass Permissions mode")).toBe(false);
+    expect(detectTrustPrompt("> ")).toBe(false);
+    expect(detectTrustPrompt("")).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 // @middle/adapter-claude — implements AgentAdapter for the Claude CLI.
 import type { AgentAdapter } from "@middle/core";
-import { capturePane, pollPaneFor, sendKeys } from "@middle/core";
+import { capturePane, sendKeys } from "@middle/core";
 import { classifyStop } from "./classify.ts";
 import { installHooks } from "./hooks.ts";
 import { buildPromptText } from "./prompt.ts";
@@ -14,12 +14,19 @@ import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
 const AUTO_MODE_FLAG = "--dangerously-skip-permissions";
 
 const BYPASS_PROMPT_RE = /bypass\s+permissions?|skip\s+permissions?|dangerously/i;
+const TRUST_PROMPT_RE =
+  /do you trust|trust the files|trust this (folder|directory|workspace)|yes,?\s*i trust/i;
 const NEEDS_LOGIN_RE =
   /please\s+(?:run\s+|use\s+)?(?:claude\s+)?\/?(?:login|sign[ -]?in)|not\s+(?:logged\s+in|authenticated|signed\s+in)|welcome\s+to\s+claude\s+code.*sign|invalid\s+(?:api\s+key|credentials)/i;
 
 /** Whether a captured pane shows Claude's bypass-mode confirmation prompt. */
 export function detectBypassPrompt(paneContent: string): boolean {
   return BYPASS_PROMPT_RE.test(paneContent);
+}
+
+/** Whether a captured pane shows the first-run "do you trust this folder?" dialog. */
+export function detectTrustPrompt(paneContent: string): boolean {
+  return TRUST_PROMPT_RE.test(paneContent);
 }
 
 /** Whether a captured pane shows a "you need to log in" message. */
@@ -29,50 +36,74 @@ export function detectNeedsLogin(paneContent: string): boolean {
 
 /** Long polling window — covers Claude's slowest boot up to launchTimeout. */
 const BOOT_DETECT_TIMEOUT_MS = 90_000;
+const BOOT_POLL_INTERVAL_MS = 200;
 
-type BootOutcome = "bypass-prompt" | "needs-login";
+async function logPaneTail(sessionName: string, tag: string, label: string): Promise<void> {
+  const pane = await capturePane(sessionName);
+  const tail = (pane ?? "<capture failed>").replace(/\s+/g, " ").trim().slice(-300);
+  console.error(`[${tag}] ${label}: "${tail}"`);
+}
 
 /**
- * Pre-SessionStart boot polling. Runs in parallel with `awaitSessionStart`
- * because Claude does not fire SessionStart until past the bypass-mode
- * warning. Two outcomes drive action:
+ * Pre-SessionStart boot driving. Runs in parallel with `awaitSessionStart`
+ * because Claude does not fire SessionStart until past its boot dialogs, which
+ * appear in sequence on a fresh worktree:
  *
- * - `bypass-prompt`: send Down + Enter (split with a 100ms delay so the menu
- *   has time to advance selection between keys) to select "Yes, I accept".
- *   Claude proceeds and fires SessionStart shortly after.
- * - `needs-login`: throw a clean error so `mm dispatch` exits with a useful
- *   "claude is not authenticated" message instead of hanging on a 90s
- *   SessionStart timeout.
+ *   1. **Folder-trust** ("Do you trust the files in this folder?") — first-run
+ *      gate for any directory Claude hasn't seen. Default cursor is option 1
+ *      ("Yes, I trust"), so we press `1` then Enter to select it explicitly.
+ *   2. **Bypass-mode** ("Bypass Permissions mode … accept?") — default cursor
+ *      is option 1 ("No, exit"), so we press Down to reach option 2 ("Yes, I
+ *      accept") then Enter.
+ *
+ * We poll-and-answer each as it appears (each at most once), and throw on a
+ * login screen so `mm dispatch` fails fast with a useful message rather than
+ * hanging on the 90s SessionStart timeout.
  */
 async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   const tag = `claude:${opts.sessionName}`;
-  const outcome = await pollPaneFor<BootOutcome>(
-    opts.sessionName,
-    (pane) => {
-      if (detectNeedsLogin(pane)) return "needs-login";
-      if (detectBypassPrompt(pane)) return "bypass-prompt";
-      return null;
-    },
-    { timeoutMs: BOOT_DETECT_TIMEOUT_MS, pollIntervalMs: 200, tag },
-  );
+  const deadline = Date.now() + BOOT_DETECT_TIMEOUT_MS;
+  let trustAnswered = false;
+  let bypassAnswered = false;
 
-  if (outcome === "needs-login") {
-    throw new Error(
-      "claude is not authenticated — run `claude` interactively in a normal terminal to sign in, then retry the dispatch",
-    );
+  while (Date.now() < deadline) {
+    const pane = await capturePane(opts.sessionName);
+    if (pane === null) {
+      console.error(`[${tag}] enterAutoMode: capture-pane failed (session gone) — stopping`);
+      return;
+    }
+
+    if (detectNeedsLogin(pane)) {
+      throw new Error(
+        "claude is not authenticated — run `claude` interactively in a normal terminal to sign in, then retry the dispatch",
+      );
+    }
+
+    if (!trustAnswered && detectTrustPrompt(pane)) {
+      console.error(`[${tag}] folder-trust dialog detected — selecting "Yes, I trust" (1, Enter)`);
+      await Bun.sleep(200);
+      await sendKeys(opts.sessionName, ["1"]);
+      await Bun.sleep(100);
+      await sendKeys(opts.sessionName, ["Enter"]);
+      trustAnswered = true;
+      await Bun.sleep(400);
+      await logPaneTail(opts.sessionName, tag, "after trust answer");
+      continue;
+    }
+
+    if (!bypassAnswered && detectBypassPrompt(pane)) {
+      console.error(`[${tag}] bypass-mode dialog detected — selecting "Yes, I accept" (Down, Enter)`);
+      await Bun.sleep(200);
+      await sendKeys(opts.sessionName, ["Down", "Enter"], { delayBetweenMs: 100 });
+      bypassAnswered = true;
+      await Bun.sleep(400);
+      await logPaneTail(opts.sessionName, tag, "after bypass answer");
+      continue;
+    }
+
+    await Bun.sleep(BOOT_POLL_INTERVAL_MS);
   }
-  if (outcome === "bypass-prompt") {
-    console.error(`[${tag}] bypass prompt detected — settling then Down then Enter`);
-    await Bun.sleep(200);
-    await sendKeys(opts.sessionName, ["Down", "Enter"], { delayBetweenMs: 100 });
-    // Post-keystroke capture confirms whether the menu actually advanced.
-    await Bun.sleep(300);
-    const after = await capturePane(opts.sessionName);
-    const afterTail = (after ?? "<capture failed>").replace(/\s+/g, " ").trim().slice(-300);
-    console.error(`[${tag}] post-keystroke pane tail: "${afterTail}"`);
-  }
-  // outcome null: neither prompt nor login screen appeared. SessionStart should
-  // already have fired (or be about to). enterAutoMode has nothing else to do.
+  console.error(`[${tag}] enterAutoMode: boot-dialog window (${BOOT_DETECT_TIMEOUT_MS}ms) elapsed`);
 }
 
 export const claudeAdapter: AgentAdapter = {

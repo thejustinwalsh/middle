@@ -379,3 +379,28 @@ regression I introduced in the bunqueue-lifecycle work:
 are robustness + test hermeticity. None warranted pushback.
 **Evidence:** `bun test` 123 pass, `tsc` clean. Adapter hook-command test updated for the
 quoted-path form; session/EADDRINUSE/expandTilde tests still green.
+
+## Phase 1 follow-up: folder-trust dialog + orphan-session cleanup (2026-05-23)
+**File(s):** `packages/adapters/claude/src/index.ts`, `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-23
+
+Surfaced during the first real dispatch on a fresh machine:
+
+1. **First-run folder-trust dialog.** A fresh worktree is a directory Claude has never
+   seen, so it pops "Do you trust the files in this folder?" *before* the bypass-mode
+   warning — and before `SessionStart`. `enterAutoMode` is now a poll-and-answer loop that
+   handles boot dialogs in sequence: trust (`1` then Enter — option 1 "Yes, I trust" is the
+   default), then bypass (Down then Enter — option 2 "Yes, I accept"). Each answered at
+   most once; login still throws. The trust answer is an empirical first guess (mirrors how
+   the bypass keystrokes were dialed in) — instrumented with post-answer `capturePane`
+   logging so the keystrokes can be refined from a real run.
+2. **Orphaned tmux session blocks re-dispatch.** An interrupted dispatch (Ctrl-C / crash
+   before cleanup) leaves a live `middle-<repo>-<epic>` session; the next dispatch's
+   `newSession` then fails with "duplicate session". `launchAndDrive` now `killSession`s the
+   target name immediately before `newSession` (idempotent no-op when nothing's there).
+
+**Lifecycle note (not a bug):** Phase 1 has no watchdog/heartbeat — `launchAndDrive` just
+`awaitStop` for up to 4h with no liveness monitoring. The hook taxonomy (`tool.pre/post`
+etc.) that would feed a heartbeat, plus the watchdog cron, are Phase 2 (Epic #14) — i.e.
+the very phase this dispatcher is bootstrapping. Phase 1's dispatcher is intentionally
+"dumb" until #14 lands.

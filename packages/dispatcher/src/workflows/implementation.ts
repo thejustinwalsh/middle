@@ -191,6 +191,11 @@ export function createImplementationWorkflow(
           MIDDLE_EPIC: String(ctx.input.epicNumber),
         },
       });
+      // Clear any orphaned session of the same name left by a prior dispatch
+      // that was interrupted (Ctrl-C / crash) before its cleanup ran —
+      // otherwise newSession fails with "duplicate session". killSession is a
+      // no-op when nothing's there.
+      await deps.tmux.killSession(sessionName);
       console.error(`${tag} launching tmux session: ${argv.join(" ")} (cwd=${handle.path})`);
       await deps.tmux.newSession({ sessionName, command: argv, cwd: handle.path, env });
 
