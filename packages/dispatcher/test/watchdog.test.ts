@@ -184,6 +184,50 @@ describe("watchdog — tmux liveness", () => {
     await runWatchdog(baseDeps({ tmux: makeTmux(true).ops }));
     expect(getWorkflow(db, id)!.state).toBe("running");
   });
+
+  test("a status() error is inconclusive — the row is skipped, not failed", async () => {
+    const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
+    const tmux = {
+      status: async () => {
+        throw new Error("tmux server not running");
+      },
+      killSession: async () => {},
+    };
+    await runWatchdog(baseDeps({ tmux }));
+    // inconclusive status must not fail the workflow — the next pass retries
+    expect(getWorkflow(db, id)!.state).toBe("running");
+  });
+
+  test("a status() error on one row does not abort reconciliation of others", async () => {
+    const bad = seed({ state: "running", sessionName: "middle-bad", updatedAt: NOW });
+    const stuck = seed({ state: "launching", updatedAt: NOW - 2 * 90_000 });
+    const tmux = {
+      status: async (name: string) => {
+        if (name === "middle-bad") throw new Error("tmux error");
+        return { alive: true, paneCount: 1 };
+      },
+      killSession: async () => {},
+    };
+    await runWatchdog(baseDeps({ tmux }));
+    // the launch-timeout row is still reconciled despite the earlier tmux error
+    expect(getWorkflow(db, bad)!.state).toBe("running");
+    expect(getWorkflow(db, stuck)!.state).toBe("failed");
+    expect(failureReason(stuck)).toBe("stuck-launching");
+  });
+
+  test("a killSession() error still records the failure decision", async () => {
+    const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
+    const tmux = {
+      status: async () => ({ alive: false, paneCount: 0 }),
+      killSession: async () => {
+        throw new Error("kill failed");
+      },
+    };
+    await runWatchdog(baseDeps({ tmux }));
+    // kill is best-effort; the failure decision must still be persisted
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("tmux session disappeared");
+  });
 });
 
 describe("watchdog — activity freshness", () => {

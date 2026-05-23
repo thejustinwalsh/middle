@@ -116,6 +116,19 @@ function failWorkflow(deps: WatchdogDeps, id: string, reason: string, now: numbe
 }
 
 /**
+ * Best-effort session kill. The kill always runs *after* we've already decided
+ * to fail the workflow, so a kill error must not prevent recording that failure
+ * (or abort the reconciliation pass for other rows) — swallow and log it.
+ */
+async function safeKillSession(tmux: WatchdogTmux, sessionName: string): Promise<void> {
+  try {
+    await tmux.killSession(sessionName);
+  } catch (error) {
+    console.error(`[watchdog] killSession failed for ${sessionName}: ${(error as Error).message}`);
+  }
+}
+
+/**
  * One reconciliation pass. Returns the number of workflows it acted on (a
  * convenience for logging/tests); all effects are applied to the db + tmux.
  */
@@ -138,11 +151,23 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
       continue;
     }
 
-    // 2. tmux liveness — a dead session under a 'running' workflow.
+    // 2. tmux liveness — a dead session under a 'running' workflow. A status
+    // *error* is inconclusive (not a confirmed-dead signal), so we skip the row
+    // this pass rather than fail it — the 30s cron retries, and rule 3 (activity
+    // freshness) is the backstop for a genuinely stuck agent. Skipping here also
+    // keeps one bad tmux call from aborting reconciliation for the other rows.
     if (row.session_name) {
-      const status = await deps.tmux.status(row.session_name);
+      let status: { alive: boolean; paneCount: number };
+      try {
+        status = await deps.tmux.status(row.session_name);
+      } catch (error) {
+        console.error(
+          `[watchdog] status check failed for ${row.session_name}, skipping this pass: ${(error as Error).message}`,
+        );
+        continue;
+      }
       if (!status.alive) {
-        await deps.tmux.killSession(row.session_name);
+        await safeKillSession(deps.tmux, row.session_name);
         failWorkflow(deps, row.id, "tmux session disappeared", now);
         acted++;
         continue;
@@ -161,7 +186,7 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
       now - startedTs >= launchTimeout &&
       !hasEventOfType(deps.db, row.id, "turn.started")
     ) {
-      if (row.session_name) await deps.tmux.killSession(row.session_name);
+      if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
       failWorkflow(deps, row.id, "prompt-not-accepted", now);
       acted++;
       continue;
@@ -176,7 +201,7 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
       const baseline = Math.max(row.last_heartbeat ?? 0, transcriptMs ?? 0, row.updated_at);
       const age = now - baseline;
       if (age >= idleKill) {
-        if (row.session_name) await deps.tmux.killSession(row.session_name);
+        if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
         failWorkflow(deps, row.id, "idle-timeout", now);
         acted++;
         continue;
