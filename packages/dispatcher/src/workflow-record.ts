@@ -82,6 +82,112 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
   db.run(`UPDATE workflows SET ${sets.join(", ")} WHERE id = ?`, values);
 }
 
+/**
+ * The terminal states. A workflow in one of these no longer owns its session,
+ * so its hooks are stale and must not be correlated to it — `session.started`
+ * for a *new* dispatch reusing a deterministic session name would otherwise
+ * attach to the corpse.
+ */
+const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as const;
+
+export type ActiveWorkflow = { id: string; sessionToken: string | null };
+
+/**
+ * The active (non-terminal) workflow owning `sessionName`, or null. Session
+ * names are deterministic and reused across dispatches, so this filters to
+ * non-terminal rows and takes the most recent — the one a live agent's hooks
+ * belong to.
+ */
+export function findActiveWorkflowBySession(
+  db: Database,
+  sessionName: string,
+): ActiveWorkflow | null {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const row = db
+    .query(
+      `SELECT id, session_token FROM workflows
+        WHERE session_name = ? AND state NOT IN (${placeholders})
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(sessionName, ...TERMINAL_STATES) as
+    | { id: string; session_token: string | null }
+    | null;
+  if (!row) return null;
+  return { id: row.id, sessionToken: row.session_token };
+}
+
+export type RecordEventInput = {
+  workflowId: string;
+  ts: number;
+  type: string;
+  payloadJson: string | null;
+};
+
+/** Append one `events` row. The payload is expected pre-truncated by the caller. */
+export function recordEvent(db: Database, input: RecordEventInput): void {
+  db.run("INSERT INTO events (workflow_id, ts, type, payload_json) VALUES (?, ?, ?, ?)", [
+    input.workflowId,
+    input.ts,
+    input.type,
+    input.payloadJson,
+  ]);
+}
+
+/** Advance a workflow's `last_heartbeat` (and `updated_at`) to `ts`. */
+export function touchHeartbeat(db: Database, id: string, ts: number): void {
+  db.run("UPDATE workflows SET last_heartbeat = ?, updated_at = ? WHERE id = ?", [ts, ts, id]);
+}
+
+/** Whether any `events` row of this type exists for the workflow. */
+export function hasEventOfType(db: Database, workflowId: string, type: string): boolean {
+  const row = db
+    .query("SELECT 1 AS n FROM events WHERE workflow_id = ? AND type = ? LIMIT 1")
+    .get(workflowId, type) as { n: number } | null;
+  return row !== null;
+}
+
+/** Timestamp of the earliest `events` row of this type for the workflow, or null. */
+export function firstEventTs(db: Database, workflowId: string, type: string): number | null {
+  const row = db
+    .query("SELECT ts FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts ASC LIMIT 1")
+    .get(workflowId, type) as { ts: number } | null;
+  return row?.ts ?? null;
+}
+
+/** The `type` of the most recent `events` row for a workflow, or null if none. */
+export function latestEventType(db: Database, workflowId: string): string | null {
+  const row = db
+    .query("SELECT type FROM events WHERE workflow_id = ? ORDER BY id DESC LIMIT 1")
+    .get(workflowId) as { type: string } | null;
+  return row?.type ?? null;
+}
+
+/** Whether a `waitFor` signal is already armed for this workflow. */
+export function isWaitForArmed(db: Database, workflowId: string): boolean {
+  const row = db
+    .query("SELECT 1 AS n FROM waitfor_signals WHERE workflow_id = ? LIMIT 1")
+    .get(workflowId) as { n: number } | null;
+  return row !== null;
+}
+
+/**
+ * Arm a `waitFor` signal for a workflow. `signal_name` is the table's primary
+ * key, so this is a no-op if the same signal is already armed (the watchdog may
+ * re-run before the workflow advances).
+ */
+export function armWaitForSignal(
+  db: Database,
+  signalName: string,
+  workflowId: string,
+  payloadJson: string | null = null,
+): void {
+  db.run(
+    "INSERT OR IGNORE INTO waitfor_signals (signal_name, workflow_id, created_at, payload_json) VALUES (?, ?, ?, ?)",
+    [signalName, workflowId, Date.now(), payloadJson],
+  );
+}
+
 type WorkflowRow = {
   id: string;
   kind: string;

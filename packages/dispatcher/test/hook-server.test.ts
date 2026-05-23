@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { HookPayload, NormalizedEvent } from "@middle/core";
 import { HookServer } from "../src/hook-server.ts";
+import type { HookStore } from "../src/hook-store.ts";
 
 let server: HookServer;
 
@@ -65,6 +67,96 @@ describe("HookServer — Stop", () => {
     await postHook("agent.stopped", "middle-6", { reason: "turn-end" });
     const payload = await pending;
     expect(payload.reason).toBe("turn-end");
+  });
+});
+
+describe("HookServer — HMAC auth + event validation (with store)", () => {
+  /** A store that knows one session/token and records every accepted hook. */
+  function makeStore(sessionName: string, token: string) {
+    const recorded: Array<{ event: NormalizedEvent; sessionName: string; payload: HookPayload }> =
+      [];
+    const store: HookStore = {
+      resolveSessionToken: (name) => (name === sessionName ? token : null),
+      record: (event, name, payload) => recorded.push({ event, sessionName: name, payload }),
+    };
+    return { store, recorded };
+  }
+
+  let authServer: HookServer;
+  let recorded: Array<{ event: NormalizedEvent; sessionName: string; payload: HookPayload }>;
+
+  beforeEach(() => {
+    const made = makeStore("middle-42", "good-token");
+    recorded = made.recorded;
+    authServer = new HookServer(made.store);
+    authServer.start(0);
+  });
+
+  afterEach(() => {
+    authServer.stop();
+  });
+
+  function authPost(
+    event: string,
+    headers: Record<string, string>,
+    payload: Record<string, unknown> = {},
+  ): Promise<Response> {
+    return fetch(`http://127.0.0.1:${authServer.port}/hooks/${event}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  test("a valid POST (correct token, known event) is accepted and recorded", async () => {
+    const res = await authPost(
+      "tool.pre",
+      { "X-Middle-Session": "middle-42", "X-Middle-Token": "good-token" },
+      { tool: "Bash" },
+    );
+    expect(res.status).toBe(200);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.event).toBe("tool.pre");
+    expect(recorded[0]!.sessionName).toBe("middle-42");
+  });
+
+  test("a bad-HMAC POST is rejected 401 and never recorded", async () => {
+    const res = await authPost("tool.pre", {
+      "X-Middle-Session": "middle-42",
+      "X-Middle-Token": "wrong-token",
+    });
+    expect(res.status).toBe(401);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("a POST for an unknown session is rejected 401 (no token resolvable)", async () => {
+    const res = await authPost("tool.pre", {
+      "X-Middle-Session": "middle-DOES-NOT-EXIST",
+      "X-Middle-Token": "good-token",
+    });
+    expect(res.status).toBe(401);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("an unknown event name is rejected 400 before auth or recording", async () => {
+    const res = await authPost("not.a.real.event", {
+      "X-Middle-Session": "middle-42",
+      "X-Middle-Token": "good-token",
+    });
+    expect(res.status).toBe(400);
+    expect(recorded).toHaveLength(0);
+  });
+
+  test("session.started with a valid token resolves the SessionGate awaiter", async () => {
+    const pending = authServer.awaitSessionStart("middle-42", 1000);
+    const res = await authPost(
+      "session.started",
+      { "X-Middle-Session": "middle-42", "X-Middle-Token": "good-token" },
+      { session_id: "s1", transcript_path: "/t/s1.jsonl" },
+    );
+    expect(res.status).toBe(200);
+    const payload = await pending;
+    expect(payload.session_id).toBe("s1");
   });
 });
 

@@ -7,6 +7,7 @@ import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
+import { getRateLimitState, setRateLimited } from "../src/rate-limits.ts";
 import { getWorkflow } from "../src/workflow-record.ts";
 import {
   createImplementationWorkflow,
@@ -181,6 +182,36 @@ describe("implementation workflow — happy path", () => {
     expect(getWorkflow(db, id)!.state).toBe("failed");
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     expectNoSessionLeak(tmux);
+  });
+});
+
+describe("implementation workflow — rate-limit state", () => {
+  test("a rate-limited classifyStop ends 'rate-limited' and records rate_limit_state", async () => {
+    const tmux = makeTmuxStub();
+    const resetAt = "2026-05-23T18:00:00Z";
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "rate-limited", resetAt }),
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("rate-limited");
+    const state = getRateLimitState(db, "stub")!;
+    expect(state.status).toBe("RATE_LIMITED");
+    expect(state.resetAt).toBe(Date.parse(resetAt));
+    expect(state.source).toBe("transcript");
+    // worktree + session still cleaned up
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a completed dispatch reverts a previously RATE_LIMITED adapter to AVAILABLE", async () => {
+    setRateLimited(db, { adapter: "stub", resetAt: Date.parse("2026-05-23T18:00:00Z"), source: "transcript" });
+    const deps = makeDeps({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expect(getRateLimitState(db, "stub")!.status).toBe("AVAILABLE");
   });
 });
 

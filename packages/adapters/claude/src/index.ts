@@ -1,7 +1,7 @@
 // @middle/adapter-claude — implements AgentAdapter for the Claude CLI.
 import type { AgentAdapter } from "@middle/core";
 import { capturePane, sendKeys } from "@middle/core";
-import { classifyStop } from "./classify.ts";
+import { classifyStop, detectRateLimit } from "./classify.ts";
 import { installHooks } from "./hooks.ts";
 import { buildPromptText } from "./prompt.ts";
 import { readTranscriptState, resolveTranscriptPath } from "./transcript.ts";
@@ -129,4 +129,5 @@ export const claudeAdapter: AgentAdapter = {
   resolveTranscriptPath,
   readTranscriptState,
   classifyStop,
+  detectRateLimit,
 };

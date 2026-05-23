@@ -5,6 +5,7 @@ import { Engine } from "bunqueue/workflow";
 import type { Execution } from "bunqueue/workflow";
 import { openAndMigrate } from "./db.ts";
 import { HookServer } from "./hook-server.ts";
+import { DbHookStore } from "./hook-store.ts";
 import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
 import { createImplementationWorkflow } from "./workflows/implementation.ts";
 import { createWorktree, destroyWorktree } from "./worktree.ts";
@@ -111,7 +112,9 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     const db = openAndMigrate(opts.dbPath);
     cleanups.push(() => db.close());
 
-    const hookServer = new HookServer();
+    // Wire the SQLite-backed store so hooks authenticate against the per-session
+    // token and flow into the events table + heartbeats.
+    const hookServer = new HookServer(new DbHookStore(db));
     hookServer.start(opts.dispatcherPort);
     cleanups.push(() => hookServer.stop());
 
