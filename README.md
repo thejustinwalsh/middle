@@ -97,9 +97,9 @@ middle is a manager, not the idea guy. It dispatches against the work *you* put 
 
 **2. File it as structured issues.** Hand the plan to the **`creating-github-issues`** skill and ask it to file all the work. It creates a parent Epic per phase with sub-issues underneath — each with acceptance criteria, the right labels, and proper parent/child hierarchy, exactly the shape middle's recommender and implementer expect. This skill lives in [`.claude/skills/creating-github-issues/`](.claude/skills/creating-github-issues) in this repo; copy it into your own repo's `.claude/skills/` (or `~/.claude/skills/`) to use it elsewhere.
 
-**3. Bootstrap the repo for middle.** `mm init <repo>` stamps the `implementing-github-issues` + `recommending-github-issues` skills, installs the hooks, and creates the dispatch **state issue**. *(This is Phase 3 — being shipped right now by middle itself. Until it lands, middle's own repo carries the skills and each dispatch installs its hooks per-run.)*
+**3. Bootstrap the repo for middle.** `mm init <repo-path>` (a path to a local checkout, same as `mm dispatch`) stamps the `implementing-github-issues` + `recommending-github-issues` skills, installs the hooks, and creates the dispatch **state issue**. *(This is Phase 3 — being shipped right now by middle itself. Until it lands, middle's own repo carries the skills and each dispatch installs its hooks per-run.)*
 
-**4. Hand off to middle.** `mm dispatch <repo> <epic>`, and the manager takes it from there.
+**4. Hand off to middle.** `mm dispatch <repo-path> <epic>`, and the manager takes it from there.
 
 In short: **you** (or a planning agent) decide *what* and file it as Epics; **middle** manages *getting it built*. middle never invents headcount or greenlights projects — that, too, is above its pay grade.
 
