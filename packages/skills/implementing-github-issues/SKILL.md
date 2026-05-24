@@ -465,7 +465,18 @@ Filing remaining acceptance items as sub-issues is **not** a substitute for deli
 
 Render the gate result as a short acceptance-evidence table in the PR description (or in a dedicated review comment) so the human reviewer can audit it without re-deriving it.
 
-### 10b. Finalize PR description and mark ready
+### 10b. Internal review loop (be your own CodeRabbit — before posting)
+
+Before the PR reaches a human or a review bot, churn a code-review pass on your own diff **locally** and resolve what it finds. A PR that leans on the external reviewer to surface every edge will spend rounds it doesn't have — an auto-review loop caps at ~5, and a bot can lock up before it converges. Front-load that work here so the external review starts close to clean.
+
+Loop until it comes back clean:
+1. **Get clean eyes.** Dispatch a fresh code-review subagent over the branch diff — clean eyes catch what the author rationalizes (see `superpowers:requesting-code-review`, or the `review` skill). Tell it to review like a strict bot reviewer: hunt boundary and format variants, untested branches, and the same class of bug one step over (the `## Status`-matcher saga is the cautionary tale — alternate heading levels, lookalikes, fenced examples, mismatched fences, all one class).
+2. **Resolve its findings** by the "Addressing review feedback" rules below — resolve the *class* within each finding's blast radius, each fix carrying its own test; draw the line on the pedantic ones and note why.
+3. **Re-review.** Run the pass again over the new diff. Repeat until it surfaces nothing new. Bound it: if it won't converge in ~3 internal rounds, the change is too tangled — simplify or escalate, don't grind.
+
+The bar before you mark ready: an external reviewer should only be able to surface a *new class* of issue, never an adjacent edge you could have caught locally.
+
+### 10c. Finalize PR description and mark ready
 
 ```bash
 # Final PR description sweep — make sure the running summary is final-form.
