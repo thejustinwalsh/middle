@@ -188,6 +188,36 @@ export function armWaitForSignal(
   );
 }
 
+export type ArmedSignal = { signalName: string; payloadJson: string | null };
+
+/**
+ * The signal armed for this workflow, or null. The poller reads this to learn
+ * what an Epic is waiting on (the epic-scoped, reason-scoped `signal_name`)
+ * without consuming it; only a successful resume consumes the row.
+ */
+export function getWaitForSignal(db: Database, workflowId: string): ArmedSignal | null {
+  const row = db
+    .query(
+      "SELECT signal_name, payload_json FROM waitfor_signals WHERE workflow_id = ? LIMIT 1",
+    )
+    .get(workflowId) as { signal_name: string; payload_json: string | null } | null;
+  if (!row) return null;
+  return { signalName: row.signal_name, payloadJson: row.payload_json };
+}
+
+/**
+ * Consume (delete) the armed signal for a workflow on resume, returning what it
+ * was. The durable `waitfor_signals` row is middle's own record that the
+ * workflow is parked — distinct from bunqueue's in-memory `exec.signals`. It is
+ * armed when the workflow parks and consumed exactly once when it resumes, so a
+ * resumed workflow no longer reads as waiting and the poller stops watching it.
+ */
+export function consumeWaitForSignal(db: Database, workflowId: string): ArmedSignal | null {
+  const armed = getWaitForSignal(db, workflowId);
+  if (armed) db.run("DELETE FROM waitfor_signals WHERE workflow_id = ?", [workflowId]);
+  return armed;
+}
+
 type WorkflowRow = {
   id: string;
   kind: string;
