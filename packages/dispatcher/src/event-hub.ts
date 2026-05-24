@@ -14,14 +14,33 @@
 export type Event = { type: string; data: unknown };
 
 /**
- * The data shape carried by a `workflow` event (the only producer today).
- * `state` mixes bunqueue lifecycle states with middle's DB-only states.
+ * The `state` carried on a `workflow` event. It is the explicit union of the two
+ * vocabularies a consumer must understand: bunqueue's execution lifecycle
+ * (`running`, `waiting`, `compensating`, `completed`, `failed`) and middle's
+ * DB-only workflow states (`pending`, `launching`, `waiting-human`,
+ * `rate-limited`, `compensated`, `cancelled`). Kept in sync with `WorkflowState`
+ * in `workflow-record.ts` and bunqueue's `ExecutionState` — narrowing it here
+ * keeps the control-plane contract honest (an invalid state fails type-check).
  */
+export type WorkflowWireState =
+  | "pending"
+  | "launching"
+  | "running"
+  | "waiting"
+  | "waiting-human"
+  | "rate-limited"
+  | "completed"
+  | "compensating"
+  | "compensated"
+  | "failed"
+  | "cancelled";
+
+/** The data shape carried by a `workflow` event (the only producer today). */
 export type WorkflowEventData = {
   id: string;
   repo: string;
   epic: number | null;
-  state: string;
+  state: WorkflowWireState;
 };
 
 /** SSE comment line — ignored by `EventSource`, but flushes/keeps the socket alive. */
@@ -88,6 +107,23 @@ export type EventHubOptions = {
   maxBuffer?: number;
 };
 
+/**
+ * The control plane's live SSE fan-out. One hub serves many `/control/events`
+ * subscribers; the daemon is the sole producer.
+ *
+ * Contract:
+ * - `serve(req, initEvents)` returns the SSE `Response` for one subscriber: a
+ *   `connected` frame, the init-replay, then live broadcasts. Aborting the
+ *   request (or cancelling the body) only unsubscribes — never the engine.
+ * - `broadcast(event)` fans out to every current subscriber; a consumer that
+ *   has fallen `maxBuffer` frames behind is dropped rather than back-pressuring
+ *   the broadcaster (delivery is best-effort, not guaranteed).
+ * - The heartbeat self-arms on the first subscriber and stops with the last, so
+ *   an idle hub holds no timer (and the timer never keeps the process alive).
+ *
+ * Not safe for true parallelism, but JS is single-threaded; all methods are
+ * synchronous and reentrancy-safe (fan-out snapshots the subscriber set).
+ */
 export class EventHub {
   readonly #subscribers = new Set<Subscriber>();
   readonly #heartbeatMs: number;

@@ -20,8 +20,10 @@ function makeControl(overrides: Partial<ControlPlane> = {}): ControlPlane {
     hub,
     version: "1.2.3",
     knownAdapter: (name) => name === "claude",
-    hasActiveEpicWorkflow: (_repo, epic) => collisionEpics.has(epic),
     startDispatch: async (input) => {
+      // `startDispatch` is the single source of truth for the 409 guard: a
+      // colliding Epic resolves `null`. The stub drives that off `collisionEpics`.
+      if (collisionEpics.has(input.epicNumber)) return null;
       startCalls.push(input);
       return "wf-abc";
     },
@@ -92,6 +94,32 @@ describe("HookServer control routes", () => {
     });
     expect(res.status).toBe(409);
     expect(startCalls).toEqual([]);
+  });
+
+  test("two concurrent dispatches of the same Epic: exactly one 200, one 409", async () => {
+    // The atomic guard lives in the daemon's `startDispatch` (see main.test.ts
+    // for the live-engine race test); here the stub emulates a single-winner
+    // reserve to pin that the *route* faithfully relays it — it must not
+    // reintroduce a non-atomic pre-check that lets both requests through.
+    const reserved = new Set<number>();
+    startWith(
+      makeControl({
+        startDispatch: async (input) => {
+          if (reserved.has(input.epicNumber)) return null; // sync check + add: no await between
+          reserved.add(input.epicNumber);
+          await Bun.sleep(5); // hold so the two requests genuinely overlap
+          startCalls.push(input);
+          return `wf-${input.epicNumber}`;
+        },
+      }),
+    );
+    const body = JSON.stringify({ repo: "o/r", repoPath: "/abs", epicNumber: 9, adapter: "claude" });
+    const [a, b] = await Promise.all([
+      fetch(`${base}/control/dispatch`, { method: "POST", body }),
+      fetch(`${base}/control/dispatch`, { method: "POST", body }),
+    ]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    expect(startCalls.length).toBe(1);
   });
 
   test("GET /control/events opens an SSE stream with a connected frame", async () => {

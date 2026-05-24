@@ -34,7 +34,7 @@ mandated `{ deps, prReadyGate }` shape. `bindServer` keeps the shape, keeps
 `new HookServer` in the caller, resolves the **ephemeral-port** dispatcherUrl
 post-`start()`, and stays engine-free (testable without bunqueue).
 **Evidence:** dispatch.ts:122-191 builds gate→server→deps in exactly that order;
-#113 wires the daemon's server with engine/hub/version the same way.
+PR #113 wires the daemon's server with engine/hub/version the same way.
 
 ## agentLogin resolved inside the factory via an injectable resolver
 **File(s):** `packages/dispatcher/src/build-deps.ts`
@@ -86,7 +86,8 @@ import it from there. The daemon installs it at startup and removes it on shutdo
 **Why:** #113 requires the swallower in the daemon's lifecycle path, and #115
 guts `dispatch.ts`'s engine path. A standalone home keeps the swallower (still
 used by `recommender-run.ts`'s ephemeral engine) from being lost when `dispatchEpic`
-is deleted. `waitForSettle` stays in `dispatch.ts` — `recommender-run.ts` shares it.
+is deleted. `waitForSettle` is extracted to `engine-settle.ts` (shared by
+`recommender-run.ts`); `dispatch.ts` is removed entirely with the standalone path.
 
 ## Hybrid SSE source: engine.onAny (bunqueue states) + an updateWorkflow observer (DB-only states)
 **File(s):** `packages/dispatcher/src/main.ts`, `workflow-record.ts`
@@ -95,7 +96,8 @@ is deleted. `waitForSettle` stays in `dispatch.ts` — `recommender-run.ts` shar
 **Decision:** Broadcast `{type:"workflow", data:{id,repo,epic,state}}` from two
 sources: `engine.onAny` for bunqueue lifecycle states (running/waiting/completed/
 failed/compensating), and a module-level `setUpdateWorkflowObserver` hook on
-`updateWorkflow` for middle's DB-only states (waiting-human, handoff-completed)
+`updateWorkflow` for middle's DB-only states (launching, waiting-human,
+rate-limited, compensated)
 that bunqueue never emits. Both go through one `broadcastWorkflow(id, state)`
 that looks up repo/epic from the row.
 **Why:** Neither source alone is complete — bunqueue doesn't know middle's

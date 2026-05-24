@@ -31,12 +31,15 @@ export type ControlPlane = {
   /** Whether `name` is a dispatchable adapter (body validation). */
   knownAdapter: (name: string) => boolean;
   /**
-   * Whether the Epic already has a non-terminal workflow row — the 409 collision
-   * guard (a second run would clash on the deterministic tmux session + worktree).
+   * Atomically start a dispatch on the daemon's long-lived engine and resolve
+   * the workflow id — or resolve `null` if the Epic already has an active
+   * (non-terminal) workflow. This is the single source of truth for the 409
+   * collision guard: the active-check and the start happen together with no
+   * intervening `await`, so two concurrent dispatches of the same Epic can't
+   * both pass (a colliding run would clash on the deterministic tmux session +
+   * worktree). The route maps `null` to 409.
    */
-  hasActiveEpicWorkflow: (repo: string, epicNumber: number) => boolean;
-  /** Start a dispatch on the daemon's long-lived engine; resolves the workflow id. */
-  startDispatch: (input: ControlDispatchInput) => Promise<string>;
+  startDispatch: (input: ControlDispatchInput) => Promise<string | null>;
   /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
   initEvents?: () => Event[];
 };
@@ -304,9 +307,10 @@ export class HookServer implements SessionGate {
   /**
    * `POST /control/dispatch` — enqueue an Epic on the daemon's engine. Validates
    * the body (non-empty `repo`, absolute `repoPath`, integer `epicNumber >= 1`,
-   * known `adapter`) → 400 on any failure; rejects with 409 if the Epic already
-   * has a non-terminal workflow (a colliding tmux session + worktree). 404 in
-   * gate-only mode. On success returns `{ workflowId }`.
+   * known `adapter`) → 400 on any failure. Delegates the collision check to
+   * `startDispatch`, which atomically rejects (resolves `null` → 409) if the
+   * Epic already has an active workflow (a colliding tmux session + worktree).
+   * 404 in gate-only mode. On success returns `{ workflowId }`.
    */
   async #handleControlDispatch(req: Request): Promise<Response> {
     const control = this.#control;
@@ -322,7 +326,10 @@ export class HookServer implements SessionGate {
       typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
 
     const { repo, repoPath, epicNumber, adapter } = body;
-    if (typeof repo !== "string" || repo === "") {
+    // Normalize `repo` up front: a whitespace-only value would otherwise pass an
+    // `=== ""` check and seed a malformed workflow-ownership key.
+    const normalizedRepo = typeof repo === "string" ? repo.trim() : "";
+    if (normalizedRepo === "") {
       return this.#badRequest("repo must be a non-empty string");
     }
     if (typeof repoPath !== "string" || !isAbsolute(repoPath)) {
@@ -335,14 +342,18 @@ export class HookServer implements SessionGate {
       return this.#badRequest(`unknown adapter: ${typeof adapter === "string" ? adapter : "(missing)"}`);
     }
 
-    if (control.hasActiveEpicWorkflow(repo, epicNumber)) {
+    const workflowId = await control.startDispatch({
+      repo: normalizedRepo,
+      repoPath,
+      epicNumber,
+      adapter,
+    });
+    if (workflowId === null) {
       return Response.json(
-        { error: `Epic #${epicNumber} in ${repo} already has an active workflow` },
+        { error: `Epic #${epicNumber} in ${normalizedRepo} already has an active workflow` },
         { status: 409 },
       );
     }
-
-    const workflowId = await control.startDispatch({ repo, repoPath, epicNumber, adapter });
     return Response.json({ workflowId });
   }
 

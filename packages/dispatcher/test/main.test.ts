@@ -174,4 +174,42 @@ describe("dispatcher main", () => {
       proc.kill("SIGKILL");
     }
   }, 20_000);
+
+  test("two concurrent dispatches of the same Epic: exactly one starts, the other 409s", async () => {
+    const repoPath = join(realpathSync(dir), "repo-concurrent");
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: "middle-test",
+      GIT_AUTHOR_EMAIL: "middle-test@example.invalid",
+      GIT_COMMITTER_NAME: "middle-test",
+      GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
+    };
+    expect(await Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" }).exited).toBe(0);
+    expect(
+      await Bun.spawn(["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"], {
+        stdout: "ignore",
+        stderr: "ignore",
+        env: gitEnv,
+      }).exited,
+    ).toBe(0);
+
+    const { proc, port } = await startDaemon();
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const body = JSON.stringify({ repo: "o/r", repoPath, epicNumber: 77, adapter: "claude" });
+      // Fire both before either can settle: the atomic reserve in startDispatch
+      // must let exactly one through and 409 the other (no double-start that
+      // would clash on the deterministic tmux session + worktree).
+      const [a, b] = await Promise.all([
+        fetch(`${base}/control/dispatch`, { method: "POST", body }),
+        fetch(`${base}/control/dispatch`, { method: "POST", body }),
+      ]);
+      expect([a.status, b.status].sort()).toEqual([200, 409]);
+
+      proc.kill("SIGTERM");
+      expect(await proc.exited).toBe(0);
+    } finally {
+      proc.kill("SIGKILL");
+    }
+  }, 20_000);
 });

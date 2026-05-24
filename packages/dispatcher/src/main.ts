@@ -76,11 +76,23 @@ async function main(): Promise<void> {
   // pruned on a terminal state — the duplicate terminal frame from the other
   // source arrives right after, and pruning would let it through. The map grows
   // one tiny entry per execution over the daemon's (in-memory, restartable) life.
+  // 409 collision reservation. `inFlightEpics` holds epics whose dispatch has
+  // been accepted but whose workflow row may not exist yet (the row is written
+  // asynchronously inside engine.start's first step). The synchronous
+  // check-and-reserve in `startDispatch` closes the TOCTOU; the reservation is
+  // released once the row exists — the first broadcast that resolves it, below —
+  // after which `hasNonTerminalEpicWorkflow` (the DB) is the source of truth.
+  const inFlightEpics = new Set<string>();
+  const epicKey = (repo: string, epicNumber: number): string => `${repo}#${epicNumber}`;
+
   const lastBroadcastState = new Map<string, string>();
   const broadcastWorkflow = (executionId: string, state: string): void => {
     if (lastBroadcastState.get(executionId) === state) return;
     lastBroadcastState.set(executionId, state);
     const row = getWorkflow(db, executionId);
+    // The workflow row now exists → drop any pre-row dispatch reservation; the
+    // DB collision check covers this epic from here on.
+    if (row && row.epicNumber !== null) inFlightEpics.delete(epicKey(row.repo, row.epicNumber));
     hub.broadcast({
       type: "workflow",
       data: { id: executionId, repo: row?.repo ?? "", epic: row?.epicNumber ?? null, state },
@@ -153,11 +165,26 @@ async function main(): Promise<void> {
         hub,
         version,
         knownAdapter: (name) => name === "claude",
-        hasActiveEpicWorkflow: (repo, epicNumber) => hasNonTerminalEpicWorkflow(db, repo, epicNumber),
         startDispatch: async ({ repo, repoPath, epicNumber, adapter }) => {
-          repoPaths.set(repo, repoPath);
-          const handle = await engine.start("implementation", { repo, epicNumber, adapter });
-          return handle.id;
+          const key = epicKey(repo, epicNumber);
+          // Atomic collision guard: this active-check and the reservation that
+          // follows run with no await between them, so two concurrent dispatches
+          // of the same Epic cannot both pass — the second sees the reservation
+          // (or, once started, the DB row) and gets `null` → 409.
+          if (inFlightEpics.has(key) || hasNonTerminalEpicWorkflow(db, repo, epicNumber)) {
+            return null;
+          }
+          inFlightEpics.add(key);
+          try {
+            repoPaths.set(repo, repoPath);
+            const handle = await engine.start("implementation", { repo, epicNumber, adapter });
+            return handle.id;
+          } catch (error) {
+            // Start failed → no row will exist to release the reservation via the
+            // broadcast path, so free the slot here rather than leak it.
+            inFlightEpics.delete(key);
+            throw error;
+          }
         },
         initEvents: () =>
           listNonTerminalWorkflows(db).map((w) => ({
