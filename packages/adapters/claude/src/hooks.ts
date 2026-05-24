@@ -1,7 +1,7 @@
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { InstallHookOpts, NormalizedEvent } from "@middle/core";
-import { HOOK_SH } from "@middle/core";
+import { HOOK_SH, PR_READY_GATE_SH } from "@middle/core";
 
 /**
  * Map each Claude hook event to the normalized taxonomy. Order is the order the
@@ -52,15 +52,28 @@ export async function installHooks(opts: InstallHookOpts): Promise<void> {
   await Bun.write(scriptPath, HOOK_SH);
   await chmod(scriptPath, 0o755);
 
+  // The PR-ready guard's blocking PreToolUse hook lives beside hook.sh.
+  const gateScriptPath = join(dirname(scriptPath), "pr-ready-gate.sh");
+  await Bun.write(gateScriptPath, PR_READY_GATE_SH);
+  await chmod(gateScriptPath, 0o755);
+
   const claudeDir = join(opts.worktree, ".claude");
   await mkdir(claudeDir, { recursive: true });
 
-  const hooks: Record<string, Array<{ hooks: Array<{ type: "command"; command: string }> }>> = {};
+  type HookGroup = { matcher?: string; hooks: Array<{ type: "command"; command: string }> };
+  const hooks: Record<string, HookGroup[]> = {};
   for (const [claudeEvent, normalized] of CLAUDE_EVENT_MAP) {
     hooks[claudeEvent] = [
       { hooks: [{ type: "command", command: `"${scriptPath}" ${normalized}` }] },
     ];
   }
+  // Add the PR-ready gate as a SECOND PreToolUse hook, scoped to the Bash tool
+  // (only Bash can run `gh pr ready`). It's blocking — exit 2 vetoes the call —
+  // so it must not replace the universal heartbeat entry, only sit alongside it.
+  hooks.PreToolUse!.push({
+    matcher: "Bash",
+    hooks: [{ type: "command", command: `"${gateScriptPath}"` }],
+  });
 
   await Bun.write(join(claudeDir, "settings.json"), `${JSON.stringify({ hooks }, null, 2)}\n`);
 }
