@@ -1,0 +1,28 @@
+# Mechanical verification gates the dispatcher runs per phase (checkbox-revert
+# reconciler + the agent's own pre-push verify). Source of truth for the schema:
+# schemas/verify.v1.md.
+#
+# Gates run OPTIMISTICALLY: the auto-fixers (oxfmt, oxlint --fix) apply whatever
+# they can in place, so the agent never burns a turn running a tool just to be
+# told to run it again. Only what CAN'T be auto-fixed — type errors, failing
+# tests, lint findings with no autofix — exits non-zero and escalates to the
+# agent to actually solve.
+#
+# No `phases` key on any gate → every gate runs for every phase.
+
+[[gate]]
+name = "format"
+command = "bun run format"
+
+[[gate]]
+name = "lint"
+command = "bun run lint"
+
+[[gate]]
+name = "typecheck"
+command = "bun run typecheck"
+
+[[gate]]
+name = "test"
+command = "bun test"
+timeout_seconds = 600
