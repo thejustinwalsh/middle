@@ -233,19 +233,30 @@ describe("implementation workflow — asked-question park → answer → resume"
   test("parks on asked-question (waiting-human, answered signal armed, worktree kept), then a signal resumes to completion", async () => {
     const tmux = makeTmuxStub();
     const prompts: string[] = [];
-    const postQuestionCalls: number[] = [];
+    const postQuestionCalls: Array<{ epicNumber: number; question: string; context?: string }> = [];
     // First drive asks a question; the resumed drive finishes (done).
     // One stub instance shared across drives so its classification sequence
     // advances (initial → asked-question, resume → done).
     const adapter = makeAdapterStub(
-      [{ kind: "asked-question", sentinelPath: "/x/.middle/blocked.json" }, { kind: "done" }],
+      [
+        {
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "Option A or B?", context: "Both compile." },
+        },
+        { kind: "done" },
+      ],
       prompts,
     );
     const deps = makeDeps({
       tmux: tmux.ops,
       getAdapter: () => adapter,
-      postQuestion: async ({ epicNumber }) => {
-        postQuestionCalls.push(epicNumber);
+      postQuestion: async (opts) => {
+        postQuestionCalls.push({
+          epicNumber: opts.epicNumber,
+          question: opts.question,
+          context: opts.context,
+        });
       },
     });
     const id = await start(deps);
@@ -256,7 +267,10 @@ describe("implementation workflow — asked-question park → answer → resume"
       signalName: signalNameFor(EPIC, "answered-question"),
       payloadJson: JSON.stringify({ reason: "answered-question" }),
     });
-    expect(postQuestionCalls).toEqual([EPIC]);
+    // The sentinel's question + context are surfaced to the workflow's poster.
+    expect(postQuestionCalls).toEqual([
+      { epicNumber: EPIC, question: "Option A or B?", context: "Both compile." },
+    ]);
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
     expect(prompts).toEqual(["initial"]); // resume drive not yet run
 

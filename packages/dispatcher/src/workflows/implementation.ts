@@ -81,14 +81,15 @@ export type ImplementationDeps = {
   stopTimeoutMs?: number;
   /**
    * Post the agent's open question on the Epic for human visibility when it
-   * parks on `asked-question`. Optional + injectable so tests need no `gh`;
-   * the default (wired by the dispatcher) reads `.middle/blocked.json` and
-   * comments on the issue.
+   * parks on `asked-question`. Receives the sentinel contents `classifyStop`
+   * surfaced (`question` + optional `context`). Optional + injectable so tests
+   * need no `gh`; the default (wired by the dispatcher) comments on the issue.
    */
   postQuestion?: (opts: {
     repo: string;
     epicNumber: number;
-    worktreePath: string;
+    question: string;
+    context?: string;
   }) => Promise<void>;
 };
 
@@ -352,7 +353,6 @@ export function createImplementationWorkflow(
    */
   async function parkForResume(ctx: StepContext<ImplementationInput>): Promise<void> {
     const { classification } = ctx.steps["launch-and-drive"] as DriveResult;
-    const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
     const reason = reasonFor(classification.kind);
     armWaitForSignal(
       deps.db,
@@ -366,7 +366,8 @@ export function createImplementationWorkflow(
         await deps.postQuestion({
           repo: ctx.input.repo,
           epicNumber: ctx.input.epicNumber,
-          worktreePath: handle.path,
+          question: classification.sentinel?.question ?? "(question text unavailable)",
+          context: classification.sentinel?.context,
         });
       } catch (error) {
         // Visibility is best-effort — the wait is already armed and durable, so

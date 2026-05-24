@@ -25,6 +25,7 @@ export type {
   LaunchOpts,
   TranscriptState,
   StopClassification,
+  BlockedSentinel,
   RateLimitDetection,
 } from "./adapter.ts";
 

@@ -171,8 +171,12 @@ function writeMiddleDir(): { cwd: string; middle: string; transcript: string } {
 }
 
 describe("classifyStop", () => {
-  test("sentinelPresent → asked-question, with the worktree-anchored blocked.json path", () => {
-    const { cwd, transcript } = writeMiddleDir();
+  test("sentinelPresent → asked-question, surfacing the blocked.json path + question/context", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(
+      join(middle, "blocked.json"),
+      JSON.stringify({ question: "Use option A or B?", context: "Both pass typecheck." }),
+    );
     const result = claudeAdapter.classifyStop({
       payload: { cwd },
       transcriptPath: transcript,
@@ -182,6 +186,25 @@ describe("classifyStop", () => {
     expect(result.kind).toBe("asked-question");
     if (result.kind === "asked-question") {
       expect(result.sentinelPath).toBe(join(cwd, ".middle", "blocked.json"));
+      expect(result.sentinel).toEqual({
+        question: "Use option A or B?",
+        context: "Both pass typecheck.",
+      });
+    }
+  });
+
+  test("asked-question tolerates a malformed/contentless blocked.json (sentinel → null)", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(join(middle, "blocked.json"), "{ not valid json");
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: true,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("asked-question");
+    if (result.kind === "asked-question") {
+      expect(result.sentinel).toBeNull();
     }
   });
 

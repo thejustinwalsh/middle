@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { HookPayload, RateLimitDetection, StopClassification } from "@middle/core";
+import type {
+  BlockedSentinel,
+  HookPayload,
+  RateLimitDetection,
+  StopClassification,
+} from "@middle/core";
 
 const USAGE_LIMIT_RE = /You've hit your usage limit\. Resets at (.+?)\./;
 
@@ -27,7 +32,8 @@ export function classifyStop(opts: {
   const middleDir = join(opts.worktree, ".middle");
 
   if (opts.sentinelPresent) {
-    return { kind: "asked-question", sentinelPath: join(middleDir, "blocked.json") };
+    const sentinelPath = join(middleDir, "blocked.json");
+    return { kind: "asked-question", sentinelPath, sentinel: readBlockedSentinel(sentinelPath) };
   }
 
   const match = USAGE_LIMIT_RE.exec(readTail(opts.transcriptPath));
@@ -65,6 +71,27 @@ function readTail(path: string): string {
     return raw.length > 8192 ? raw.slice(-8192) : raw;
   } catch {
     return "";
+  }
+}
+
+/**
+ * Read and tolerantly parse the `.middle/blocked.json` question sentinel so the
+ * workflow can surface the agent's question (and any context) to the human —
+ * e.g. posted on the Epic when it parks on `asked-question`. Returns `null` when
+ * the file is missing, unreadable, not JSON, or carries no string `question`:
+ * the Stop is still classified `asked-question` (the sentinel's *presence* is
+ * the signal), the contents are just best-effort.
+ */
+function readBlockedSentinel(path: string): BlockedSentinel | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (typeof parsed.question !== "string" || parsed.question.length === 0) return null;
+    const context = typeof parsed.context === "string" ? parsed.context : undefined;
+    return context === undefined
+      ? { question: parsed.question }
+      : { question: parsed.question, context };
+  } catch {
+    return null;
   }
 }
 
