@@ -149,8 +149,19 @@ describe("checkModuleIndex — the real middle packages tree", () => {
 
   test("finds every package's index front door", () => {
     const files = findIndexFiles(join(import.meta.dir, "..", "..", "..", "packages"));
-    // Sanity: the eight known front doors are all discovered.
-    const names = files.map((f) => f.replace(/.*\/packages\//, "packages/"));
-    expect(names).not.toHaveLength(0);
+    // The known front doors are all discovered — a partial-scan regression must fail here.
+    const names = files.map((f) => f.replace(/^.*[\\/]packages[\\/]/, "packages/"));
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "packages/core/src/index.ts",
+        "packages/cli/src/index.ts",
+        "packages/cli/src/bootstrap/index.ts",
+        "packages/dispatcher/src/index.ts",
+        "packages/dashboard/src/index.ts",
+        "packages/state-issue/src/index.ts",
+        "packages/adapters/claude/src/index.ts",
+        "packages/adapters/codex/src/index.ts",
+      ]),
+    );
   });
 });
