@@ -40,6 +40,22 @@ describe("parseStatusCheckboxes", () => {
     expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
   });
 
+  test("only a level-2 ## Status heading starts the section (# / ### Status ignored)", () => {
+    const body = `# Status
+- [x] #97 — h1, ignored
+### Status
+- [x] #98 — h3, ignored
+## Status
+- [x] #30 — the real one
+`;
+    expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
+  });
+
+  test("a ## Status / checkbox inside a fenced code block does not shadow the real section", () => {
+    const body = ["## Summary", "```", "## Status", "- [x] #99 — example in a fence", "```", "## Status", "- [x] #30 — real", ""].join("\n");
+    expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
+  });
+
   test("only the FIRST ## Status section is parsed; a later one is ignored", () => {
     const body = `## Status
 - [x] #28 — first section

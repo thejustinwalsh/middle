@@ -16,21 +16,42 @@
 export type StatusCheckbox = { subIssue: number; checked: boolean };
 
 const HEADING_RE = /^#{1,6}\s/;
-// Exact `Status` heading text only (trailing whitespace tolerated). `\b` would
-// also accept lookalikes like `## Status notes`, which — being the first match —
-// could shadow the real Status block and bypass checkbox gating.
-const STATUS_HEADING_RE = /^#{1,6}\s+status\s*$/i;
+// The contract is the first level-2 `## Status` heading, exact text. Two hashes
+// (not `#{1,6}`) so `# Status` / `### Status` can't capture the range; exact
+// text with an end-anchor so lookalikes like `## Status notes` can't either.
+const STATUS_HEADING_RE = /^##\s+status\s*$/i;
 
 /**
- * The `[start, end)` line range of the **first** `## Status` section — from the
- * line after that heading up to (not including) the next heading, or end of body.
- * Returns null when there's no Status section. Pinning to the *first* section is
- * the contract both the parser and the reverter share: a later `## Status` block,
- * or a `#N` checkbox under any other heading, is out of scope and never touched.
+ * Mark each line inside a fenced code block (``` or ~~~), and the fence
+ * delimiters themselves, so a `## Status` heading or a `- [x] #N` line that
+ * appears in a *quoted example* (a PR template, a decisions excerpt) is never
+ * mistaken for the real Status section.
  */
-function firstStatusSectionRange(lines: string[]): { start: number; end: number } | null {
+function fencedLineMask(lines: string[]): boolean[] {
+  let inFence = false;
+  return lines.map((line) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return true; // the delimiter line itself is not content
+    }
+    return inFence;
+  });
+}
+
+/**
+ * The `[start, end)` line range of the **first** real `## Status` section — from
+ * the line after that heading up to (not including) the next heading, or end of
+ * body; null when there's none. Pinned to the first level-2 `## Status` heading,
+ * fenced examples excluded. Both the parser and the reverter share this so they
+ * can never disagree on which lines are in scope.
+ */
+function firstStatusSectionRange(
+  lines: string[],
+  fenced: boolean[],
+): { start: number; end: number } | null {
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
+    if (fenced[i]) continue;
     const isHeading = HEADING_RE.test(lines[i]!);
     if (start === -1) {
       if (isHeading && STATUS_HEADING_RE.test(lines[i]!)) start = i + 1;
@@ -47,10 +68,12 @@ function firstStatusSectionRange(lines: string[]): { start: number; end: number 
  */
 export function parseStatusCheckboxes(body: string): StatusCheckbox[] {
   const lines = body.split("\n");
-  const range = firstStatusSectionRange(lines);
+  const fenced = fencedLineMask(lines);
+  const range = firstStatusSectionRange(lines, fenced);
   if (!range) return [];
   const result: StatusCheckbox[] = [];
   for (let i = range.start; i < range.end; i++) {
+    if (fenced[i]) continue;
     const box = /^\s*[-*]\s+\[([ xX])\]\s+.*?#(\d+)/.exec(lines[i]!);
     if (box) result.push({ subIssue: Number(box[2]), checked: box[1] !== " " });
   }
@@ -59,15 +82,17 @@ export function parseStatusCheckboxes(body: string): StatusCheckbox[] {
 
 /**
  * Flip the `[x]` back to `[ ]` on the first-`## Status`-section line that
- * references `#subIssue`. Scoped to that section (via `firstStatusSectionRange`)
- * so a checked `#N` checkbox elsewhere — a Related/Tasks list, a later Status
- * block, a quoted template — is never mutated.
+ * references `#subIssue`. Scoped to that section (via `firstStatusSectionRange`,
+ * fenced examples excluded) so a checked `#N` checkbox anywhere else — a
+ * Related/Tasks list, a later Status block, a quoted template — is never mutated.
  */
 function revertCheckbox(body: string, subIssue: number): string {
   const lines = body.split("\n");
-  const range = firstStatusSectionRange(lines);
+  const fenced = fencedLineMask(lines);
+  const range = firstStatusSectionRange(lines, fenced);
   if (!range) return body;
   for (let i = range.start; i < range.end; i++) {
+    if (fenced[i]) continue;
     const box = /^\s*[-*]\s+\[[xX]\]\s+.*?#(\d+)/.exec(lines[i]!);
     if (box && Number(box[1]) === subIssue) {
       lines[i] = lines[i]!.replace(/\[[xX]\]/, "[ ]");
