@@ -94,6 +94,14 @@ describe("buildPromptText", () => {
     expect(text).toBe("/recommending-github-issues @.middle/prompt.md");
   });
 
+  test("docs force-invokes the documenting-the-repo skill with the @-referenced context", () => {
+    const text = claudeAdapter.buildPromptText({
+      promptFile: ".middle/prompt.md",
+      kind: "docs",
+    });
+    expect(text).toBe("/documenting-the-repo @.middle/prompt.md");
+  });
+
   // Compile-time contract (enforced by `bun run typecheck`): the `kind`/`epicNumber`
   // coupling is a discriminated union, so a dispatched-issue kind cannot omit its
   // Epic and `recommender` cannot carry one. If the union regresses to a bare
@@ -107,6 +115,8 @@ describe("buildPromptText", () => {
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "answer" });
     // @ts-expect-error — 'recommender' runs against no Epic, so epicNumber is forbidden
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "recommender", epicNumber: 1 });
+    // @ts-expect-error — 'docs' runs against no Epic, so epicNumber is forbidden
+    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "docs", epicNumber: 1 });
     expect(true).toBe(true);
   });
 });
