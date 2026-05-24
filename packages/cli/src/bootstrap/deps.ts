@@ -2,7 +2,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BootstrapDeps, GithubGateway, RepoInfo } from "./types.ts";
-import { STATE_LABEL, STATE_LABEL_COLOR } from "./types.ts";
+import { STATE_ISSUE_TITLE, STATE_LABEL, STATE_LABEL_COLOR } from "./types.ts";
 
 type RunResult = { stdout: string; stderr: string; exitCode: number };
 
@@ -38,6 +38,30 @@ const realGithub: GithubGateway = {
     if (result.exitCode !== 0 && !/already exists/i.test(result.stderr)) {
       throw new Error(`gh label create failed: ${result.stderr.trim()}`);
     }
+  },
+
+  async findStateIssues(info: RepoInfo): Promise<number[]> {
+    const result = await run([
+      "gh", "issue", "list",
+      "--repo", `${info.owner}/${info.name}`,
+      "--label", STATE_LABEL,
+      "--state", "open",
+      "--json", "number,title,createdAt",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh issue list failed: ${result.stderr.trim()}`);
+    }
+    const rows = JSON.parse(result.stdout) as Array<{
+      number: number;
+      title: string;
+      createdAt: string;
+    }>;
+    // Match the canonical title too — defends against the label being applied to
+    // an unrelated issue. Oldest-first: the original is canonical, duplicates newer.
+    return rows
+      .filter((r) => r.title === STATE_ISSUE_TITLE)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+      .map((r) => r.number);
   },
 
   async createStateIssue(info: RepoInfo, title: string, body: string): Promise<number> {

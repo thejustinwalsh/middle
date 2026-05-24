@@ -23,6 +23,13 @@ export type RepoInfo = {
 export type GithubGateway = {
   /** Create the `agent-queue:state` label (color 6f42c1) if absent. */
   ensureStateLabel(info: RepoInfo): Promise<void>;
+  /**
+   * Open issues carrying the state label, oldest-first (the oldest is the
+   * canonical one). Empty when none exist. Lets `mm init` reconcile against
+   * GitHub — the source of truth — rather than file a duplicate state issue when
+   * a second machine / fresh clone has no local `config.toml` cache.
+   */
+  findStateIssues(info: RepoInfo): Promise<number[]>;
   /** Create the state issue with the given body; return its issue number. */
   createStateIssue(info: RepoInfo, title: string, body: string): Promise<number>;
   /** Close the state issue with a comment. No-op if the number is 0/unknown. */

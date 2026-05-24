@@ -31,6 +31,7 @@ function makeFakeDeps(): { deps: BootstrapDeps; calls: Calls } {
       closeStateIssue: async (_info, issue, comment) => {
         calls.closed.push({ issue, comment });
       },
+      findStateIssues: async () => [],
     },
     now: () => new Date("2026-05-23T12:00:00.000Z"),
   };
@@ -162,6 +163,44 @@ describe("mm init — existing config without a usable state issue", () => {
     expect(calls.created).toHaveLength(1);
     // the freshly-minted number must be written back to the config
     expect(readFileSync(join(repo, ".middle/config.toml"), "utf8")).toContain("number = 142");
+  });
+});
+
+describe("mm init — reconciles the state issue against GitHub", () => {
+  test("a fresh local install reuses the repo's existing state issue instead of creating one", async () => {
+    // Second machine / fresh clone: no local config (mode `fresh`), but the repo
+    // already has a state issue on GitHub. Must reuse it, not file a duplicate.
+    const { deps, calls } = makeFakeDeps();
+    deps.github.findStateIssues = async () => [77];
+
+    const result = await initRepo(repo, deps, { dryRun: false });
+
+    expect(result.mode).toBe("fresh");
+    expect(result.stateIssue).toBe(77);
+    expect(calls.created).toHaveLength(0); // reused, not created
+    // the reused number is cached locally
+    expect(readFileSync(join(repo, ".middle/config.toml"), "utf8")).toContain("number = 77");
+  });
+
+  test("warns and reuses the oldest when GitHub has duplicate state issues", async () => {
+    const { deps, calls } = makeFakeDeps();
+    deps.github.findStateIssues = async () => [50, 88]; // oldest-first
+
+    const result = await initRepo(repo, deps, { dryRun: false });
+
+    expect(result.stateIssue).toBe(50); // oldest is canonical
+    expect(calls.created).toHaveLength(0);
+    const warning = result.actions.find((a) => /WARNING/.test(a));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("#50");
+    expect(warning).toContain("#88");
+  });
+
+  test("creates a state issue only when GitHub has none", async () => {
+    const { deps, calls } = makeFakeDeps(); // default findStateIssues → []
+    const result = await initRepo(repo, deps, { dryRun: false });
+    expect(result.stateIssue).toBe(142);
+    expect(calls.created).toHaveLength(1);
   });
 });
 
