@@ -543,7 +543,7 @@ Gate every comment through three questions:
 
 Guardrails:
 - **Every proactive fix gets a test.** If you can't write a failing test for the adjacent case, you're speculating — don't change it.
-- **Stay in the blast radius.** Pre-existing issues elsewhere, unrelated cleanup, new features → follow-up issues, never folded into the review fix.
+- **Stay in the blast radius.** Pre-existing issues elsewhere, unrelated cleanup, new features → follow-up issues, never folded into the review fix. This is the explicit **exception** to the "I'll fix this small adjacent thing while I'm here → file a follow-up" red-flag below: hardening the *same class within this comment's blast radius* (each fix tested) is done in-pass, because it's the thing already under review — not new scope. Genuinely separate or unrelated adjacent work still becomes a follow-up.
 - **Say so in the thread.** Reply naming both the literal fix and the adjacent hardening ("fixed X as flagged; also tightened Y/Z in the same matcher — same class"), so the widened scope is explicit and reviewable.
 
 **Per review round — batch, self-review, then push once.** Treat each review pass (every comment the reviewer posted at once) as a single unit, never comment-by-comment:
@@ -595,7 +595,7 @@ These thoughts mean you're about to violate the workflow:
 | "Build passed, the work must be correct" | Build success ≠ feature correctness. Especially for UI work — type checks and unit tests don't tell you if the new layout actually renders. Use `agent-browser` for visual verification on UI changes. |
 | "I'll skip the issue comment, the plan is obvious" | The plan-as-comment is the contract. Post it. |
 | "I'll just add a 10-line comment explaining this" | Decisions log → PR review comment. Code stays clean. |
-| "I'll fix this small adjacent thing while I'm here" | File a follow-up. Keep scope tight. But check first: is it Phase-N work for the same parent? Then it's a plan TODO, not a new issue. |
+| "I'll fix this small adjacent thing while I'm here" | File a follow-up. Keep scope tight. But check first: is it Phase-N work for the same parent? Then it's a plan TODO, not a new issue. **Exception:** when *addressing review feedback*, hardening the same class *within the comment's blast radius* (each fix tested) is done in-pass — see "Addressing review feedback". |
 | "Every TODO becomes its own GitHub issue" | Most belong as plan notes for future phases of the same workstream. Standalone issues are the exception, not the default. |
 | "I'll file these standalone — they're 'tech debt'" | If they share a theme and have no parent, *create the parent first*, then file as sub-issues. Standalone is reserved for genuinely cross-workstream work. |
 | "Phase N (core) is complete; the rest can be sub-issues" | If the plan's Phase N acceptance criteria aren't all met, Phase N isn't complete. Adding qualifiers to phase names ("core", "initial", "foundation", "MVP") is the linguistic tell of a unilateral scope cut. Strip the qualifier; stay in draft until the actual phase is done. |
