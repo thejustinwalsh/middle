@@ -96,19 +96,34 @@ export async function initRepo(
     await writeCodexHookConfig(repo, hookScriptPath);
   }
 
-  // Steps 5-6: create the label + state issue. A fresh install always needs one;
-  // a reinit/migrate whose config carries no usable issue number (missing or 0)
-  // also needs one — otherwise the repo is left without a state issue and
-  // downstream dispatch/uninit have nothing to act on.
+  // Steps 5-6: resolve the state issue. A local config number is trusted as-is.
+  // Otherwise (fresh install, or a config carrying no usable number) the labeled
+  // GitHub issue is the source of truth — reconcile against it before creating,
+  // so a second machine / fresh clone reuses the repo's existing state issue
+  // instead of filing a duplicate. config.toml only caches the number.
   let stateIssue = existing?.stateIssueNumber ?? 0;
   const needsStateIssue = stateIssue <= 0;
   if (needsStateIssue) {
-    note("create the agent-queue:state label (if absent)");
-    note("create the state issue and capture its number");
-    if (!dry) {
-      await deps.github.ensureStateLabel(info);
-      const body = buildInitialStateIssueBody(deps.now());
-      stateIssue = await deps.github.createStateIssue(info, STATE_ISSUE_TITLE, body);
+    if (dry) {
+      note("reconcile against GitHub: reuse the existing agent-queue:state issue, else create one");
+    } else {
+      const found = await deps.github.findStateIssues(info);
+      if (found.length > 0) {
+        stateIssue = found[0]!;
+        note(`reuse existing state issue #${stateIssue} (found on GitHub)`);
+        if (found.length > 1) {
+          note(
+            `WARNING: ${found.length} open state issues found (#${found.join(", #")}); ` +
+              `reusing the oldest (#${stateIssue}) — close the duplicates`,
+          );
+        }
+      } else {
+        await deps.github.ensureStateLabel(info);
+        const body = buildInitialStateIssueBody(deps.now());
+        stateIssue = await deps.github.createStateIssue(info, STATE_ISSUE_TITLE, body);
+        note("create the agent-queue:state label (if absent)");
+        note("create the state issue and capture its number");
+      }
     }
   } else {
     note(`keep existing state issue #${stateIssue}`);
