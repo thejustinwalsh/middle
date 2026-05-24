@@ -51,7 +51,7 @@ sub-issue count (both 1) then `updatedAt`. This matches what I'd pick by hand: d
 - **Run 4 (final).** The full classification (table above) rendered to a state-issue body
   parses against the schema, validates, and round-trips byte-identically:
 
-  ```
+  ```text
   parse: OK
   validate: OK
   round-trip byte-identical: true
