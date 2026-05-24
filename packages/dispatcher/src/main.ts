@@ -72,7 +72,10 @@ async function main(): Promise<void> {
   // looked up from the row). Fed by two sources below. They overlap on the
   // states the workflow writes to the row AND bunqueue emits (`completed`,
   // around compensation), so collapse a consecutive identical (id, state) frame
-  // — otherwise a normal completion double-broadcasts.
+  // — otherwise a normal completion double-broadcasts. NB: the entry is NOT
+  // pruned on a terminal state — the duplicate terminal frame from the other
+  // source arrives right after, and pruning would let it through. The map grows
+  // one tiny entry per execution over the daemon's (in-memory, restartable) life.
   const lastBroadcastState = new Map<string, string>();
   const broadcastWorkflow = (executionId: string, state: string): void => {
     if (lastBroadcastState.get(executionId) === state) return;
