@@ -31,6 +31,15 @@ describe("parseStatusCheckboxes", () => {
     expect(parseStatusCheckboxes("## Summary\nnothing\n")).toEqual([]);
   });
 
+  test("a lookalike heading (## Status notes) does not shadow the real ## Status", () => {
+    const body = `## Status notes
+- [x] #99 — not the real status section
+## Status
+- [x] #30 — the real one
+`;
+    expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
+  });
+
   test("only the FIRST ## Status section is parsed; a later one is ignored", () => {
     const body = `## Status
 - [x] #28 — first section

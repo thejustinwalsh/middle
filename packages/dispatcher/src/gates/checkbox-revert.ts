@@ -16,7 +16,10 @@
 export type StatusCheckbox = { subIssue: number; checked: boolean };
 
 const HEADING_RE = /^#{1,6}\s/;
-const STATUS_HEADING_RE = /^#{1,6}\s+status\b/i;
+// Exact `Status` heading text only (trailing whitespace tolerated). `\b` would
+// also accept lookalikes like `## Status notes`, which — being the first match —
+// could shadow the real Status block and bypass checkbox gating.
+const STATUS_HEADING_RE = /^#{1,6}\s+status\s*$/i;
 
 /**
  * The `[start, end)` line range of the **first** `## Status` section — from the
