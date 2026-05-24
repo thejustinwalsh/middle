@@ -40,3 +40,35 @@ middle's dispatch unit is an **Epic** — one Epic = one branch = one PR. The Ep
 
 - `schemas/state-issue.v1.md` is the **source of truth** for the schema. The parser, renderer, and `validate` conform to it — not the other way around.
 - **Byte-identical round-trip is a hard invariant:** `renderStateIssue(parseStateIssue(render(state)))` must equal `render(state)`. Don't break it; the dispatcher relies on it to edit one section without disturbing others.
+
+## Documentation conventions
+
+The doc surface — module front doors, API comments, and per-folder `CLAUDE.md` — follows fixed conventions so humans and agents find the same context in the same place. The `documenting-the-repo` skill is the authoring guide; the rules below are the load-bearing contract a check enforces.
+
+### Module-index frontmatter
+
+Every `src/index.ts(x)` opens with one leading TSDoc block — the module's **front door**. It does double duty: the bespoke discovery frontmatter *and* the `@packageDocumentation` comment TypeDoc consumes. The format (after any shebang line):
+
+```ts
+/**
+ * @packageDocumentation
+ * @module @middle/<package>
+ *
+ * <1–2 line module purpose>
+ *
+ * Public surface:
+ * - `name` — what it is / does
+ *
+ * Where things live:
+ * - `file.ts` — what's in it
+ *
+ * Gotchas:
+ * - <load-bearing invariant, or "None.">
+ *
+ * claude-md: <true|false>
+ */
+```
+
+Required (a check fails otherwise): the leading `/** … */` block, `@packageDocumentation`, `@module <name>`, the three section headers (`Public surface:`, `Where things live:`, `Gotchas:`), and a `claude-md:` flag that is exactly `true` or `false`. The `claude-md` flag is the **single source of truth** for the per-folder-`CLAUDE.md` decision (below) — set it deliberately; never re-derive it per pass.
+
+The check lives in `packages/cli/src/checks/module-index.ts`, runs as a gating `bun test` (`packages/cli/test/module-index.test.ts`), and surfaces as a `docs` warning in `mm doctor`.
