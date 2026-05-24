@@ -476,11 +476,16 @@ describe("implementation workflow — review-round cap", () => {
     // definitive barrier: the bunqueue execution fully settling (the cap path
     // runs `resume-or-finalize` to completion, which consumes id2's armed wait).
     const deadline = Date.now() + 5000;
+    let settledState: string | undefined;
     while (Date.now() < deadline) {
-      const s = engine.getExecution(id2)?.state;
-      if (s === "completed" || s === "failed") break;
+      settledState = engine.getExecution(id2)?.state;
+      if (settledState === "completed" || settledState === "failed") break;
       await Bun.sleep(15);
     }
+    // Fail fast: if the cap path never ran resume-or-finalize to settle, the
+    // assertions below could still pass off the park-time `waiting-human` state
+    // and mask the regression. Require the execution to have actually settled.
+    expect(settledState === "completed" || settledState === "failed").toBe(true);
     // Capped: parks in waiting-human, no continuation enqueued, no armed wait
     // (poller stops watching), worktree preserved for the human.
     expect(getWorkflow(db, id2)?.state).toBe("waiting-human");

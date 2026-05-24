@@ -181,6 +181,14 @@ describe("classifyReviewOutcome", () => {
     );
     expect(v).toBeNull();
   });
+
+  test("a stale standing CHANGES_REQUESTED decision (no fresh review, no label) → null", () => {
+    // A bot reviewer leaves the PR's standing decision at CHANGES_REQUESTED even
+    // after the agent addressed it, so the standing decision alone must NOT
+    // re-fire a resume every pass — only a fresh review or an explicit label does.
+    const v = classifyReviewOutcome(prSnapshot({ reviewDecision: "CHANGES_REQUESTED" }), ARMED_AT);
+    expect(v).toBeNull();
+  });
 });
 
 describe("runPoller — answered-question", () => {

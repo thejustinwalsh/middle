@@ -656,7 +656,12 @@ export function createImplementationWorkflow(
     settled: DriveOutcome,
   ): Promise<void> {
     const finalState = finalStateFor(settled);
-    await deps.worktree.destroyWorktree(handle);
+    // A `waiting-human` handoff (round cap exhausted, or nudge-exhausted mid-work)
+    // keeps the worktree so the human can inspect / resume the in-progress state.
+    // Every other terminal state frees it — the work is in the PR or abandoned.
+    if (finalState !== "waiting-human") {
+      await deps.worktree.destroyWorktree(handle);
+    }
     if (settled.kind === "rate-limited") {
       setRateLimited(deps.db, {
         adapter: ctx.input.adapter,

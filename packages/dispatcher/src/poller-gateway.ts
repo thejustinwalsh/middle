@@ -25,17 +25,24 @@ function isBotLogin(login: string, type: string | undefined): boolean {
 
 export const ghPollGateway: GitHubPollGateway = {
   async listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]> {
+    // `--slurp` wraps the per-page arrays into one outer array; `gh` without it
+    // emits one JSON array *per page*, which `JSON.parse` chokes on past page 1.
     const out = await gh([
       "api",
       "--paginate",
+      "--slurp",
       `repos/${repo}/issues/${issueNumber}/comments`,
     ]);
-    const rows = JSON.parse(out) as Array<{
-      id: number;
-      body: string;
-      created_at: string;
-      user: { login: string; type?: string } | null;
-    }>;
+    const rows = (
+      JSON.parse(out) as Array<
+        Array<{
+          id: number;
+          body: string;
+          created_at: string;
+          user: { login: string; type?: string } | null;
+        }>
+      >
+    ).flat();
     return rows.map((r) => ({
       id: r.id,
       body: r.body ?? "",
@@ -77,14 +84,23 @@ export const ghPollGateway: GitHubPollGateway = {
       labels: Array<{ name: string }>;
     };
 
-    const reviewsOut = await gh(["api", "--paginate", `repos/${repo}/pulls/${prNumber}/reviews`]);
-    const reviewRows = JSON.parse(reviewsOut) as Array<{
-      id: number;
-      state: string;
-      body: string;
-      submitted_at: string | null;
-      user: { login: string } | null;
-    }>;
+    const reviewsOut = await gh([
+      "api",
+      "--paginate",
+      "--slurp",
+      `repos/${repo}/pulls/${prNumber}/reviews`,
+    ]);
+    const reviewRows = (
+      JSON.parse(reviewsOut) as Array<
+        Array<{
+          id: number;
+          state: string;
+          body: string;
+          submitted_at: string | null;
+          user: { login: string } | null;
+        }>
+      >
+    ).flat();
     const reviews: PrReview[] = reviewRows.map((r) => ({
       id: r.id,
       state: r.state,

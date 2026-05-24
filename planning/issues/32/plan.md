@@ -7,7 +7,7 @@
 Give the `implementation` workflow a **park → external-signal → resume** spine so an agent
 can hand control back to a human (asked a question) or to a reviewer (PR-ready), and later
 resume a fresh session in the same worktree with the answer / review threads in context.
-`APPROVED` ends the loop; a never-satisfied review loop is bounded to 5 rounds.
+`APPROVED` ends the loop; a never-satisfied review loop is bounded by a configurable round cap (default 5).
 
 ## Approach
 - The Epic's 4 open sub-issues are the phases. Build down them on one branch / one PR.

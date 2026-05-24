@@ -131,7 +131,12 @@ export function classifyReviewOutcome(
   if (snapshot.reviewDecision === "APPROVED") {
     return { outcome: "resolved", reviewId: null, decision: "APPROVED" };
   }
-  if (snapshot.reviewDecision === "CHANGES_REQUESTED" || snapshot.labels.includes("changes-requested")) {
+  // Deliberately NOT a `reviewDecision === "CHANGES_REQUESTED"` fallback: a bot
+  // reviewer leaves the PR's standing decision at CHANGES_REQUESTED even after a
+  // clean re-review, so re-firing off it would re-dispatch the agent every pass
+  // with no new feedback (and burn a round). A fresh review (handled above) or an
+  // explicit human `changes-requested` label is the only trustworthy resume signal.
+  if (snapshot.labels.includes("changes-requested")) {
     return { outcome: "changes-requested", reviewId: null, decision: "CHANGES_REQUESTED" };
   }
   return null;
