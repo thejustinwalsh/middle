@@ -108,6 +108,27 @@ describe("reconcileCheckboxes", () => {
     expect(h.state.body).toContain("- [x] #30");
   });
 
+  test("a revert touches only the Status section, not the same #N checkbox elsewhere", async () => {
+    const body = `## Status
+- [x] #30 — Checkbox-revert reconciler
+
+## Related work
+- [x] #30 — tracked elsewhere, must NOT be reverted
+`;
+    const h = harness({
+      body,
+      previous: { 30: false },
+      gates: () => ({ ok: false, failedGate: "typecheck" }),
+    });
+    await reconcileCheckboxes(h.deps);
+
+    // the Status box is reverted...
+    const statusPart = h.state.body.split("## Related work")[0]!;
+    expect(statusPart).toContain("- [ ] #30");
+    // ...but the identical #30 reference under another heading is left untouched
+    expect(h.state.body).toContain("## Related work\n- [x] #30 — tracked elsewhere");
+  });
+
   test("with several transitions, only the failing sub-issue is reverted", async () => {
     const body = `## Status
 - [x] #28 — Plan-comment guard

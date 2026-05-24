@@ -36,11 +36,22 @@ export function parseStatusCheckboxes(body: string): StatusCheckbox[] {
   return result;
 }
 
-/** Flip the `[x]` back to `[ ]` on the Status line that references `#subIssue`. */
+/**
+ * Flip the `[x]` back to `[ ]` on the Status line that references `#subIssue`.
+ * Scoped to the first `## Status` section (mirroring `parseStatusCheckboxes`) so
+ * a checked `#N` checkbox elsewhere in the body — a Related/Tasks list, a quoted
+ * template — is never mutated.
+ */
 function revertCheckbox(body: string, subIssue: number): string {
   const lines = body.split("\n");
+  let inSection = false;
   return lines
     .map((line) => {
+      if (/^#{1,6}\s/.test(line)) {
+        inSection = /^#{1,6}\s+status\b/i.test(line);
+        return line;
+      }
+      if (!inSection) return line;
       const box = /^(\s*[-*]\s+)\[[xX]\](\s+.*?#\d+)/.exec(line);
       if (box && new RegExp(`#${subIssue}\\b`).test(line)) {
         return line.replace(/\[[xX]\]/, "[ ]");

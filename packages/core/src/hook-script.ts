@@ -57,7 +57,11 @@ CODE=$(curl -sS -o "$OUT" -w '%{http_code}' \\
   -H "X-Middle-Token: \${MIDDLE_SESSION_TOKEN}" \\
   -H "X-Middle-Epic: \${MIDDLE_EPIC}" \\
   -H "Content-Type: application/json" \\
-  --data-binary @- --max-time 15)
+  --data-binary @- --max-time 15 || true)
+# curl can exit before emitting %{http_code} (DNS/connect failure, timeout),
+# leaving CODE empty — which would hit the \`*\` deny branch and wedge the agent.
+# Normalize empty to 000 so an unreachable dispatcher fails OPEN, per the contract.
+[ -n "$CODE" ] || CODE="000"
 case "$CODE" in
   200) rm -f "$OUT"; exit 0 ;;
   000) rm -f "$OUT"; exit 0 ;;
