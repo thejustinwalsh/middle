@@ -54,10 +54,11 @@ describe("mm init — fresh install", () => {
     expect(result.mode).toBe("fresh");
     expect(result.stateIssue).toBe(142);
 
-    // skills, both CLIs
+    // skills, both CLIs — all three shipped skills, including the backlog-seeder
     for (const cli of [".claude", ".codex"]) {
       expect(existsSync(join(repo, cli, "skills/implementing-github-issues/SKILL.md"))).toBe(true);
       expect(existsSync(join(repo, cli, "skills/recommending-github-issues/SKILL.md"))).toBe(true);
+      expect(existsSync(join(repo, cli, "skills/creating-github-issues/SKILL.md"))).toBe(true);
     }
 
     // hook script, executable
@@ -177,6 +178,9 @@ describe("mm uninit", () => {
     expect(existsSync(join(repo, ".middle"))).toBe(false);
     expect(existsSync(join(repo, ".claude/skills/implementing-github-issues"))).toBe(false);
     expect(existsSync(join(repo, ".codex/skills/recommending-github-issues"))).toBe(false);
+    // the backlog-seeder is removed from both CLIs too
+    expect(existsSync(join(repo, ".claude/skills/creating-github-issues"))).toBe(false);
+    expect(existsSync(join(repo, ".codex/skills/creating-github-issues"))).toBe(false);
     // init created .gitignore solely for `.middle/`; uninit removes the line and,
     // since the file is now empty, deletes it. Either way it must not survive with the line.
     const gi = join(repo, ".gitignore");

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -99,5 +99,14 @@ describe("default repo paths", () => {
     const result = diffSkills({ canonicalDir: CANONICAL_SKILLS_DIR, mirrorDir: BOOTSTRAP_SKILLS_DIR });
     expect(result.changed).toEqual([]);
     expect(result.inSync).toBe(true);
+  });
+
+  test("the shipped skill set includes the three bootstrapped skills", () => {
+    const shipped = readdirSync(CANONICAL_SKILLS_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    expect(shipped).toContain("implementing-github-issues");
+    expect(shipped).toContain("recommending-github-issues");
+    expect(shipped).toContain("creating-github-issues");
   });
 });
