@@ -465,7 +465,18 @@ Filing remaining acceptance items as sub-issues is **not** a substitute for deli
 
 Render the gate result as a short acceptance-evidence table in the PR description (or in a dedicated review comment) so the human reviewer can audit it without re-deriving it.
 
-### 10b. Finalize PR description and mark ready
+### 10b. Internal review loop (be your own CodeRabbit — before posting)
+
+Before the PR reaches a human or a review bot, churn a code-review pass on your own diff **locally** and resolve what it finds. A PR that leans on the external reviewer to surface every edge will spend rounds it doesn't have — an auto-review loop caps at ~5, and a bot can lock up before it converges. Front-load that work here so the external review starts close to clean.
+
+Loop until it comes back clean:
+1. **Get clean eyes.** Dispatch a fresh code-review subagent over the branch diff — clean eyes catch what the author rationalizes (see `superpowers:requesting-code-review`, or the `review` skill). Tell it to review like a strict bot reviewer: hunt boundary and format variants, untested branches, and the same class of bug one step over (the `## Status`-matcher saga is the cautionary tale — alternate heading levels, lookalikes, fenced examples, mismatched fences, all one class).
+2. **Resolve its findings** by the "Addressing review feedback" rules below — resolve the *class* within each finding's blast radius, each fix carrying its own test; draw the line on the pedantic ones and note why.
+3. **Re-review.** Run the pass again over the new diff. Repeat until it surfaces nothing new. Bound it: if it won't converge in ~3 internal rounds, the change is too tangled — simplify or escalate, don't grind.
+
+The bar before you mark ready: an external reviewer should only be able to surface a *new class* of issue, never an adjacent edge you could have caught locally.
+
+### 10c. Finalize PR description and mark ready
 
 ```bash
 # Final PR description sweep — make sure the running summary is final-form.
@@ -519,6 +530,36 @@ Closes #<num>
 
 **Stop here.** The skill does not merge the PR. The human reviews and merges; that's the final gate.
 
+## Addressing review feedback (the review loop)
+
+After the PR is ready, a reviewer — a human or a bot like CodeRabbit — may request changes. Fixing exactly the cited line and nothing more is a trap for autonomous dispatch: round-trips are costly (a human relays each), and the auto-review loop caps rounds (5, then it escalates to a human). Fixing only the literal instance lets one *class* of issue burn the whole budget, one adjacent edge per round.
+
+**Rule: resolve the class, not the instance — within the comment's blast radius.** When a comment reveals a fragile *approach* (not a one-off), harden that whole approach across the function/section the comment touches, in the same pass, each adjacent fix carrying its own test. Don't expand beyond that blast radius.
+
+Gate every comment through three questions:
+1. **One-off or symptom?** A typo or single missing guard → fix it literally. "This approach is fragile / can be bypassed / misses cases" → it's a symptom; fix the class.
+2. **Same blast radius?** The adjacent issue is in the function/section under review → fix it now. Elsewhere in the codebase → file a follow-up, don't touch it.
+3. **Robustness or new behavior?** Hardening/consistency of the thing under review → proceed. New capability or scope → stop; that's scope creep.
+
+Guardrails:
+- **Every proactive fix gets a test.** If you can't write a failing test for the adjacent case, you're speculating — don't change it.
+- **Stay in the blast radius.** Pre-existing issues elsewhere, unrelated cleanup, new features → follow-up issues, never folded into the review fix. This is the explicit **exception** to the "I'll fix this small adjacent thing while I'm here → file a follow-up" red-flag below: hardening the *same class within this comment's blast radius* (each fix tested) is done in-pass, because it's the thing already under review — not new scope. Genuinely separate or unrelated adjacent work still becomes a follow-up.
+- **Say so in the thread.** Reply naming both the literal fix and the adjacent hardening ("fixed X as flagged; also tightened Y/Z in the same matcher — same class"), so the widened scope is explicit and reviewable.
+
+**Per review round — batch, self-review, then push once.** Treat each review pass (every comment the reviewer posted at once) as a single unit, never comment-by-comment:
+1. **Batch** every finding in the pass. Don't fix-and-push one at a time — that's exactly what turns one class of issue into N rounds.
+2. **Resolve** them together by the rule above (resolve the class, a test per fix).
+3. **Run the internal review loop** (Phase 10b) over the batched diff — the clean-eyes pass, looped until it surfaces nothing new — so you also catch the *adjacent* edges this round's comments imply before the reviewer does.
+4. **Push once**, then wait for the verdict. "Green" = the reviewer **approves** *or* a fresh review reports **0 actionable comments** — not merely the absence of new comments. A bot reviewer (CodeRabbit) often will **not** flip `CHANGES_REQUESTED → APPROVED` on its own after a push, so the loop can hang waiting for an approval that never comes. **When it's stuck** — every thread addressed but the review decision hasn't moved — bump it: comment `@coderabbitai review` to force a fresh pass (and `@coderabbitai resolve` to close out addressed threads). A fresh 0-actionable review is green; new findings are the next round → repeat from step 1.
+
+This is what makes the round cap survivable: each round closes a whole *class* and pre-empts its neighbors, so you converge in a round or two instead of bleeding one edge per round into a lockup. The internal loop (10b) is not just a pre-post gate — it runs on **every** round, on the batched changes, before each push.
+
+Example of the trap: a comment "this heading match is too loose" is a *symptom* — the whole section matcher is suspect. Fixing only the one regex invites the reviewer to find the next adjacent edge (an alternate heading level, a lookalike heading, a fenced example) one round at a time. One pass asking "every way identifying this section can go wrong" resolves them together.
+
+**Self-review before you push — be your own CodeRabbit.** Don't wait for the reviewer to find edge N+1. Before pushing *any* non-trivial edit (a review fix or your own implementation), adversarially review your own diff the way a strict bot reviewer would. For the function/section you touched, enumerate concretely: *how else could this be wrong, bypassed, or miss a case?* — alternate inputs, boundary and format variants, the same class of bug one step over (e.g. you just handled `## Status`; what about `# Status`, `## Status notes`, a fenced `## Status`, mismatched fences?). Write a failing test for each **realistic** one and fix it in this pass; **draw the line** on the pedantic ones and note them (YAGNI — over-tightening is its own spiral). The bar: a reviewer should only be able to surface a *new class* of issue, not the next adjacent edge of the one you just touched. If you couldn't have predicted the reviewer's next comment, you didn't self-review hard enough.
+
+This deliberately extends `superpowers:receiving-code-review` (which leans pure-literal — "one item at a time", YAGNI) for the autonomous-dispatch context, where round-trips are costly and capped.
+
 ## Quick reference
 
 | Step | Command |
@@ -554,7 +595,7 @@ These thoughts mean you're about to violate the workflow:
 | "Build passed, the work must be correct" | Build success ≠ feature correctness. Especially for UI work — type checks and unit tests don't tell you if the new layout actually renders. Use `agent-browser` for visual verification on UI changes. |
 | "I'll skip the issue comment, the plan is obvious" | The plan-as-comment is the contract. Post it. |
 | "I'll just add a 10-line comment explaining this" | Decisions log → PR review comment. Code stays clean. |
-| "I'll fix this small adjacent thing while I'm here" | File a follow-up. Keep scope tight. But check first: is it Phase-N work for the same parent? Then it's a plan TODO, not a new issue. |
+| "I'll fix this small adjacent thing while I'm here" | File a follow-up. Keep scope tight. But check first: is it Phase-N work for the same parent? Then it's a plan TODO, not a new issue. **Exception:** when *addressing review feedback*, hardening the same class *within the comment's blast radius* (each fix tested) is done in-pass — see "Addressing review feedback". |
 | "Every TODO becomes its own GitHub issue" | Most belong as plan notes for future phases of the same workstream. Standalone issues are the exception, not the default. |
 | "I'll file these standalone — they're 'tech debt'" | If they share a theme and have no parent, *create the parent first*, then file as sub-issues. Standalone is reserved for genuinely cross-workstream work. |
 | "Phase N (core) is complete; the rest can be sub-issues" | If the plan's Phase N acceptance criteria aren't all met, Phase N isn't complete. Adding qualifiers to phase names ("core", "initial", "foundation", "MVP") is the linguistic tell of a unilateral scope cut. Strip the qualifier; stay in draft until the actual phase is done. |
