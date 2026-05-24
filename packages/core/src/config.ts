@@ -57,6 +57,13 @@ export type RecommenderSettings = {
   intervalMinutes: number;
   adapter: string;
   autoDispatch: boolean;
+  /**
+   * Hard cap on the recommender agent run, in milliseconds (from
+   * `agent_timeout_minutes`). Undefined when unset — the workflow then applies
+   * its own default. Operators bump this for repos large enough that ranking +
+   * rewriting the state issue doesn't finish inside the default window.
+   */
+  agentTimeoutMs?: number;
 };
 
 export type StateIssueSettings = {
@@ -236,6 +243,8 @@ function mapRecommender(raw: RawTable): RecommenderSettings | undefined {
     intervalMinutes: r.interval_minutes as number,
     adapter: r.adapter as string,
     autoDispatch: r.auto_dispatch as boolean,
+    agentTimeoutMs:
+      typeof r.agent_timeout_minutes === "number" ? r.agent_timeout_minutes * 60_000 : undefined,
   };
 }
 
