@@ -1,10 +1,45 @@
 import { timingSafeEqual } from "node:crypto";
+import { isAbsolute } from "node:path";
 import type { HookPayload, NormalizedEvent } from "@middle/core";
 import { isNormalizedEvent } from "@middle/core";
+import type { Event, EventHub } from "./event-hub.ts";
 import type { PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { HookStore } from "./hook-store.ts";
 
 type BunServer = ReturnType<typeof Bun.serve>;
+
+/** The validated `POST /control/dispatch` body — `repoPath` lets the daemon locate the checkout. */
+export type ControlDispatchInput = {
+  repo: string;
+  repoPath: string;
+  epicNumber: number;
+  adapter: string;
+};
+
+/**
+ * The control plane the dispatcher server exposes to operator-local HTTP
+ * clients (`mm dispatch`, later the dashboard). Injected and optional: gate-only
+ * mode (no control) keeps `/hooks` + `/gates` working and 404s the control
+ * routes. All collaborators are seams so the routes unit-test without a real
+ * engine or db — the daemon (#113) binds the live engine, hub, and db queries.
+ */
+export type ControlPlane = {
+  /** The SSE hub served at `/control/events`. */
+  hub: EventHub;
+  /** Reported by `/health` so a client can confirm compatibility. */
+  version: string;
+  /** Whether `name` is a dispatchable adapter (body validation). */
+  knownAdapter: (name: string) => boolean;
+  /**
+   * Whether the Epic already has a non-terminal workflow row — the 409 collision
+   * guard (a second run would clash on the deterministic tmux session + worktree).
+   */
+  hasActiveEpicWorkflow: (repo: string, epicNumber: number) => boolean;
+  /** Start a dispatch on the daemon's long-lived engine; resolves the workflow id. */
+  startDispatch: (input: ControlDispatchInput) => Promise<string>;
+  /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
+  initEvents?: () => Event[];
+};
 
 /**
  * The dashboard-facing "run the recommender now" trigger. Given the requested
@@ -69,15 +104,18 @@ export class HookServer implements SessionGate {
   readonly #store: HookStore | undefined;
   readonly #prReadyGate: PrReadyGateHandler | undefined;
   readonly #recommenderTrigger: RecommenderTrigger | undefined;
+  readonly #control: ControlPlane | undefined;
 
   constructor(
     store?: HookStore,
     prReadyGate?: PrReadyGateHandler,
     recommenderTrigger?: RecommenderTrigger,
+    control?: ControlPlane,
   ) {
     this.#store = store;
     this.#prReadyGate = prReadyGate;
     this.#recommenderTrigger = recommenderTrigger;
+    this.#control = control;
   }
 
   start(port: number): void {
@@ -110,6 +148,16 @@ export class HookServer implements SessionGate {
 
   async #handle(req: Request): Promise<Response> {
     const pathname = new URL(req.url).pathname;
+    // Liveness — unconditional, no DB access, so a client can probe for the daemon.
+    if (req.method === "GET" && pathname === "/health") {
+      return Response.json({ ok: true, port: this.port, version: this.#control?.version ?? "" });
+    }
+    if (req.method === "GET" && pathname === "/control/events") {
+      return this.#handleControlEvents(req);
+    }
+    if (req.method === "POST" && pathname === "/control/dispatch") {
+      return this.#handleControlDispatch(req);
+    }
     if (req.method === "POST" && pathname === "/gates/pr-ready") {
       return this.#handleGate(req);
     }
@@ -239,6 +287,67 @@ export class HookServer implements SessionGate {
       repoPath: str(body.repoPath),
     });
     return new Response(result.body, { status: result.status });
+  }
+
+  /**
+   * `GET /control/events` — the SSE feed of workflow state. 404 in gate-only
+   * mode. A fresh subscriber gets a `connected` frame, the injected init-replay
+   * (in-flight rows), then live broadcasts. Operator-local: no token (the server
+   * is 127.0.0.1-only).
+   */
+  #handleControlEvents(req: Request): Response {
+    const control = this.#control;
+    if (!control) return new Response("not found", { status: 404 });
+    return control.hub.serve(req, control.initEvents?.() ?? []);
+  }
+
+  /**
+   * `POST /control/dispatch` — enqueue an Epic on the daemon's engine. Validates
+   * the body (non-empty `repo`, absolute `repoPath`, integer `epicNumber >= 1`,
+   * known `adapter`) → 400 on any failure; rejects with 409 if the Epic already
+   * has a non-terminal workflow (a colliding tmux session + worktree). 404 in
+   * gate-only mode. On success returns `{ workflowId }`.
+   */
+  async #handleControlDispatch(req: Request): Promise<Response> {
+    const control = this.#control;
+    if (!control) return new Response("not found", { status: 404 });
+
+    let parsed: unknown;
+    try {
+      parsed = await req.json();
+    } catch {
+      return this.#badRequest("body must be valid JSON");
+    }
+    const body: Record<string, unknown> =
+      typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+
+    const { repo, repoPath, epicNumber, adapter } = body;
+    if (typeof repo !== "string" || repo === "") {
+      return this.#badRequest("repo must be a non-empty string");
+    }
+    if (typeof repoPath !== "string" || !isAbsolute(repoPath)) {
+      return this.#badRequest("repoPath must be an absolute path");
+    }
+    if (typeof epicNumber !== "number" || !Number.isInteger(epicNumber) || epicNumber < 1) {
+      return this.#badRequest("epicNumber must be an integer >= 1");
+    }
+    if (typeof adapter !== "string" || !control.knownAdapter(adapter)) {
+      return this.#badRequest(`unknown adapter: ${typeof adapter === "string" ? adapter : "(missing)"}`);
+    }
+
+    if (control.hasActiveEpicWorkflow(repo, epicNumber)) {
+      return Response.json(
+        { error: `Epic #${epicNumber} in ${repo} already has an active workflow` },
+        { status: 409 },
+      );
+    }
+
+    const workflowId = await control.startDispatch({ repo, repoPath, epicNumber, adapter });
+    return Response.json({ workflowId });
+  }
+
+  #badRequest(reason: string): Response {
+    return Response.json({ error: reason }, { status: 400 });
   }
 
   #deliver(key: string, payload: HookPayload): void {
