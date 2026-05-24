@@ -29,6 +29,7 @@ import { findIndexFiles, PACKAGES_DIR } from "./module-index.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
+/** One public export that lacks a doc comment, with the module it surfaces from. */
 export type UndocumentedExport = {
   /** The `@module` name (or the index path) the export belongs to. */
   module: string;
@@ -36,6 +37,7 @@ export type UndocumentedExport = {
   name: string;
 };
 
+/** The advisory coverage tally across every scanned index's public surface. */
 export type TsdocCoverageReport = {
   /** Total public exports across all scanned index files. */
   totalExports: number;

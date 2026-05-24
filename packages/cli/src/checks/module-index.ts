@@ -37,16 +37,19 @@ const SKIP_DIRS = new Set(["node_modules", "bootstrap-assets", "dist", ".git"]);
 /** The three section headers a well-formed frontmatter block must carry. */
 const REQUIRED_SECTIONS = ["Public surface:", "Where things live:", "Gotchas:"] as const;
 
+/** One convention breach found for a scanned index module: which file, and why. */
 export type ModuleIndexViolation = {
   /** Path relative to the scanned packages root. */
   file: string;
+  /** Human-readable reason the file fails the convention. */
   message: string;
 };
 
+/** The frontmatter values parsed out of a well-formed module-index block. */
 export type ModuleIndexFrontmatter = {
   /** The `@module <name>` value. */
   module: string;
-  /** The `claude-md:` flag value. */
+  /** The `claude-md:` flag value — the single source of truth for nested `CLAUDE.md` presence. */
   claudeMd: boolean;
 };
 

@@ -130,6 +130,12 @@ async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   console.error(`[${tag}] enterAutoMode: boot-dialog window (${BOOT_DETECT_TIMEOUT_MS}ms) elapsed`);
 }
 
+/**
+ * The Claude Code CLI agent adapter. Implements {@link AgentAdapter} for the
+ * dispatcher: builds the interactive launch command (auto mode, no `-p`),
+ * dismisses the boot-time bypass/trust dialogs, reads the transcript for stop
+ * classification, and detects rate-limit and needs-login states from pane text.
+ */
 export const claudeAdapter: AgentAdapter = {
   name: "claude",
   readyEvent: "session.started",

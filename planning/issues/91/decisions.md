@@ -43,3 +43,29 @@ to implementation; the hard doc-comment guarantee is `@packageDocumentation`
 presence (already gated by the frontmatter check), so coverage can stay advisory.
 **Evidence:** `doctor.ts:84-95` (skills check is warn); `scripts/hooks/pre-commit`
 (hard gate); #93 body ("decide advisory vs gating in implementation").
+
+## Review round 1 (CodeRabbit): document in-diff public exports, leave the advisory backlog
+**File(s):** `packages/cli/src/checks/module-index.ts`, `packages/cli/src/checks/tsdoc-coverage.ts`, `packages/adapters/claude/src/index.ts`, `packages/cli/test/module-index.test.ts`
+**Date:** 2026-05-24
+
+**Decision:** CodeRabbit's `CHANGES_REQUESTED` flagged one class — public exports
+lacking export-level TSDoc — across three files: the two new check modules'
+exported types (`ModuleIndexViolation`, `ModuleIndexFrontmatter`,
+`UndocumentedExport`, `TsdocCoverageReport`) and the `claudeAdapter` front-door
+export. Resolved the class within the comments' blast radius: documented every
+public export in those three files (the check modules' functions were already
+documented; `claudeAdapter`'s sibling `detect*` exports already were). Also took
+the nitpick — strengthened the "front door discovery" test from `not.toHaveLength(0)`
+to `arrayContaining` over the eight known front doors, so a partial-scan
+regression fails loudly.
+**Why:** The convention this PR introduces ("every public export carries TSDoc")
+must hold for the PR's own new surface — leading on it by example. The remaining
+~27 undocumented exports (`@middle/core`, `@middle/cli/bootstrap`,
+`@middle/dispatcher`, `@middle/state-issue`) are pre-existing re-exported type
+declarations *not touched by this diff*; per the gating-vs-advisory decision above
+they are the accepted advisory backlog the `tsdoc` warn tracks, not review-round
+scope. Folding them in would contradict that decision and reach outside the
+comments' blast radius.
+**Evidence:** `mm doctor` `tsdoc` line drops 28→27 undocumented (only
+`claudeAdapter` left the index surface; the four check-module types aren't index
+re-exports so the count is unchanged by them); `bun test` 352 pass / 0 fail.
