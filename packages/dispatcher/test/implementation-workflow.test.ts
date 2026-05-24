@@ -255,7 +255,9 @@ async function awaitSettled(id: string, timeoutMs = 5000): Promise<string> {
     if (s && terminal.has(s)) return s;
     await Bun.sleep(15);
   }
-  throw new Error(`workflow ${id} did not settle within ${timeoutMs}ms (was '${getWorkflow(db, id)?.state}')`);
+  throw new Error(
+    `workflow ${id} did not settle within ${timeoutMs}ms (was '${getWorkflow(db, id)?.state}')`,
+  );
 }
 
 /** Start a dispatch and wait for it to settle; returns the workflow id. */
@@ -393,7 +395,10 @@ describe("implementation workflow — done park → review-changes → resume (e
     const tmux = makeTmuxStub();
     const prompts: string[] = [];
     const adapter = makeAdapterStub({ kind: "done" }, prompts);
-    const { deps, continuationIds } = withContinuations({ tmux: tmux.ops, getAdapter: () => adapter });
+    const { deps, continuationIds } = withContinuations({
+      tmux: tmux.ops,
+      getAdapter: () => adapter,
+    });
     const id0 = await start(deps);
 
     await awaitParked(id0);
@@ -527,7 +532,11 @@ function makeWorktreeStub(planBody: string | null) {
 
 /** A PlanCommentReader stub returning fixed comments on the Epic. */
 function makePlanReader(comments: IssueComment[]): PlanCommentReader {
-  return { async listIssueComments() { return comments; } };
+  return {
+    async listIssueComments() {
+      return comments;
+    },
+  };
 }
 
 describe("implementation workflow — plan-comment completion gate", () => {
@@ -540,7 +549,9 @@ describe("implementation workflow — plan-comment completion gate", () => {
       tmux: tmux.ops,
       worktree: wt.ops,
       getAdapter: () => makeAdapterStub({ kind: "done" }),
-      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: "no plan here", url: "u" }]),
+      planCommentReader: makePlanReader([
+        { authorLogin: "agentbot", body: "no plan here", url: "u" },
+      ]),
       agentLogin: "agentbot",
     });
     const id = await runToEnd(deps);

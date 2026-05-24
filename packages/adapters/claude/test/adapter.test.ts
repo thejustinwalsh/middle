@@ -114,7 +114,11 @@ describe("buildPromptText", () => {
     // @ts-expect-error — 'answer' must carry an epicNumber
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "answer" });
     // @ts-expect-error — 'recommender' runs against no Epic, so epicNumber is forbidden
-    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "recommender", epicNumber: 1 });
+    claudeAdapter.buildPromptText({
+      promptFile: ".middle/prompt.md",
+      kind: "recommender",
+      epicNumber: 1,
+    });
     // @ts-expect-error — 'docs' runs against no Epic, so epicNumber is forbidden
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "docs", epicNumber: 1 });
     expect(true).toBe(true);
@@ -431,7 +435,9 @@ describe("installHooks", () => {
     );
     const gateEntry = preToolUse[1]!;
     expect(gateEntry.matcher).toBe("Bash");
-    expect(gateEntry.hooks[0]!.command).toBe(`"${join(worktree, ".middle/hooks/pr-ready-gate.sh")}"`);
+    expect(gateEntry.hooks[0]!.command).toBe(
+      `"${join(worktree, ".middle/hooks/pr-ready-gate.sh")}"`,
+    );
   });
 
   test("writes an executable pr-ready-gate.sh that POSTs to /gates/pr-ready", async () => {

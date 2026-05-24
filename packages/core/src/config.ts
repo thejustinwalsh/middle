@@ -150,8 +150,7 @@ function deepMerge(base: RawTable, override: RawTable): RawTable {
   const out: RawTable = { ...base };
   for (const [key, value] of Object.entries(override)) {
     const existing = out[key];
-    out[key] =
-      isPlainObject(existing) && isPlainObject(value) ? deepMerge(existing, value) : value;
+    out[key] = isPlainObject(existing) && isPlainObject(value) ? deepMerge(existing, value) : value;
   }
   return out;
 }

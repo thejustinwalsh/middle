@@ -34,14 +34,20 @@ describe("parseVerifyConfig — valid", () => {
       ].join("\n"),
     );
     expect(config.gates).toEqual([
-      { name: "typecheck", command: "bun run typecheck", timeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS },
+      {
+        name: "typecheck",
+        command: "bun run typecheck",
+        timeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS,
+      },
       { name: "test", command: "bun test", timeoutSeconds: 600 },
     ]);
   });
 
   test("carries an optional phases scope", () => {
     const config = parseVerifyConfig(
-      ['[[gate]]', 'name = "acceptance"', 'command = "bun run accept"', "phases = [40, 41]"].join("\n"),
+      ["[[gate]]", 'name = "acceptance"', 'command = "bun run accept"', "phases = [40, 41]"].join(
+        "\n",
+      ),
     );
     expect(config.gates[0]!.phases).toEqual([40, 41]);
   });
@@ -50,11 +56,11 @@ describe("parseVerifyConfig — valid", () => {
 describe("gatesForPhase — per-phase addressing", () => {
   const config = parseVerifyConfig(
     [
-      '[[gate]]',
+      "[[gate]]",
       'name = "typecheck"',
       'command = "tc"',
       "",
-      '[[gate]]',
+      "[[gate]]",
       'name = "acceptance"',
       'command = "acc"',
       "phases = [40, 41]",

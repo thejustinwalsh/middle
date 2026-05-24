@@ -96,7 +96,10 @@ describe("diffSkills / check mode", () => {
 
 describe("default repo paths", () => {
   test("the shipped canonical and mirror are in sync", () => {
-    const result = diffSkills({ canonicalDir: CANONICAL_SKILLS_DIR, mirrorDir: BOOTSTRAP_SKILLS_DIR });
+    const result = diffSkills({
+      canonicalDir: CANONICAL_SKILLS_DIR,
+      mirrorDir: BOOTSTRAP_SKILLS_DIR,
+    });
     expect(result.changed).toEqual([]);
     expect(result.inSync).toBe(true);
   });

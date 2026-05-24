@@ -96,7 +96,10 @@ describe("evaluatePrReady", () => {
   test("a deferral pointing at a bot comment is denied", async () => {
     const body =
       "## Acceptance criteria\n- [ ] Punted (deferred: https://github.com/o/r/issues/27#issuecomment-1)\n";
-    const resolve: CommentAuthorResolver = async () => ({ login: "coderabbitai[bot]", isBot: true });
+    const resolve: CommentAuthorResolver = async () => ({
+      login: "coderabbitai[bot]",
+      isBot: true,
+    });
     const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
     expect(result.decision).toBe("deny");
     if (result.decision === "deny") expect(result.reason).toContain("Punted");

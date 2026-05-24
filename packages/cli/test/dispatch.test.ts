@@ -43,7 +43,9 @@ function makeRepo(): string {
   };
   const init = Bun.spawnSync(["git", "init", repoPath]);
   expect(init.exitCode).toBe(0);
-  const commit = Bun.spawnSync(["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"], { env: gitEnv });
+  const commit = Bun.spawnSync(["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"], {
+    env: gitEnv,
+  });
   expect(commit.exitCode).toBe(0);
   return repoPath;
 }
@@ -227,7 +229,9 @@ describe("runDispatch — control client", () => {
     dead.stop(true);
     const configPath = writeConfig(port);
     const errLines: string[] = [];
-    const errSpy = spyOn(console, "error").mockImplementation((...a: unknown[]) => errLines.push(a.join(" ")));
+    const errSpy = spyOn(console, "error").mockImplementation((...a: unknown[]) =>
+      errLines.push(a.join(" ")),
+    );
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
     try {
       const code = await runDispatch(repoPath, "6", {

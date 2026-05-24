@@ -30,7 +30,9 @@ export async function runInit(pathArg: string, opts: InitCliOptions = {}): Promi
       result.mode === "fresh"
         ? `state issue created: #${result.stateIssue}`
         : `state issue: #${result.stateIssue} (kept)`;
-    console.log(`✓ middle initialized for ${slug}${result.mode === "fresh" ? "" : ` [${result.mode}]`}`);
+    console.log(
+      `✓ middle initialized for ${slug}${result.mode === "fresh" ? "" : ` [${result.mode}]`}`,
+    );
     console.log("  skills installed at .claude/skills/, .codex/skills/");
     console.log("  hook script at .middle/hooks/hook.sh");
     console.log(`  ${issueLine}`);

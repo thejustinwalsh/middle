@@ -35,7 +35,11 @@ const GIT_ENV = {
 };
 
 async function git(cwd: string, args: string[]): Promise<void> {
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe", env: GIT_ENV });
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: GIT_ENV,
+  });
   if ((await proc.exited) !== 0) {
     throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
   }
@@ -59,7 +63,11 @@ afterEach(async () => {
 
 const REPO = "thejustinwalsh/middle";
 const INPUT: DocumentationInput = { repo: REPO, adapter: "stub" };
-const TARGET: DocsTargetSummary = { name: "starlight", docsRoot: "src/content/docs", supportsLlmsTxt: true };
+const TARGET: DocsTargetSummary = {
+  name: "starlight",
+  docsRoot: "src/content/docs",
+  supportsLlmsTxt: true,
+};
 
 /** Records every collaborator call into a shared trace, so step order is observable. */
 function makeHarness(opts?: {
@@ -96,7 +104,12 @@ function makeHarness(opts?: {
     buildPromptText: (o) => (o.kind === "docs" ? `/documenting-the-repo @${o.promptFile}` : "x"),
     async enterAutoMode() {},
     resolveTranscriptPath: (p) => p.transcript_path as string,
-    readTranscriptState: () => ({ lastActivity: "", contextTokens: 0, turnCount: 0, lastToolUse: null }),
+    readTranscriptState: () => ({
+      lastActivity: "",
+      contextTokens: 0,
+      turnCount: 0,
+      lastToolUse: null,
+    }),
     classifyStop: () => ({ kind: "done" }),
   };
 
@@ -151,7 +164,9 @@ async function runToEnd(deps: DocumentationDeps, timeoutMs = 5000): Promise<stri
     if (s && terminal.has(s)) return handle.id;
     await Bun.sleep(15);
   }
-  throw new Error(`documentation ${handle.id} did not settle (exec '${engine.getExecution(handle.id)?.state}')`);
+  throw new Error(
+    `documentation ${handle.id} did not settle (exec '${engine.getExecution(handle.id)?.state}')`,
+  );
 }
 
 /** The step node's definition (name/timeout/retry/compensate), or undefined. */
@@ -229,7 +244,11 @@ describe("documentation workflow — shell: step order + dedicated slot", () => 
   });
 
   test("a rate-limited adapter fails the run with state 'rate-limited'", async () => {
-    setRateLimited(db, { adapter: "stub", resetAt: Date.parse("2099-01-01T00:00:00Z"), source: "transcript" });
+    setRateLimited(db, {
+      adapter: "stub",
+      resetAt: Date.parse("2099-01-01T00:00:00Z"),
+      source: "transcript",
+    });
     const h = makeHarness();
     engine.register(createDocumentationWorkflow(h.deps));
     const handle = await engine.start("documentation", INPUT);

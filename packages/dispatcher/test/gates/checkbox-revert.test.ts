@@ -52,7 +52,16 @@ describe("parseStatusCheckboxes", () => {
   });
 
   test("a ## Status / checkbox inside a fenced code block does not shadow the real section", () => {
-    const body = ["## Summary", "```", "## Status", "- [x] #99 — example in a fence", "```", "## Status", "- [x] #30 — real", ""].join("\n");
+    const body = [
+      "## Summary",
+      "```",
+      "## Status",
+      "- [x] #99 — example in a fence",
+      "```",
+      "## Status",
+      "- [x] #30 — real",
+      "",
+    ].join("\n");
     expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
   });
 

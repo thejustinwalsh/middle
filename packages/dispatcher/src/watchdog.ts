@@ -111,7 +111,12 @@ function transcriptActivityMs(
 
 function failWorkflow(deps: WatchdogDeps, id: string, reason: string, now: number): void {
   updateWorkflow(deps.db, id, { state: "failed" });
-  recordEvent(deps.db, { workflowId: id, ts: now, type: FAILED_EVENT, payloadJson: JSON.stringify({ reason }) });
+  recordEvent(deps.db, {
+    workflowId: id,
+    ts: now,
+    type: FAILED_EVENT,
+    payloadJson: JSON.stringify({ reason }),
+  });
   deps.triggerCompensation?.(id, reason);
 }
 

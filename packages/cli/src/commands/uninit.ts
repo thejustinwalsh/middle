@@ -31,7 +31,9 @@ export async function runUninit(pathArg: string, opts: UninitCliOptions = {}): P
     console.log("✓ middle removed");
     for (const action of result.actions) console.log(`  • ${action}`);
     if (result.stateIssue > 0) {
-      console.log(`\nnote: the \`agent-queue:state\` label was preserved (delete it manually if desired).`);
+      console.log(
+        `\nnote: the \`agent-queue:state\` label was preserved (delete it manually if desired).`,
+      );
     }
     return 0;
   } catch (error) {

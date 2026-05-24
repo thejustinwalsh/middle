@@ -217,7 +217,9 @@ export class HookServer implements SessionGate {
     try {
       this.#store?.record(event, sessionName, payload);
     } catch (error) {
-      console.error(`[hook-server] store.record failed for ${event}:${sessionName}: ${(error as Error).message}`);
+      console.error(
+        `[hook-server] store.record failed for ${event}:${sessionName}: ${(error as Error).message}`,
+      );
     }
     this.#deliver(`${event}:${sessionName}`, payload);
     return new Response("ok");
@@ -339,7 +341,9 @@ export class HookServer implements SessionGate {
       return this.#badRequest("epicNumber must be an integer >= 1");
     }
     if (typeof adapter !== "string" || !control.knownAdapter(adapter)) {
-      return this.#badRequest(`unknown adapter: ${typeof adapter === "string" ? adapter : "(missing)"}`);
+      return this.#badRequest(
+        `unknown adapter: ${typeof adapter === "string" ? adapter : "(missing)"}`,
+      );
     }
 
     const workflowId = await control.startDispatch({

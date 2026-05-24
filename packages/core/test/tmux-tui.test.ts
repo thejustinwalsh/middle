@@ -28,10 +28,13 @@ afterEach(async () => {
 });
 
 async function newSession(name: string, cmd: string[]): Promise<void> {
-  const proc = Bun.spawn(["tmux", "new-session", "-d", "-s", name, "-x", "80", "-y", "24", ...cmd], {
-    stdout: "ignore",
-    stderr: "pipe",
-  });
+  const proc = Bun.spawn(
+    ["tmux", "new-session", "-d", "-s", name, "-x", "80", "-y", "24", ...cmd],
+    {
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+  );
   if ((await proc.exited) !== 0) {
     throw new Error(`tmux new-session failed: ${await new Response(proc.stderr).text()}`);
   }
@@ -96,20 +99,18 @@ d("pollPaneFor", () => {
   test("returns null on timeout when the pane never matches", async () => {
     const name = uniqueName();
     await newSession(name, ["sh", "-c", "echo BORING; sleep 5"]);
-    const result = await pollPaneFor<string>(
-      name,
-      () => null,
-      { timeoutMs: 400, pollIntervalMs: 100 },
-    );
+    const result = await pollPaneFor<string>(name, () => null, {
+      timeoutMs: 400,
+      pollIntervalMs: 100,
+    });
     expect(result).toBeNull();
   });
 
   test("returns null and bails when the session disappears", async () => {
-    const result = await pollPaneFor<string>(
-      "middle-tui-vanished-xyz",
-      () => "match",
-      { timeoutMs: 2000, pollIntervalMs: 100 },
-    );
+    const result = await pollPaneFor<string>("middle-tui-vanished-xyz", () => "match", {
+      timeoutMs: 2000,
+      pollIntervalMs: 100,
+    });
     expect(result).toBeNull();
   });
 

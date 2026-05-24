@@ -22,9 +22,7 @@ type TranscriptLine = {
 
 function isToolUseBlock(block: unknown): block is { type: "tool_use"; name?: string } {
   return (
-    typeof block === "object" &&
-    block !== null &&
-    (block as { type?: string }).type === "tool_use"
+    typeof block === "object" && block !== null && (block as { type?: string }).type === "tool_use"
   );
 }
 

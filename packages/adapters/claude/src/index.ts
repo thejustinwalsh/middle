@@ -116,7 +116,9 @@ async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
     }
 
     if (!bypassAnswered && detectBypassPrompt(pane)) {
-      console.error(`[${tag}] bypass-mode dialog detected — selecting "Yes, I accept" (Down, Enter)`);
+      console.error(
+        `[${tag}] bypass-mode dialog detected — selecting "Yes, I accept" (Down, Enter)`,
+      );
       await Bun.sleep(200);
       await sendKeys(opts.sessionName, ["Down", "Enter"], { delayBetweenMs: 100 });
       bypassAnswered = true;

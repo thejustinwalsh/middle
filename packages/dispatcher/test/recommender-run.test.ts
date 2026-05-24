@@ -25,8 +25,13 @@ const GIT_ENV = {
 };
 
 async function git(cwd: string, args: string[]): Promise<void> {
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe", env: GIT_ENV });
-  if ((await proc.exited) !== 0) throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: GIT_ENV,
+  });
+  if ((await proc.exited) !== 0)
+    throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
 }
 
 beforeEach(async () => {
@@ -59,7 +64,10 @@ function validBody(): string {
 const STUB_CONTEXT: RecommenderContext = {
   rateLimits: { claude: "AVAILABLE", codex: "UNKNOWN", github: "UNKNOWN" },
   inFlight: [],
-  slots: { perAdapter: { claude: { used: 0, max: 2 } }, total: { used: 0, max: 2, globalUsed: 0, globalMax: 4 } },
+  slots: {
+    perAdapter: { claude: { used: 0, max: 2 } },
+    total: { used: 0, max: 2, globalUsed: 0, globalMax: 4 },
+  },
 };
 
 function stubAdapter(): AgentAdapter {
@@ -71,14 +79,20 @@ function stubAdapter(): AgentAdapter {
     buildPromptText: (o) => `/recommending-github-issues @${o.promptFile}`,
     async enterAutoMode() {},
     resolveTranscriptPath: (p) => p.transcript_path as string,
-    readTranscriptState: () => ({ lastActivity: "", contextTokens: 0, turnCount: 0, lastToolUse: null }),
+    readTranscriptState: () => ({
+      lastActivity: "",
+      contextTokens: 0,
+      turnCount: 0,
+      lastToolUse: null,
+    }),
     classifyStop: () => ({ kind: "done" }),
   };
 }
 
 function makeOverrides(extra?: Partial<RecommenderRunOverrides>): RecommenderRunOverrides {
   const gate: SessionGate = {
-    awaitSessionStart: async () => ({ session_id: "s", transcript_path: "/tmp/s.jsonl" }) as HookPayload,
+    awaitSessionStart: async () =>
+      ({ session_id: "s", transcript_path: "/tmp/s.jsonl" }) as HookPayload,
     awaitStop: async () => ({ reason: "turn-end" }) as HookPayload,
   };
   return {
@@ -89,14 +103,21 @@ function makeOverrides(extra?: Partial<RecommenderRunOverrides>): RecommenderRun
       async sendEnter() {},
       async killSession() {},
     },
-    stateIssue: { async readBody() { return validBody(); } },
+    stateIssue: {
+      async readBody() {
+        return validBody();
+      },
+    },
     gatherContext: () => STUB_CONTEXT,
     surfaceProblem: async () => {},
     ...extra,
   };
 }
 
-function baseOptions(dbPath: string, overrides: RecommenderRunOverrides): DispatchRecommenderOptions {
+function baseOptions(
+  dbPath: string,
+  overrides: RecommenderRunOverrides,
+): DispatchRecommenderOptions {
   return {
     repoPath,
     repoSlug: "thejustinwalsh/middle",
@@ -124,7 +145,12 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
     try {
       const row = db
         .query("SELECT kind, repo, epic_number, state FROM workflows WHERE id = ?")
-        .get(result.workflowId) as { kind: string; repo: string; epic_number: number | null; state: string };
+        .get(result.workflowId) as {
+        kind: string;
+        repo: string;
+        epic_number: number | null;
+        state: string;
+      };
       expect(row.kind).toBe("recommender");
       expect(row.repo).toBe("thejustinwalsh/middle");
       expect(row.epic_number).toBeNull();

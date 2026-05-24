@@ -270,19 +270,21 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
     updateWorkflow(deps.db, ctx.executionId, { state: "completed" });
   }
 
-  return new Workflow<DocumentationInput>("documentation")
-    // retry: 1 — the check reads db state then creates the workflows row, so a
-    // retry would re-run the INSERT and surface a UNIQUE violation instead of
-    // the real rate-limit reason. One attempt, no retry. (Mirrors recommender.)
-    .step("check-rate-limit", checkRateLimit, { retry: 1 })
-    .step("prepare-docs-worktree", prepareDocsWorktree, {
-      compensate: cleanupWorktreeCompensation,
-    })
-    .step("build-prompt", buildPrompt)
-    .step("spawn-docs-agent", spawnDocsAgent, {
-      retry: 1,
-      timeout: launchTimeout + agentTimeout + 30_000,
-    })
-    .step("persist-docs", persistDocs)
-    .step("cleanup-worktree", cleanupWorktree);
+  return (
+    new Workflow<DocumentationInput>("documentation")
+      // retry: 1 — the check reads db state then creates the workflows row, so a
+      // retry would re-run the INSERT and surface a UNIQUE violation instead of
+      // the real rate-limit reason. One attempt, no retry. (Mirrors recommender.)
+      .step("check-rate-limit", checkRateLimit, { retry: 1 })
+      .step("prepare-docs-worktree", prepareDocsWorktree, {
+        compensate: cleanupWorktreeCompensation,
+      })
+      .step("build-prompt", buildPrompt)
+      .step("spawn-docs-agent", spawnDocsAgent, {
+        retry: 1,
+        timeout: launchTimeout + agentTimeout + 30_000,
+      })
+      .step("persist-docs", persistDocs)
+      .step("cleanup-worktree", cleanupWorktree)
+  );
 }

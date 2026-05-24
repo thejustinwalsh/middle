@@ -167,10 +167,10 @@ read all of it before any \`gh\` calls.
 ## config
 \`\`\`json
 ${json({
-    default_adapter: config.defaultAdapter,
-    auto_dispatch: config.autoDispatch,
-    pr_mode: config.prMode,
-  })}
+  default_adapter: config.defaultAdapter,
+  auto_dispatch: config.autoDispatch,
+  pr_mode: config.prMode,
+})}
 \`\`\`
 
 ## rate_limits
@@ -205,7 +205,9 @@ function rateLimitStatus(state: RateLimitState | null): string {
   if (!state || state.status === "UNKNOWN") return "UNKNOWN";
   if (state.status === "AVAILABLE") return "AVAILABLE";
   // RATE_LIMITED — annotate with the reset time when known.
-  return state.resetAt ? `RATE_LIMITED until ${new Date(state.resetAt).toISOString()}` : "RATE_LIMITED";
+  return state.resetAt
+    ? `RATE_LIMITED until ${new Date(state.resetAt).toISOString()}`
+    : "RATE_LIMITED";
 }
 
 /**
@@ -235,7 +237,10 @@ export function buildRecommenderContext(opts: {
   const globalUsed = countActiveImplementationSlots(opts.db).total;
   const perAdapter: Record<string, { used: number; max: number }> = {};
   for (const adapter of opts.adapters) {
-    perAdapter[adapter] = { used: used.perAdapter[adapter] ?? 0, max: opts.maxPerAdapter[adapter] ?? 0 };
+    perAdapter[adapter] = {
+      used: used.perAdapter[adapter] ?? 0,
+      max: opts.maxPerAdapter[adapter] ?? 0,
+    };
   }
   return {
     rateLimits: {
@@ -396,9 +401,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     }
   }
 
-  async function verifyStateIssueParses(
-    ctx: StepContext<RecommenderInput>,
-  ): Promise<VerifyResult> {
+  async function verifyStateIssueParses(ctx: StepContext<RecommenderInput>): Promise<VerifyResult> {
     const body = await deps.stateIssue.readBody(ctx.input.repo, ctx.input.stateIssue);
     const parsed = parseStateIssue(body);
     if (isParseError(parsed)) {
@@ -419,7 +422,11 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     console.error(`[recommender] ${problem}`);
     if (!deps.surfaceProblem) return;
     try {
-      await deps.surfaceProblem({ repo: ctx.input.repo, stateIssue: ctx.input.stateIssue, problem });
+      await deps.surfaceProblem({
+        repo: ctx.input.repo,
+        stateIssue: ctx.input.stateIssue,
+        problem,
+      });
     } catch (error) {
       // Surfacing is best-effort — a failed comment must not abort cleanup.
       console.error(`[recommender] surfaceProblem failed: ${(error as Error).message}`);
@@ -444,23 +451,25 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     updateWorkflow(deps.db, ctx.executionId, { state: finalState });
   }
 
-  return new Workflow<RecommenderInput>("recommender")
-    // retry: 1 — the check is deterministic (reads db state), so retrying is
-    // pointless; and it creates the workflows row then throws on the
-    // rate-limited path, so a retry would re-run the INSERT and surface a UNIQUE
-    // violation instead of the real rate-limit reason. One attempt, no retry.
-    .step("check-rate-limit", checkRateLimit, { retry: 1 })
-    .step("prepare-shallow-worktree", prepareShallowWorktree, {
-      compensate: cleanupWorktreeCompensation,
-    })
-    .step("build-prompt", buildPrompt)
-    .step("spawn-recommender-agent", spawnRecommenderAgent, {
-      retry: 1,
-      // The spec's hard cap; widened slightly above the internal Stop-await so the
-      // internal timeout (specific error) fires first in the normal case.
-      timeout: launchTimeout + agentTimeout + 30_000,
-    })
-    .step("verify-state-issue-parses", verifyStateIssueParses)
-    .step("trigger-auto-dispatch", triggerAutoDispatch)
-    .step("cleanup-worktree", cleanupWorktree);
+  return (
+    new Workflow<RecommenderInput>("recommender")
+      // retry: 1 — the check is deterministic (reads db state), so retrying is
+      // pointless; and it creates the workflows row then throws on the
+      // rate-limited path, so a retry would re-run the INSERT and surface a UNIQUE
+      // violation instead of the real rate-limit reason. One attempt, no retry.
+      .step("check-rate-limit", checkRateLimit, { retry: 1 })
+      .step("prepare-shallow-worktree", prepareShallowWorktree, {
+        compensate: cleanupWorktreeCompensation,
+      })
+      .step("build-prompt", buildPrompt)
+      .step("spawn-recommender-agent", spawnRecommenderAgent, {
+        retry: 1,
+        // The spec's hard cap; widened slightly above the internal Stop-await so the
+        // internal timeout (specific error) fires first in the normal case.
+        timeout: launchTimeout + agentTimeout + 30_000,
+      })
+      .step("verify-state-issue-parses", verifyStateIssueParses)
+      .step("trigger-auto-dispatch", triggerAutoDispatch)
+      .step("cleanup-worktree", cleanupWorktree)
+  );
 }

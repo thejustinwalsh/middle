@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { isParseError, parseStateIssue, renderStateIssue, type ParsedState } from "@middle/state-issue";
+import {
+  isParseError,
+  parseStateIssue,
+  renderStateIssue,
+  type ParsedState,
+} from "@middle/state-issue";
 import {
   applyDispatcherSections,
   insertDispatcherTick,
@@ -15,15 +20,32 @@ const original: ParsedState = {
   runId: "7f3a9c21",
   intervalMinutes: 15,
   readyToDispatch: [
-    { rank: 1, epic: "#42 Recommender workflow", adapter: "claude", subIssues: 6, reason: "`unblocks dogfooding`" },
+    {
+      rank: 1,
+      epic: "#42 Recommender workflow",
+      adapter: "claude",
+      subIssues: 6,
+      reason: "`unblocks dogfooding`",
+    },
     { rank: 2, epic: "#60 CodexAdapter", adapter: "codex", subIssues: 4, reason: "parity testing" },
   ],
   needsHumanInput: [
-    { issue: 7, label: "ready for review", oneLiner: "PR open, all verified", link: "[link](https://x/7)" },
+    {
+      issue: 7,
+      label: "ready for review",
+      oneLiner: "PR open, all verified",
+      link: "[link](https://x/7)",
+    },
   ],
   blocked: [{ issue: 48, blocker: "#42", context: "needs the recommender first" }],
   inFlight: [
-    { issue: 64, adapter: "claude", progress: "sub-issue 2/5", lastHeartbeat: "42s ago", tmuxSession: "middle-epic-64" },
+    {
+      issue: 64,
+      adapter: "claude",
+      progress: "sub-issue 2/5",
+      lastHeartbeat: "42s ago",
+      tmuxSession: "middle-epic-64",
+    },
   ],
   excluded: [{ issue: 3, category: "assigned to human", detail: "hand-tuning" }],
   rateLimits: {
@@ -102,8 +124,16 @@ describe("updateDispatcherSections", () => {
     const { gw, written } = makeGateway(body0);
     await updateDispatcherSections(gw, "acme/widget", 142, {
       inFlight: [],
-      rateLimits: { claude: "RATE LIMITED until 2026-05-14T11:00:00Z (in 30m)", codex: "AVAILABLE", github: "5000/5000 req/hr · resets in 60m" },
-      slotUsage: { adapters: [{ adapter: "claude", used: 0, max: 2 }], total: { used: 0, max: 3 }, global: { used: 0, max: 4 } },
+      rateLimits: {
+        claude: "RATE LIMITED until 2026-05-14T11:00:00Z (in 30m)",
+        codex: "AVAILABLE",
+        github: "5000/5000 req/hr · resets in 60m",
+      },
+      slotUsage: {
+        adapters: [{ adapter: "claude", used: 0, max: 2 }],
+        total: { used: 0, max: 3 },
+        global: { used: 0, max: 4 },
+      },
     });
 
     const before = sections(body0);

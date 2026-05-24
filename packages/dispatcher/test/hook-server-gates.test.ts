@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { PrReadyGateHandler } from "../src/gates/pr-ready-handler.ts";
 import { HookServer } from "../src/hook-server.ts";
 

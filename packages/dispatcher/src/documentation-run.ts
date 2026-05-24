@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { resolveDocsTarget } from "@middle/docs";
@@ -93,7 +93,11 @@ export async function resolveDocumentationOptions(
   let target: DocsTargetSummary;
   try {
     const resolved = resolveDocsTarget(repoPath, config.docs);
-    target = { name: resolved.name, docsRoot: resolved.docsRoot, supportsLlmsTxt: resolved.supportsLlmsTxt };
+    target = {
+      name: resolved.name,
+      docsRoot: resolved.docsRoot,
+      supportsLlmsTxt: resolved.supportsLlmsTxt,
+    };
   } catch (error) {
     // An unknown `[docs] tool` is a config error — surface it, don't fall back.
     return { ok: false, error: (error as Error).message };

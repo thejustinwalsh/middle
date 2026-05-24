@@ -42,7 +42,11 @@ async function startDaemon(): Promise<{ proc: Bun.Subprocess; port: number }> {
 }
 
 /** Read SSE frames off a Response body until one satisfies `done`, or a deadline. */
-async function readUntil(res: Response, done: (frame: string) => boolean, deadlineMs = 8000): Promise<string | null> {
+async function readUntil(
+  res: Response,
+  done: (frame: string) => boolean,
+  deadlineMs = 8000,
+): Promise<string | null> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -135,7 +139,9 @@ describe("dispatcher main", () => {
       GIT_COMMITTER_NAME: "middle-test",
       GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
     };
-    expect(await Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" }).exited).toBe(0);
+    expect(
+      await Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" }).exited,
+    ).toBe(0);
     expect(
       await Bun.spawn(["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"], {
         stdout: "ignore",
@@ -184,7 +190,9 @@ describe("dispatcher main", () => {
       GIT_COMMITTER_NAME: "middle-test",
       GIT_COMMITTER_EMAIL: "middle-test@example.invalid",
     };
-    expect(await Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" }).exited).toBe(0);
+    expect(
+      await Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" }).exited,
+    ).toBe(0);
     expect(
       await Bun.spawn(["git", "-C", repoPath, "commit", "--allow-empty", "-m", "init"], {
         stdout: "ignore",

@@ -18,7 +18,11 @@ const GIT_ENV = {
 };
 
 async function git(cwd: string, args: string[]): Promise<void> {
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe", env: GIT_ENV });
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: GIT_ENV,
+  });
   if ((await proc.exited) !== 0) {
     throw new Error(`git ${args.join(" ")} (in ${cwd}): ${await new Response(proc.stderr).text()}`);
   }
@@ -73,7 +77,10 @@ describe("runDocs — input validation", () => {
 
   test("rejects an unknown [docs] tool override", async () => {
     mkdirSync(join(repoPath, ".middle"), { recursive: true });
-    writeFileSync(join(repoPath, ".middle", "config.toml"), ['[docs]', 'tool = "sphinx"', ""].join("\n"));
+    writeFileSync(
+      join(repoPath, ".middle", "config.toml"),
+      ["[docs]", 'tool = "sphinx"', ""].join("\n"),
+    );
     const restore = silence();
     try {
       expect(await runDocs(repoPath, { configPath })).toBe(1);
@@ -113,7 +120,7 @@ describe("runDocs — enqueues a documentation run for the repo", () => {
     mkdirSync(join(repoPath, ".middle"), { recursive: true });
     writeFileSync(
       join(repoPath, ".middle", "config.toml"),
-      ['[docs]', 'tool = "docusaurus"', 'path = "website/docs"', "write = true", ""].join("\n"),
+      ["[docs]", 'tool = "docusaurus"', 'path = "website/docs"', "write = true", ""].join("\n"),
     );
     const calls: DispatchDocumentationOptions[] = [];
     const restore = silence();

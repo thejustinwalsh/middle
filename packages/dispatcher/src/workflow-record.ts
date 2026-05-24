@@ -133,9 +133,7 @@ export function findActiveWorkflowBySession(
         ORDER BY created_at DESC, rowid DESC
         LIMIT 1`,
     )
-    .get(sessionName, ...TERMINAL_STATES) as
-    | { id: string; session_token: string | null }
-    | null;
+    .get(sessionName, ...TERMINAL_STATES) as { id: string; session_token: string | null } | null;
   if (!row) return null;
   return { id: row.id, sessionToken: row.session_token };
 }
@@ -270,9 +268,7 @@ export function markSignalFired(db: Database, workflowId: string, ts: number = D
  */
 export function getWaitForSignal(db: Database, workflowId: string): ArmedSignal | null {
   const row = db
-    .query(
-      "SELECT signal_name, payload_json FROM waitfor_signals WHERE workflow_id = ? LIMIT 1",
-    )
+    .query("SELECT signal_name, payload_json FROM waitfor_signals WHERE workflow_id = ? LIMIT 1")
     .get(workflowId) as { signal_name: string; payload_json: string | null } | null;
   if (!row) return null;
   return { signalName: row.signal_name, payloadJson: row.payload_json };
@@ -396,7 +392,11 @@ export function listActiveImplementationWorkflows(
  * rejected. Scoped to `kind = 'implementation'`: the recommender's own row never
  * claims a dispatch slot.
  */
-export function hasNonTerminalEpicWorkflow(db: Database, repo: string, epicNumber: number): boolean {
+export function hasNonTerminalEpicWorkflow(
+  db: Database,
+  repo: string,
+  epicNumber: number,
+): boolean {
   const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
   const row = db
     .query(

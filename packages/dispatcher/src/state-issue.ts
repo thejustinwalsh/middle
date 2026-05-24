@@ -106,7 +106,10 @@ export async function updateDispatcherSections(
   return { before, after };
 }
 
-async function run(argv: string[], stdin?: string): Promise<{ stdout: string; exitCode: number; stderr: string }> {
+async function run(
+  argv: string[],
+  stdin?: string,
+): Promise<{ stdout: string; exitCode: number; stderr: string }> {
   const proc = Bun.spawn(argv, {
     stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
     stdout: "pipe",
@@ -123,8 +126,16 @@ async function run(argv: string[], stdin?: string): Promise<{ stdout: string; ex
 export const ghStateIssueGateway: StateIssueGateway = {
   async readBody(repo: string, issueNumber: number): Promise<string> {
     const result = await run([
-      "gh", "issue", "view", String(issueNumber),
-      "--repo", repo, "--json", "body", "--jq", ".body",
+      "gh",
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "body",
+      "--jq",
+      ".body",
     ]);
     if (result.exitCode !== 0) {
       throw new Error(`gh issue view #${issueNumber} failed: ${result.stderr.trim()}`);
@@ -138,8 +149,14 @@ export const ghStateIssueGateway: StateIssueGateway = {
     await writeFile(bodyFile, body);
     try {
       const result = await run([
-        "gh", "issue", "edit", String(issueNumber),
-        "--repo", repo, "--body-file", bodyFile,
+        "gh",
+        "issue",
+        "edit",
+        String(issueNumber),
+        "--repo",
+        repo,
+        "--body-file",
+        bodyFile,
       ]);
       if (result.exitCode !== 0) {
         throw new Error(`gh issue edit #${issueNumber} failed: ${result.stderr.trim()}`);

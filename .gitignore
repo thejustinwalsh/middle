@@ -6,5 +6,7 @@ node_modules/
 *.tsbuildinfo
 
 # middle's per-repo bootstrap dir is local-only (mm init step 7). Skills under
-# .claude/skills/ stay committed; the operational .middle/ does not.
-.middle/
+# .claude/skills/ stay committed; the operational .middle/ does not — except
+# verify.toml, which IS the committed gate config the dispatcher reads.
+.middle/*
+!.middle/verify.toml

@@ -69,7 +69,9 @@ describe("parseModuleIndexFrontmatter", () => {
   });
 
   test("rejects a non-boolean claude-md value", () => {
-    const result = parseModuleIndexFrontmatter(GOOD.replace("claude-md: false", "claude-md: maybe"));
+    const result = parseModuleIndexFrontmatter(
+      GOOD.replace("claude-md: false", "claude-md: maybe"),
+    );
     expect(result.ok).toBe(false);
   });
 });

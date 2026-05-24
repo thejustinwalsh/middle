@@ -221,9 +221,7 @@ async function main(): Promise<void> {
     fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
   });
 
-  console.log(
-    `middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`,
-  );
+  console.log(`middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`);
 
   let shuttingDown = false;
   const shutdown = async (): Promise<void> => {

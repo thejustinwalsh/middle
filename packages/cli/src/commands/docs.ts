@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { claudeAdapter } from "@middle/adapter-claude";
 import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
-import { dispatchDocumentation, resolveDocumentationOptions } from "@middle/dispatcher/src/documentation-run.ts";
+import {
+  dispatchDocumentation,
+  resolveDocumentationOptions,
+} from "@middle/dispatcher/src/documentation-run.ts";
 
 export type RunDocsOptions = {
   /** Override the global config path (defaults to `~/.middle/config.toml`). */

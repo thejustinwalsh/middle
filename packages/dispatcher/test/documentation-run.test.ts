@@ -24,8 +24,13 @@ const GIT_ENV = {
 };
 
 async function git(cwd: string, args: string[]): Promise<void> {
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe", env: GIT_ENV });
-  if ((await proc.exited) !== 0) throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: GIT_ENV,
+  });
+  if ((await proc.exited) !== 0)
+    throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
 }
 
 beforeEach(async () => {
@@ -48,14 +53,20 @@ function stubAdapter(): AgentAdapter {
     buildPromptText: (o) => `/documenting-the-repo @${o.promptFile}`,
     async enterAutoMode() {},
     resolveTranscriptPath: (p) => p.transcript_path as string,
-    readTranscriptState: () => ({ lastActivity: "", contextTokens: 0, turnCount: 0, lastToolUse: null }),
+    readTranscriptState: () => ({
+      lastActivity: "",
+      contextTokens: 0,
+      turnCount: 0,
+      lastToolUse: null,
+    }),
     classifyStop: () => ({ kind: "done" }),
   };
 }
 
 function makeOverrides(extra?: Partial<DocumentationRunOverrides>): DocumentationRunOverrides {
   const gate: SessionGate = {
-    awaitSessionStart: async () => ({ session_id: "s", transcript_path: "/tmp/s.jsonl" }) as HookPayload,
+    awaitSessionStart: async () =>
+      ({ session_id: "s", transcript_path: "/tmp/s.jsonl" }) as HookPayload,
     awaitStop: async () => ({ reason: "turn-end" }) as HookPayload,
   };
   return {
@@ -70,7 +81,10 @@ function makeOverrides(extra?: Partial<DocumentationRunOverrides>): Documentatio
   };
 }
 
-function baseOptions(dbPath: string, overrides: DocumentationRunOverrides): DispatchDocumentationOptions {
+function baseOptions(
+  dbPath: string,
+  overrides: DocumentationRunOverrides,
+): DispatchDocumentationOptions {
   return {
     repoPath,
     repoSlug: "thejustinwalsh/middle",
@@ -112,7 +126,12 @@ describe("dispatchDocumentation — enqueues a documentation workflow (read-only
     try {
       const row = db
         .query("SELECT kind, repo, epic_number, state FROM workflows WHERE id = ?")
-        .get(result.workflowId) as { kind: string; repo: string; epic_number: number | null; state: string };
+        .get(result.workflowId) as {
+        kind: string;
+        repo: string;
+        epic_number: number | null;
+        state: string;
+      };
       expect(row.kind).toBe("documentation");
       expect(row.repo).toBe("thejustinwalsh/middle");
       expect(row.epic_number).toBeNull();
@@ -163,7 +182,14 @@ describe("resolveDocumentationOptions", () => {
   test("honors a [docs] tool/path override", async () => {
     const result = await resolveDocumentationOptions(
       repoPath,
-      configWith({ enabled: true, intervalMinutes: 60, adapter: "claude", write: true, tool: "mkdocs", path: "site" }),
+      configWith({
+        enabled: true,
+        intervalMinutes: 60,
+        adapter: "claude",
+        write: true,
+        tool: "mkdocs",
+        path: "site",
+      }),
       stubAdapter,
     );
     expect(result.ok).toBe(true);
@@ -177,7 +203,13 @@ describe("resolveDocumentationOptions", () => {
   test("surfaces an unknown tool override as an error rather than falling back", async () => {
     const result = await resolveDocumentationOptions(
       repoPath,
-      configWith({ enabled: true, intervalMinutes: 60, adapter: "claude", write: false, tool: "sphinx" }),
+      configWith({
+        enabled: true,
+        intervalMinutes: 60,
+        adapter: "claude",
+        write: false,
+        tool: "sphinx",
+      }),
       stubAdapter,
     );
     expect(result.ok).toBe(false);
