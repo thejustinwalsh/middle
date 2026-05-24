@@ -13,7 +13,9 @@ export type RepoConfigValues = {
  * defaults match the spec verbatim (auto_dispatch defaults OFF — opt-in).
  *
  * The keys here are the keys `@middle/core`'s `loadConfig` reads back, so this
- * template is the inverse of that mapper.
+ * template is the inverse of that mapper. The `[docs]` block configures the docs
+ * harvester (write defaults OFF — read-only audit until opted in); omitting
+ * `tool`/`path` leaves the resolver to detect the framework.
  */
 export function renderRepoConfig(v: RepoConfigValues): string {
   const { info } = v;
@@ -33,6 +35,12 @@ enabled = true
 interval_minutes = 15
 adapter = "claude"
 auto_dispatch = false
+
+[docs]
+enabled = true
+interval_minutes = 1440
+adapter = "claude"
+write = false
 
 [state_issue]
 number = ${v.stateIssueNumber}

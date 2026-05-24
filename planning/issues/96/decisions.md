@@ -79,3 +79,11 @@
 **Decision:** `runMigrations` disables `PRAGMA foreign_keys` around the pending-migration loop and runs `PRAGMA foreign_key_check` inside each migration's transaction. Migration 003 rebuilds `workflows` with the create-new → copy → **drop-old** → rename recipe.
 **Why:** SQLite can't alter a CHECK in place. A naive rename-old-then-drop rewrites child FK targets to the renamed `_old` table and the subsequent DROP cascade-deletes child rows (verified empirically — `legacy_alter_table` did not prevent the rewrite in Bun's SQLite). The documented fix needs FK enforcement off, which is a no-op inside a transaction — so the toggle must live in the runner, wrapping the loop. The per-migration `foreign_key_check` is the safety net that still catches a migration that leaves a dangling reference.
 **Evidence:** Tests `003 widens workflows.kind …` and `003 preserves existing rows and child FK references through the table rebuild` in `db.test.ts`.
+
+## `mm docs <repo>` on-demand path; cadence config present, live cron deferred (recommender parity)
+**File(s):** `packages/cli/src/commands/docs.ts`, `packages/cli/src/index.ts`, `packages/cli/src/bootstrap/config-template.ts`
+**Date:** 2026-05-24
+
+**Decision:** Ship the on-demand path fully (`mm docs <repo>`, the recommender's `mm run-recommender` analog) and stamp a `[docs]` block (with `interval_minutes`) into the per-repo config. A *live* cron is NOT wired.
+**Why:** #98's acceptance is "Runs on a cadence (cron, like the recommender) **and/or** on demand." The recommender itself has no live cron yet — its cron is explicitly deferred to "Phase 2+" (see `dispatcher/src/main.ts`), and it ships as CLI- + dashboard-triggered. Matching that exact bar: on-demand delivered, the cadence interval lives in config as the seam a future cron reads. Holding the docs bot to a higher bar than its sibling would be inconsistent.
+**Evidence:** `packages/cli/test/docs.test.ts` (validation, target resolution, override flow-through, exit codes); `mm --help` lists `docs`.

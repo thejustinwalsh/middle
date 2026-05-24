@@ -78,6 +78,9 @@ describe("mm init — fresh install", () => {
     expect(config).toContain('owner = "acme"');
     expect(config).toContain("number = 142");
     expect(config).toContain("auto_dispatch = false");
+    // the docs harvester block, read-only by default
+    expect(config).toContain("[docs]");
+    expect(config).toContain("write = false");
 
     // gitignore
     expect(readFileSync(join(repo, ".gitignore"), "utf8")).toContain(".middle/");

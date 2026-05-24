@@ -8,7 +8,7 @@
  *
  * Public surface:
  * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
- *   `dispatch`, `version`
+ *   `dispatch`, `run-recommender`, `docs`, `version`
  *
  * Where things live:
  * - `commands/` — one `run*` function per subcommand
@@ -24,6 +24,7 @@
  */
 import { Command } from "commander";
 import { runDispatch } from "./commands/dispatch.ts";
+import { runDocs } from "./commands/docs.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { runInit } from "./commands/init.ts";
 import { runRecommender } from "./commands/run-recommender.ts";
@@ -90,6 +91,12 @@ program
   .description("Trigger a recommender run for a repo (rewrites its state issue; read-only — dispatches nothing)")
   .argument("<repo>", "path to the local repo checkout")
   .action(async (repo: string) => process.exit(await runRecommender(repo)));
+
+program
+  .command("docs")
+  .description("Trigger a docs-harvester run for a repo (audits the docs surface; read-only — writes nothing)")
+  .argument("<repo>", "path to the local repo checkout")
+  .action(async (repo: string) => process.exit(await runDocs(repo)));
 
 program
   .command("version")
