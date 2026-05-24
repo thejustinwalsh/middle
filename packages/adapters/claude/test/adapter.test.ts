@@ -357,6 +357,38 @@ describe("installHooks", () => {
     const mode = (await import("node:fs/promises")).stat(scriptPath);
     expect(((await mode).mode & 0o111) !== 0).toBe(true); // some exec bit set
   });
+
+  test("registers the PR-ready gate as a second Bash-matched PreToolUse hook", async () => {
+    const worktree = join(dir, "wt-gate");
+    mkdirSync(worktree, { recursive: true });
+    await installInto(worktree);
+    const settings = JSON.parse(
+      await Bun.file(join(worktree, ".claude", "settings.json")).text(),
+    ) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
+    };
+    const preToolUse = settings.hooks.PreToolUse!;
+    // First entry stays the universal heartbeat (all tools); the gate is added second.
+    expect(preToolUse[0]!.hooks[0]!.command).toBe(
+      `"${join(worktree, ".middle/hooks/hook.sh")}" tool.pre`,
+    );
+    const gateEntry = preToolUse[1]!;
+    expect(gateEntry.matcher).toBe("Bash");
+    expect(gateEntry.hooks[0]!.command).toBe(`"${join(worktree, ".middle/hooks/pr-ready-gate.sh")}"`);
+  });
+
+  test("writes an executable pr-ready-gate.sh that POSTs to /gates/pr-ready", async () => {
+    const worktree = join(dir, "wt-gate-script");
+    mkdirSync(worktree, { recursive: true });
+    await installInto(worktree);
+    const scriptPath = join(worktree, ".middle/hooks/pr-ready-gate.sh");
+    const contents = await Bun.file(scriptPath).text();
+    expect(contents).toStartWith("#!/bin/sh");
+    expect(contents).toContain("${MIDDLE_DISPATCHER_URL}/gates/pr-ready");
+    expect(contents).toContain("exit 2"); // blocks the tool on deny
+    const { stat } = await import("node:fs/promises");
+    expect(((await stat(scriptPath)).mode & 0o111) !== 0).toBe(true);
+  });
 });
 
 describe("detectBypassPrompt", () => {

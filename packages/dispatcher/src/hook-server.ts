@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { HookPayload, NormalizedEvent } from "@middle/core";
 import { isNormalizedEvent } from "@middle/core";
+import type { PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { HookStore } from "./hook-store.ts";
 
 type BunServer = ReturnType<typeof Bun.serve>;
@@ -54,9 +55,11 @@ export class HookServer implements SessionGate {
   readonly #waiters = new Map<string, Waiter>();
   readonly #stashed = new Map<string, HookPayload>();
   readonly #store: HookStore | undefined;
+  readonly #prReadyGate: PrReadyGateHandler | undefined;
 
-  constructor(store?: HookStore) {
+  constructor(store?: HookStore, prReadyGate?: PrReadyGateHandler) {
     this.#store = store;
+    this.#prReadyGate = prReadyGate;
   }
 
   start(port: number): void {
@@ -88,7 +91,11 @@ export class HookServer implements SessionGate {
   }
 
   async #handle(req: Request): Promise<Response> {
-    const match = /^\/hooks\/(.+)$/.exec(new URL(req.url).pathname);
+    const pathname = new URL(req.url).pathname;
+    if (req.method === "POST" && pathname === "/gates/pr-ready") {
+      return this.#handleGate(req);
+    }
+    const match = /^\/hooks\/(.+)$/.exec(pathname);
     if (!match || req.method !== "POST") {
       return new Response("not found", { status: 404 });
     }
@@ -142,6 +149,46 @@ export class HookServer implements SessionGate {
     }
     this.#deliver(`${event}:${sessionName}`, payload);
     return new Response("ok");
+  }
+
+  /**
+   * The PR-ready guard endpoint. The `gh pr ready` PreToolUse hook POSTs its
+   * payload here; the dispatcher decides whether the Epic PR's acceptance
+   * criteria are all evidenced. 200 = allow (the hook exits 0), 403 + reason =
+   * deny (the hook prints the reason to stderr and exits 2, blocking the tool).
+   *
+   * Authenticated identically to `/hooks` when a store is wired: a missing
+   * session or bad token is a 401 (the hook fails open on connection errors, not
+   * on a 4xx — a wedged auth is surfaced as the deny reason).
+   */
+  async #handleGate(req: Request): Promise<Response> {
+    if (!this.#prReadyGate) return new Response("not found", { status: 404 });
+
+    let payload: HookPayload = {};
+    try {
+      payload = (await req.json()) as HookPayload;
+    } catch {
+      // tolerate a garbled body — the command match will simply not fire
+    }
+    const sessionName =
+      req.headers.get("X-Middle-Session") ??
+      (typeof payload.sessionName === "string" ? payload.sessionName : "");
+    if (sessionName === "") {
+      return new Response("missing session", { status: 400 });
+    }
+
+    if (this.#store) {
+      const expected = this.#store.resolveSessionToken(sessionName);
+      const provided = req.headers.get("X-Middle-Token") ?? "";
+      if (expected === null || !tokensMatch(provided, expected)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+    }
+
+    const decision = await this.#prReadyGate({ sessionName, payload });
+    if (decision.decision === "allow") return new Response("allow");
+    console.error(`[hook-server] pr-ready gate DENY for ${sessionName}: ${decision.reason}`);
+    return new Response(decision.reason, { status: 403 });
   }
 
   #deliver(key: string, payload: HookPayload): void {

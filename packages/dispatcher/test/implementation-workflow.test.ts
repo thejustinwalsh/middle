@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
+import type { IssueComment, PlanCommentReader } from "../src/gates/plan-comment.ts";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
@@ -60,18 +61,22 @@ afterEach(async () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/** A tmux stub that records every session it is asked to create and kill. */
+/** A tmux stub that records every session it creates/kills and all sent text. */
 function makeTmuxStub() {
   const created: string[] = [];
   const killed: string[] = [];
+  const sent: string[] = [];
   return {
     created,
     killed,
+    sent,
     ops: {
       async newSession(opts: { sessionName: string }) {
         created.push(opts.sessionName);
       },
-      async sendText() {},
+      async sendText(_sessionName: string, text: string) {
+        sent.push(text);
+      },
       async sendEnter() {},
       async killSession(sessionName: string) {
         killed.push(sessionName);
@@ -212,6 +217,141 @@ describe("implementation workflow — rate-limit state", () => {
 
     expect(getWorkflow(db, id)!.state).toBe("completed");
     expect(getRateLimitState(db, "stub")!.status).toBe("AVAILABLE");
+  });
+});
+
+/** A worktree stub that materializes a temp dir and (optionally) writes a plan.md. */
+function makeWorktreeStub(planBody: string | null) {
+  const handles: { path: string }[] = [];
+  return {
+    handles,
+    ops: {
+      async createWorktree(opts: { repoPath: string; repo: string; issueNumber?: number }) {
+        const path = realpathSync(mkdtempSync(join(tmpdir(), "middle-wt-stub-")));
+        if (planBody !== null) {
+          const dir = join(path, "planning", "issues", String(opts.issueNumber));
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "plan.md"), planBody);
+        }
+        const handle = {
+          repoPath: opts.repoPath,
+          path,
+          branch: "stub-branch",
+          repo: opts.repo,
+          unit: `issue-${opts.issueNumber}`,
+        };
+        handles.push(handle);
+        return handle;
+      },
+      async destroyWorktree(handle: { path: string }) {
+        rmSync(handle.path, { recursive: true, force: true });
+      },
+    },
+  };
+}
+
+/** A PlanCommentReader stub returning fixed comments on the Epic. */
+function makePlanReader(comments: IssueComment[]): PlanCommentReader {
+  return { async listIssueComments() { return comments; } };
+}
+
+describe("implementation workflow — plan-comment completion gate", () => {
+  const PLAN = "# Plan\n\nphases: do the thing\n";
+
+  test("a 'done' drive with no plan comment ends 'failed' (guard fires)", async () => {
+    const tmux = makeTmuxStub();
+    const wt = makeWorktreeStub(PLAN);
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: wt.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: "no plan here", url: "u" }]),
+      agentLogin: "agentbot",
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a 'done' drive with a matching plan comment completes", async () => {
+    const tmux = makeTmuxStub();
+    const wt = makeWorktreeStub(PLAN);
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: wt.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: PLAN, url: "u" }]),
+      agentLogin: "agentbot",
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expectNoSessionLeak(tmux);
+  });
+
+  test("without a planCommentReader wired, completion is unguarded (back-compat)", async () => {
+    const deps = makeDeps({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
+    const id = await runToEnd(deps);
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+  });
+});
+
+describe("implementation workflow — positive done-signal (bare-stop nudge loop)", () => {
+  test("a bare-stop with no ready Epic PR nudges, then parks in waiting-human", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+      epicPrReadiness: async () => ({ exists: false, isDraft: false }),
+      maxNudges: 2,
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("waiting-human");
+    // nudged exactly maxNudges times before giving up
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(2);
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a bare-stop completes once a ready, non-draft Epic PR exists (no nudge)", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+      epicPrReadiness: async () => ({ exists: true, isDraft: false }),
+      maxNudges: 2,
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(0);
+  });
+
+  test("a draft Epic PR is not a positive done-signal — it still nudges", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+      epicPrReadiness: async () => ({ exists: true, isDraft: true }),
+      maxNudges: 1,
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("waiting-human");
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(1);
+  });
+
+  test("without an epicPrReadiness seam, a bare-stop keeps the legacy completion (back-compat)", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(0);
   });
 });
 
