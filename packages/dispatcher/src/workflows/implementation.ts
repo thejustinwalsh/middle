@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter, StopClassification } from "@middle/core";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
+import { type PlanCommentReader, verifyPlanComment } from "../gates/plan-comment.ts";
 import type { SessionGate } from "../hook-server.ts";
 import { markAvailableOnSuccess, parseResetAt, setRateLimited } from "../rate-limits.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
@@ -51,6 +52,15 @@ export type ImplementationDeps = {
   dispatcherUrl: string;
   launchTimeoutMs?: number;
   stopTimeoutMs?: number;
+  /**
+   * Plan-comment guard (skill enforcement #1): when wired, a `done` dispatch only
+   * truly completes if a comment on the Epic carries the plan body. Left optional
+   * so the gate-free unit tests (and any caller that hasn't opted in) keep their
+   * unguarded completion behavior.
+   */
+  planCommentReader?: PlanCommentReader;
+  /** The agent's gh account — restricts the plan-comment match to its comments. */
+  agentLogin?: string;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
@@ -99,6 +109,20 @@ time. Operating rules for this dispatch:
 (none)
 `,
   );
+}
+
+/**
+ * Read the workstream's committed plan from the worktree. The implementer skill
+ * writes it to `planning/issues/<epic>/plan.md` and posts the same body as the
+ * Epic comment the plan-comment guard checks for. A missing file yields "" — the
+ * guard treats that as "no plan", which is the correct outcome.
+ */
+function readPlanBody(worktreePath: string, epicNumber: number): string {
+  try {
+    return readFileSync(join(worktreePath, "planning", "issues", String(epicNumber), "plan.md"), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function finalStateFor(classification: StopClassification): WorkflowState {
@@ -266,9 +290,29 @@ export function createImplementationWorkflow(
     const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
     const { classification, sessionName } = ctx.steps["launch-and-drive"] as DriveResult;
     await deps.tmux.killSession(sessionName);
+
+    let finalState = finalStateFor(classification);
+
+    // Plan-comment guard: a dispatch only truly completes if the agent posted
+    // its plan as a comment on the Epic. Run it BEFORE destroying the worktree —
+    // the plan body is read from the worktree's committed plan.md.
+    if (finalState === "completed" && deps.planCommentReader) {
+      const planBody = readPlanBody(handle.path, ctx.input.epicNumber);
+      const guard = await verifyPlanComment({
+        gh: deps.planCommentReader,
+        repo: ctx.input.repo,
+        epicNumber: ctx.input.epicNumber,
+        planBody,
+        agentLogin: deps.agentLogin,
+      });
+      if (!guard.ok) {
+        console.error(`[workflow:${sessionName}] ${guard.reason}`);
+        finalState = "failed";
+      }
+    }
+
     await deps.worktree.destroyWorktree(handle);
 
-    const finalState = finalStateFor(classification);
     if (classification.kind === "rate-limited") {
       // Reactive rate-limit: record the durable signal the auto-dispatch loop
       // (Phase 8) reads to delay re-enqueue until reset_at. resetAt is the raw

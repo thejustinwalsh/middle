@@ -4,6 +4,7 @@ import type { AgentAdapter } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import type { Execution } from "bunqueue/workflow";
 import { openAndMigrate } from "./db.ts";
+import { ghGitHub, resolveAgentLogin } from "./github.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
@@ -138,6 +139,10 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
       ]);
     });
 
+    // The agent posts to GitHub as the dispatcher's gh identity; resolve it once
+    // so the plan-comment guard can restrict its match to the agent's comments.
+    const agentLogin = await resolveAgentLogin();
+
     engine.register(
       createImplementationWorkflow({
         db,
@@ -148,6 +153,8 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
         resolveRepoPath: () => opts.repoPath,
         worktreeRoot: opts.worktreeRoot,
         dispatcherUrl: `http://127.0.0.1:${hookServer.port}`,
+        planCommentReader: ghGitHub,
+        agentLogin,
       }),
     );
 

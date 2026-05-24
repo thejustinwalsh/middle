@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
+import type { IssueComment, PlanCommentReader } from "../src/gates/plan-comment.ts";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
@@ -212,6 +213,83 @@ describe("implementation workflow — rate-limit state", () => {
 
     expect(getWorkflow(db, id)!.state).toBe("completed");
     expect(getRateLimitState(db, "stub")!.status).toBe("AVAILABLE");
+  });
+});
+
+/** A worktree stub that materializes a temp dir and (optionally) writes a plan.md. */
+function makeWorktreeStub(planBody: string | null) {
+  const handles: { path: string }[] = [];
+  return {
+    handles,
+    ops: {
+      async createWorktree(opts: { repoPath: string; repo: string; issueNumber?: number }) {
+        const path = realpathSync(mkdtempSync(join(tmpdir(), "middle-wt-stub-")));
+        if (planBody !== null) {
+          const dir = join(path, "planning", "issues", String(opts.issueNumber));
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "plan.md"), planBody);
+        }
+        const handle = {
+          repoPath: opts.repoPath,
+          path,
+          branch: "stub-branch",
+          repo: opts.repo,
+          unit: `issue-${opts.issueNumber}`,
+        };
+        handles.push(handle);
+        return handle;
+      },
+      async destroyWorktree(handle: { path: string }) {
+        rmSync(handle.path, { recursive: true, force: true });
+      },
+    },
+  };
+}
+
+/** A PlanCommentReader stub returning fixed comments on the Epic. */
+function makePlanReader(comments: IssueComment[]): PlanCommentReader {
+  return { async listIssueComments() { return comments; } };
+}
+
+describe("implementation workflow — plan-comment completion gate", () => {
+  const PLAN = "# Plan\n\nphases: do the thing\n";
+
+  test("a 'done' drive with no plan comment ends 'failed' (guard fires)", async () => {
+    const tmux = makeTmuxStub();
+    const wt = makeWorktreeStub(PLAN);
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: wt.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: "no plan here", url: "u" }]),
+      agentLogin: "agentbot",
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a 'done' drive with a matching plan comment completes", async () => {
+    const tmux = makeTmuxStub();
+    const wt = makeWorktreeStub(PLAN);
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: wt.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: PLAN, url: "u" }]),
+      agentLogin: "agentbot",
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expectNoSessionLeak(tmux);
+  });
+
+  test("without a planCommentReader wired, completion is unguarded (back-compat)", async () => {
+    const deps = makeDeps({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
+    const id = await runToEnd(deps);
+    expect(getWorkflow(db, id)!.state).toBe("completed");
   });
 });
 
