@@ -54,9 +54,13 @@ git commit -m "chore: install middle skills (dogfooding crossover)"
 gh issue list --repo thejustinwalsh/middle --label agent-queue:state
 #    Its body parses against schemas/state-issue.v1.md (validated by mm init).
 
-# 5. Start the dispatcher and dispatch a manually created Epic against middle.
-mm start
+# 5. Dispatch a manually created Epic against middle. `mm dispatch` is
+#    self-contained — it runs its OWN hook server + workflow engine inline — so
+#    do NOT run `mm start` first: both bind the dispatcher port (8822) and a
+#    running `mm start` makes `mm dispatch` fail with EADDRINUSE. (`mm start` is
+#    the long-running daemon for Phase 8 auto-dispatch, not manual dispatch.)
 mm dispatch . <epic-number>     # the Epic (see "Creating a dispatchable Epic" below)
+                                # runs in the foreground, streaming workflow/hook logs
 
 # To reverse the crossover entirely:
 mm uninit .                     # closes the state issue, removes staged files
