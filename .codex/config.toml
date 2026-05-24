@@ -1,0 +1,13 @@
+# >>> middle hooks (managed) >>>
+[hooks]
+command = "/home/tjw/Developer/middle/.middle/hooks/hook.sh"
+# events forwarded (normalized taxonomy):
+# session.started -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" session.started
+# turn.started -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" turn.started
+# tool.pre -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" tool.pre
+# tool.post -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" tool.post
+# agent.notification -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" agent.notification
+# agent.stopped -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" agent.stopped
+# agent.stopped -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" agent.stopped
+# session.ended -> "/home/tjw/Developer/middle/.middle/hooks/hook.sh" session.ended
+# <<< middle hooks (managed) <<<
