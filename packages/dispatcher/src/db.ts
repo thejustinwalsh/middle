@@ -49,15 +49,38 @@ export function loadMigrations(dir: string = MIGRATIONS_DIR): Migration[] {
  * own transaction. A migration's SQL may record its own version row (001 does);
  * the `INSERT OR IGNORE` here is the backstop so a migration that omits it is
  * still tracked. Returns the resulting schema version.
+ *
+ * Foreign-key enforcement is disabled for the duration of the pending loop.
+ * SQLite cannot alter a table's CHECK/constraints in place, so a schema change
+ * rebuilds the table (create-new → copy → drop-old → rename), which transiently
+ * drops the referenced table — illegal with FK enforcement on. The toggle is a
+ * no-op inside a transaction, so it wraps the whole loop rather than living in a
+ * migration's SQL. As a safety net, each migration runs `foreign_key_check`
+ * inside its transaction (the check is independent of the enforcement toggle)
+ * and aborts if it left a dangling reference. Enforcement is always restored to
+ * ON before returning.
  */
 export function runMigrations(db: Database, dir: string = MIGRATIONS_DIR): number {
   const applied = currentSchemaVersion(db);
   const pending = loadMigrations(dir).filter((m) => m.version > applied);
-  for (const migration of pending) {
-    db.transaction(() => {
-      db.exec(migration.sql);
-      db.run("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [migration.version]);
-    })();
+  if (pending.length === 0) return applied;
+
+  db.exec("PRAGMA foreign_keys = OFF;");
+  try {
+    for (const migration of pending) {
+      db.transaction(() => {
+        db.exec(migration.sql);
+        db.run("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [migration.version]);
+        const violations = db.query("PRAGMA foreign_key_check").all();
+        if (violations.length > 0) {
+          throw new Error(
+            `migration ${migration.name} left foreign-key violations: ${JSON.stringify(violations)}`,
+          );
+        }
+      })();
+    }
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON;");
   }
   return currentSchemaVersion(db);
 }

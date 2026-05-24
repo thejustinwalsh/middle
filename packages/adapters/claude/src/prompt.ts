@@ -14,6 +14,8 @@ import type { BuildPromptOpts } from "@middle/core";
  * - `recommender`: force-invokes the recommender skill with the assembled
  *   dispatcher context (`.middle/prompt.md`) `@`-referenced, same file-pointer
  *   reason — the context is multi-line so it can't ride the slash command line.
+ * - `docs`: force-invokes the docs-authoring skill with the assembled docs
+ *   context (resolved target + mode) `@`-referenced, same file-pointer reason.
  */
 export function buildPromptText(opts: BuildPromptOpts): string {
   switch (opts.kind) {
@@ -25,5 +27,7 @@ export function buildPromptText(opts: BuildPromptOpts): string {
       return `A human answered your open question — read the answer and continue. @${opts.promptFile}`;
     case "recommender":
       return `/recommending-github-issues @${opts.promptFile}`;
+    case "docs":
+      return `/documenting-the-repo @${opts.promptFile}`;
   }
 }

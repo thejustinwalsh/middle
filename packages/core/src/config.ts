@@ -64,6 +64,29 @@ export type StateIssueSettings = {
   label: string;
 };
 
+/**
+ * The `[docs]` section — dual purpose. It configures the docs-harvester bot
+ * (`enabled`, `intervalMinutes`, `adapter`, `write`) *and* overrides the docs
+ * target resolver (`tool`, `path`). The override fields are optional: a block
+ * that sets only `tool`/`path` forces the resolver's target without enabling
+ * the bot, so the bot fields fall back to documented defaults rather than
+ * requiring the whole block.
+ */
+export type DocsSettings = {
+  /** Whether the docs bot runs at all. Default false (opt-in). */
+  enabled: boolean;
+  /** Cron cadence, mirroring the recommender. Default 60. */
+  intervalMinutes: number;
+  /** Adapter the docs agent runs with. Default "claude". */
+  adapter: string;
+  /** When false (default), the bot audits/dry-runs only and writes nothing. */
+  write: boolean;
+  /** Force a docs target by name, overriding detection. Omit to auto-detect. */
+  tool?: string;
+  /** Override the output root, overriding the detected target's default. */
+  path?: string;
+};
+
 export type BootstrapSettings = {
   version: number;
   installedAt: string;
@@ -83,6 +106,7 @@ export type MiddleConfig = {
   recommender?: RecommenderSettings;
   stateIssue?: StateIssueSettings;
   bootstrap?: BootstrapSettings;
+  docs?: DocsSettings;
 };
 
 export type LoadConfigOptions = {
@@ -229,6 +253,25 @@ function mapBootstrap(raw: RawTable): BootstrapSettings | undefined {
 }
 
 /**
+ * Map the `[docs]` section. Unlike the strict per-repo mappers, the bot fields
+ * default rather than trust presence — a tool/path-only override block (the
+ * resolver use case) is valid without the bot keys. Override fields stay
+ * `undefined` when absent so the resolver knows to auto-detect.
+ */
+function mapDocs(raw: RawTable): DocsSettings | undefined {
+  if (!isPlainObject(raw.docs)) return undefined;
+  const d = raw.docs;
+  return {
+    enabled: (d.enabled as boolean | undefined) ?? false,
+    intervalMinutes: (d.interval_minutes as number | undefined) ?? 60,
+    adapter: (d.adapter as string | undefined) ?? "claude",
+    write: (d.write as boolean | undefined) ?? false,
+    tool: d.tool as string | undefined,
+    path: d.path as string | undefined,
+  };
+}
+
+/**
  * Load and merge the global and per-repo config files into one typed object.
  * Per-repo values override global on any colliding key (deep merge). Missing
  * files are tolerated: an absent global file falls back to documented defaults,
@@ -248,5 +291,6 @@ export function loadConfig(opts: LoadConfigOptions): MiddleConfig {
     recommender: mapRecommender(merged),
     stateIssue: mapStateIssue(merged),
     bootstrap: mapBootstrap(merged),
+    docs: mapDocs(merged),
   };
 }

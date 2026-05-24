@@ -64,9 +64,17 @@
       "dependencies": {
         "@middle/adapter-claude": "workspace:*",
         "@middle/core": "workspace:*",
+        "@middle/docs": "workspace:*",
         "@middle/state-issue": "workspace:*",
         "bunqueue": "^2.7.12",
         "smol-toml": "^1.6.1",
+      },
+    },
+    "packages/docs": {
+      "name": "@middle/docs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@middle/core": "workspace:*",
       },
     },
     "packages/skills": {
@@ -95,6 +103,8 @@
     "@middle/dashboard": ["@middle/dashboard@workspace:packages/dashboard"],
 
     "@middle/dispatcher": ["@middle/dispatcher@workspace:packages/dispatcher"],
+
+    "@middle/docs": ["@middle/docs@workspace:packages/docs"],
 
     "@middle/skills": ["@middle/skills@workspace:packages/skills"],
 

@@ -34,6 +34,7 @@ export type {
   RecommenderSettings,
   StateIssueSettings,
   BootstrapSettings,
+  DocsSettings,
   MiddleConfig,
   LoadConfigOptions,
 } from "./config.ts";

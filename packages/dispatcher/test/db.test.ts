@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentSchemaVersion, openAndMigrate, openDb, runMigrations } from "../src/db.ts";
@@ -60,8 +60,8 @@ describe("runMigrations", () => {
 
   test("applies every migration and reports the latest version", () => {
     const db = openDb(dbPath);
-    expect(runMigrations(db)).toBe(2);
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
+    expect(currentSchemaVersion(db)).toBe(3);
     db.close();
   });
 
@@ -84,8 +84,8 @@ describe("runMigrations", () => {
   test("is idempotent — running twice leaves version at the latest and does not throw", () => {
     const db = openDb(dbPath);
     runMigrations(db);
-    expect(runMigrations(db)).toBe(2);
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(runMigrations(db)).toBe(3);
+    expect(currentSchemaVersion(db)).toBe(3);
     db.close();
   });
 
@@ -121,12 +121,67 @@ describe("runMigrations", () => {
     expect(row.controlled_by).toBe("middle");
     db.close();
   });
+
+  test("003 widens workflows.kind to accept 'documentation' but still rejects unknown kinds", () => {
+    const db = openAndMigrate(dbPath);
+    db.run(
+      `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
+       VALUES ('d1', 'documentation', 'o/r', 'claude', 'pending', 0, 0)`,
+    );
+    expect((db.query("SELECT kind FROM workflows WHERE id = 'd1'").get() as { kind: string }).kind).toBe(
+      "documentation",
+    );
+    const insertBogus = () =>
+      db.run(
+        `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
+         VALUES ('d2', 'nonsense', 'o/r', 'claude', 'pending', 0, 0)`,
+      );
+    expect(insertBogus).toThrow();
+    db.close();
+  });
+
+  test("003 preserves existing rows and child FK references through the table rebuild", () => {
+    // Migrate through 002 ONLY (a temp dir with just 001+002), seed a workflow
+    // and a child event, then apply the real migrations dir so 003 rebuilds the
+    // table over existing data — the path a live db actually takes.
+    const realDir = join(import.meta.dir, "..", "src", "db", "migrations");
+    const through002 = mkdtempSync(join(tmpdir(), "middle-mig-"));
+    try {
+      cpSync(join(realDir, "001_initial.sql"), join(through002, "001_initial.sql"));
+      cpSync(join(realDir, "002_waitfor_fired.sql"), join(through002, "002_waitfor_fired.sql"));
+
+      const db = openDb(dbPath);
+      expect(runMigrations(db, through002)).toBe(2);
+      db.run(
+        `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
+         VALUES ('w1', 'recommender', 'o/r', 'claude', 'completed', 1, 1)`,
+      );
+      db.run(`INSERT INTO events (workflow_id, ts, type) VALUES ('w1', 2, 'session.started')`);
+
+      // Now apply 003 over the seeded data.
+      expect(runMigrations(db, realDir)).toBe(3);
+
+      // The row survived the rebuild...
+      expect((db.query("SELECT kind FROM workflows WHERE id = 'w1'").get() as { kind: string }).kind).toBe(
+        "recommender",
+      );
+      // ...its child event's FK still resolves to the rebuilt table...
+      expect(
+        (db.query("SELECT type FROM events WHERE workflow_id = 'w1'").get() as { type: string }).type,
+      ).toBe("session.started");
+      // ...and FK integrity holds across the whole db.
+      expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      db.close();
+    } finally {
+      rmSync(through002, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("openAndMigrate", () => {
   test("opens, migrates, and returns a ready database", () => {
     const db = openAndMigrate(dbPath);
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(currentSchemaVersion(db)).toBe(3);
     db.close();
   });
 });

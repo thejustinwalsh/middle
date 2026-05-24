@@ -1,0 +1,1 @@
+{ "name": "lib", "typedoc": { "out": "typedocs" }, "devDependencies": { "typedoc": "^0.27.0" } }
