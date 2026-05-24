@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
@@ -135,9 +135,58 @@ function makeDeps(overrides: Partial<ImplementationDeps>): ImplementationDeps {
     dispatcherUrl: "http://127.0.0.1:8822",
     launchTimeoutMs: 2000,
     stopTimeoutMs: 2000,
+    // Default: no continuation expected. Tests exercising the re-enqueue loop
+    // override this with the engine-backed harness below.
+    enqueueContinuation: async () => {
+      throw new Error("unexpected continuation enqueue");
+    },
     ...overrides,
   };
 }
+
+/**
+ * Wire `enqueueContinuation` to the test engine so a resume actually starts the
+ * next round as a fresh execution, recording each continuation's id. This is
+ * the production seam (`engine.start("implementation", input)`) under test —
+ * the re-enqueue loop the spec annotates `// loop back via re-enqueue`.
+ */
+function withContinuations(overrides: Partial<ImplementationDeps>): {
+  deps: ImplementationDeps;
+  continuationIds: string[];
+} {
+  const continuationIds: string[] = [];
+  const deps = makeDeps({
+    ...overrides,
+    enqueueContinuation: async (input) => {
+      const handle = await engine.start("implementation", input);
+      continuationIds.push(handle.id);
+    },
+  });
+  return { deps, continuationIds };
+}
+
+/** Wait until the indexed continuation has been enqueued, returning its id. */
+async function awaitContinuation(ids: string[], index: number, timeoutMs = 5000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (ids[index]) return ids[index]!;
+    await Bun.sleep(15);
+  }
+  throw new Error(`continuation #${index} was not enqueued within ${timeoutMs}ms`);
+}
+
+const CHANGES_REQUESTED = {
+  reason: "review-changes" as const,
+  outcome: "changes-requested" as const,
+  reviewId: 1,
+  decision: "CHANGES_REQUESTED",
+};
+const APPROVED = {
+  reason: "review-changes" as const,
+  outcome: "resolved" as const,
+  reviewId: 2,
+  decision: "APPROVED",
+};
 
 /** No session leak: every tmux session that was created was also killed. */
 function expectNoSessionLeak(tmux: { created: string[]; killed: string[] }): void {
@@ -229,14 +278,20 @@ describe("implementation workflow — terminal stops fall through the waitFor", 
   });
 });
 
-describe("implementation workflow — asked-question park → answer → resume", () => {
-  test("parks on asked-question (waiting-human, answered signal armed, worktree kept), then a signal resumes to completion", async () => {
+/** The `.middle/prompt.md` written into the (shared) worktree, by workflow id. */
+function readPromptBrief(workflowId: string): string {
+  const path = getWorkflow(db, workflowId)?.worktreePath;
+  if (!path) throw new Error(`workflow ${workflowId} has no worktree path`);
+  return readFileSync(join(path, ".middle", "prompt.md"), "utf8");
+}
+
+describe("implementation workflow — asked-question park → answer → resume (e2e)", () => {
+  test("parks on asked-question, a human reply resumes a fresh continuation with the answer injected", async () => {
     const tmux = makeTmuxStub();
     const prompts: string[] = [];
     const postQuestionCalls: Array<{ epicNumber: number; question: string; context?: string }> = [];
-    // First drive asks a question; the resumed drive finishes (done).
-    // One stub instance shared across drives so its classification sequence
-    // advances (initial → asked-question, resume → done).
+    // One shared stub instance so its classification sequence advances across
+    // both executions: initial → asked-question, the continuation → done.
     const adapter = makeAdapterStub(
       [
         {
@@ -248,7 +303,7 @@ describe("implementation workflow — asked-question park → answer → resume"
       ],
       prompts,
     );
-    const deps = makeDeps({
+    const { deps, continuationIds } = withContinuations({
       tmux: tmux.ops,
       getAdapter: () => adapter,
       postQuestion: async (opts) => {
@@ -259,68 +314,152 @@ describe("implementation workflow — asked-question park → answer → resume"
         });
       },
     });
-    const id = await start(deps);
+    const id0 = await start(deps);
 
-    // Parked: waiting-human, the epic-scoped 'answered' signal armed, worktree preserved.
-    await awaitParked(id);
-    expect(getWaitForSignal(db, id)).toEqual({
+    // Parked: waiting-human, the epic-scoped 'answered' signal armed, worktree kept.
+    await awaitParked(id0);
+    expect(getWaitForSignal(db, id0)).toEqual({
       signalName: signalNameFor(EPIC, "answered-question"),
       payloadJson: JSON.stringify({ reason: "answered-question" }),
     });
-    // The sentinel's question + context are surfaced to the workflow's poster.
     expect(postQuestionCalls).toEqual([
       { epicNumber: EPIC, question: "Option A or B?", context: "Both compile." },
     ]);
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
-    expect(prompts).toEqual(["initial"]); // resume drive not yet run
+    expect(prompts).toEqual(["initial"]); // continuation not yet driven
 
-    // Human reply fires the signal → resume re-drives with the 'answer' prompt.
-    await engine.signal(id, RESUME_EVENT, { answer: "use option B" });
-    expect(await awaitSettled(id)).toBe("completed");
+    // The poller fires the human's reply → a fresh continuation execution.
+    await engine.signal(id0, RESUME_EVENT, {
+      reason: "answered-question",
+      reply: { commentId: 7, authorLogin: "alice", body: "Use option B." },
+    });
+    // The original execution hands off and ends; its wait is consumed.
+    expect(await awaitSettled(id0)).toBe("completed");
+    expect(getWaitForSignal(db, id0)).toBeNull();
+
+    // The continuation re-drives with the 'answer' prompt, reusing the worktree,
+    // and the human's reply is injected into its brief.
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1); // the answered continuation reaches done → parks on review
     expect(prompts).toEqual(["initial", "answer"]);
-    expect(getWaitForSignal(db, id)).toBeNull(); // consumed on resume
+    expect(getWorkflow(db, id1)?.worktreePath).toBe(getWorkflow(db, id0)?.worktreePath);
+    const brief = readPromptBrief(id1);
+    expect(brief).toContain("a human answered");
+    expect(brief).toContain("Use option B.");
+    expect(brief).toContain("@alice");
+    // An answered question does not advance the review counter; it parks on review.
+    expect(getWaitForSignal(db, id1)).toEqual({
+      signalName: signalNameFor(EPIC, "review-changes"),
+      payloadJson: JSON.stringify({ reason: "review-changes" }),
+    });
+
+    // Approve to end the loop cleanly and prove the worktree is torn down once.
+    await engine.signal(id1, RESUME_EVENT, APPROVED);
+    expect(await awaitSettled(id1)).toBe("completed");
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     expectNoSessionLeak(tmux);
   });
 });
 
-describe("implementation workflow — done park → review-resolved → resume", () => {
-  test("parks on done (waiting-human, review-resolved signal armed), then a signal resumes", async () => {
+describe("implementation workflow — done park → review-changes → resume (e2e)", () => {
+  test("a CHANGES_REQUESTED pass resumes a continuation with the address-review brief; APPROVED ends the loop", async () => {
     const tmux = makeTmuxStub();
     const prompts: string[] = [];
-    const adapter = makeAdapterStub([{ kind: "done" }, { kind: "done" }], prompts);
-    const deps = makeDeps({ tmux: tmux.ops, getAdapter: () => adapter });
-    const id = await start(deps);
+    const adapter = makeAdapterStub({ kind: "done" }, prompts);
+    const { deps, continuationIds } = withContinuations({ tmux: tmux.ops, getAdapter: () => adapter });
+    const id0 = await start(deps);
 
-    await awaitParked(id);
-    expect(getWaitForSignal(db, id)).toEqual({
+    await awaitParked(id0);
+    expect(getWaitForSignal(db, id0)).toEqual({
       signalName: signalNameFor(EPIC, "review-changes"),
       payloadJson: JSON.stringify({ reason: "review-changes" }),
     });
-    // No postQuestion for the done/review path.
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
 
-    await engine.signal(id, RESUME_EVENT, { decision: "CHANGES_REQUESTED" });
-    expect(await awaitSettled(id)).toBe("completed");
-    expect(prompts).toEqual(["initial", "resume"]); // review-changes resumes with the 'resume' framing
-    expect(getWaitForSignal(db, id)).toBeNull();
+    // A reviewer requests changes → resume a continuation to address them.
+    await engine.signal(id0, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettled(id0)).toBe("completed");
+
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1);
+    // Resumes with the 'resume' framing; the brief is the address-review brief
+    // (round 1 of the default cap 5) that points at the skill's procedure.
+    expect(prompts).toEqual(["initial", "resume"]);
+    const brief = readPromptBrief(id1);
+    expect(brief).toContain("address review — round 1 of 5");
+    expect(brief).toContain("Addressing review feedback");
+    expect(brief).toContain("Push once");
+    expect(brief).toContain("CHANGES_REQUESTED");
+
+    // The agent re-requested review; an APPROVED verdict ends the loop (terminal).
+    await engine.signal(id1, RESUME_EVENT, APPROVED);
+    expect(await awaitSettled(id1)).toBe("completed");
+    expect(continuationIds).toHaveLength(1); // no further round after APPROVED
+    expect(getWaitForSignal(db, id1)).toBeNull();
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     expectNoSessionLeak(tmux);
   });
 
-  test("a completed resume reverts a previously RATE_LIMITED adapter to AVAILABLE", async () => {
+  test("a resolved review reverts a previously RATE_LIMITED adapter to AVAILABLE", async () => {
     setRateLimited(db, {
       adapter: "stub",
       resetAt: Date.parse("2026-05-23T18:00:00Z"),
       source: "transcript",
     });
-    const adapter = makeAdapterStub([{ kind: "done" }, { kind: "done" }]);
-    const deps = makeDeps({ getAdapter: () => adapter });
+    const { deps } = withContinuations({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
     const id = await start(deps);
     await awaitParked(id);
-    await engine.signal(id, RESUME_EVENT, {});
+    await engine.signal(id, RESUME_EVENT, APPROVED);
     expect(await awaitSettled(id)).toBe("completed");
     expect(getRateLimitState(db, "stub")!.status).toBe("AVAILABLE");
+  });
+});
+
+describe("implementation workflow — review-round cap", () => {
+  test("after the configured cap of CHANGES_REQUESTED passes without APPROVED, it parks in waiting-human and stops auto-resuming", async () => {
+    const tmux = makeTmuxStub();
+    const adapter = makeAdapterStub({ kind: "done" });
+    // Cap of 2: rounds 1 and 2 re-enqueue; the 3rd CHANGES_REQUESTED caps.
+    const { deps, continuationIds } = withContinuations({
+      tmux: tmux.ops,
+      getAdapter: () => adapter,
+      reviewRoundCap: 2,
+    });
+    const id0 = await start(deps);
+
+    // Round 0 (initial) parks; request changes → round 1.
+    await awaitParked(id0);
+    await engine.signal(id0, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettled(id0)).toBe("completed");
+
+    // Round 1 parks; request changes → round 2.
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1);
+    expect(readPromptBrief(id1)).toContain("round 1 of 2");
+    await engine.signal(id1, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettled(id1)).toBe("completed");
+
+    // Round 2 parks; request changes again → would be round 3 > cap → capped.
+    const id2 = await awaitContinuation(continuationIds, 1);
+    await awaitParked(id2);
+    expect(readPromptBrief(id2)).toContain("round 2 of 2");
+    await engine.signal(id2, RESUME_EVENT, CHANGES_REQUESTED);
+
+    // Both "parked" and "capped" read as `waiting-human`, so wait on the
+    // definitive barrier: the bunqueue execution fully settling (the cap path
+    // runs `resume-or-finalize` to completion, which consumes id2's armed wait).
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const s = engine.getExecution(id2)?.state;
+      if (s === "completed" || s === "failed") break;
+      await Bun.sleep(15);
+    }
+    // Capped: parks in waiting-human, no continuation enqueued, no armed wait
+    // (poller stops watching), worktree preserved for the human.
+    expect(getWorkflow(db, id2)?.state).toBe("waiting-human");
+    expect(continuationIds).toHaveLength(2); // id1, id2 — no third round
+    expect(getWaitForSignal(db, id2)).toBeNull(); // consumed, not re-armed
+    expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
   });
 });
 

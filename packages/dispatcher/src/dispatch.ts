@@ -148,6 +148,14 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
         resolveRepoPath: () => opts.repoPath,
         worktreeRoot: opts.worktreeRoot,
         dispatcherUrl: `http://127.0.0.1:${hookServer.port}`,
+        // Resume hand-off: a continuation round re-enters the same workflow on
+        // this engine. NOTE: `dispatchEpic`'s engine drains once the workflow
+        // parks (`waitForSettle` returns on `waiting`), so the continuation only
+        // actually runs once dispatches are hosted on the long-lived engine —
+        // the Phase 8 auto-dispatch integration. The seam is wired here ahead of it.
+        enqueueContinuation: async (input) => {
+          await engine.start("implementation", input);
+        },
       }),
     );
 

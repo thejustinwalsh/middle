@@ -92,3 +92,51 @@ and retried — it never crashes the pass.
 
 **Evidence:** `dispatch.ts:42-55` (`waitForSettle` returns on non-running/non-compensating,
 i.e. `waiting`); spec §"Phase 8 — Auto-dispatch + limits".
+
+## Multi-round resume = re-enqueue a continuation execution (one round = one execution)
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-24
+
+**Decision:** Each park/resume cycle is one bunqueue execution. `resume-or-finalize`
+**interprets** the fired verdict and either finalizes (terminal / review *resolved*)
+or **re-enqueues a continuation execution** (via an injected `enqueueContinuation`
+dep) that carries `resume = { reason, round, worktree, payload }` in its input. The
+continuation reuses the same worktree (its `prepare-worktree` skips `createWorktree`
+and reuses the handle from `input.resume.worktree`) and drives the resume prompt in
+its own `launch-and-drive`. The addressing drive therefore happens in the continuation,
+not inline in `resume-or-finalize`.
+
+**Why:** A single execution can park only once (bunqueue has one top-level `waitFor`
+per linear graph and no loop-back; loop bodies can't hold a `waitFor`). The review
+loop needs up to `cap` real parks (each frees the session for a reviewer who may take
+days), so the only expressible loop is re-enqueue — which the spec annotates twice
+(`// loop back via re-enqueue`). The `waitfor_signals.workflow_id` must equal the
+bunqueue execution id for `engine.signal` to target the parked execution, so each
+round is necessarily a fresh execution (and a fresh `workflows` row, keyed by the same
+`epic_number`); the live one is the latest non-terminal row. The round counter rides in
+`input.resume.round`; `resume-or-finalize` increments per pass and parks in
+`waiting-human` (no re-arm, no re-enqueue) once it would exceed the cap (default 5).
+
+**Evidence:** `#36` tests (asked-question e2e, review-changes single-round, cap boundary);
+`executor.js` (no loop-back); spec §"implementation workflow".
+
+## The agent fetches review threads; the dispatcher writes the "address review" brief
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`,
+`packages/skills/implementing-github-issues/SKILL.md`
+**Date:** 2026-05-24
+
+**Decision:** On a `review-changes` continuation, the dispatcher overwrites
+`.middle/prompt.md` with an "address review" brief (round, decision, the skill's
+per-round procedure) and the agent pulls the PR's review threads itself via `gh`,
+following the new **"Addressing review feedback"** section of the
+`implementing-github-issues` skill (batch → internal clean-eyes review loop → push
+once → reply in-thread → re-request review → re-park).
+
+**Why:** The agent is a full Claude session with `gh`; having it fetch live threads is
+more robust than the dispatcher embedding a stale snapshot, and it keeps the dispatcher
+GitHub-read-light. Codifying the procedure in the skill is what makes the autonomous
+daemon loop and a hand-driven agent behave identically (the #36 acceptance's explicit
+requirement). The brief in `.middle/prompt.md` is the "address-review brief" the threads
+are pulled behind.
+
+**Evidence:** skill "Addressing review feedback" section; `prompt.ts` resume framing.

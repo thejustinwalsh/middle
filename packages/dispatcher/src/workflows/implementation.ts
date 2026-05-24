@@ -5,6 +5,7 @@ import type { AgentAdapter, StopClassification } from "@middle/core";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import type { SessionGate } from "../hook-server.ts";
+import type { ResumeSignalPayload } from "../poller.ts";
 import { markAvailableOnSuccess, parseResetAt, setRateLimited } from "../rate-limits.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
 import {
@@ -15,11 +16,34 @@ import {
   type WorkflowState,
 } from "../workflow-record.ts";
 
+/**
+ * The handoff carried by a continuation execution. A park can only happen once
+ * per bunqueue execution (no loop-back; loop bodies can't hold a `waitFor`), so
+ * every resume is a *fresh* execution re-primed from this — reusing the prior
+ * round's worktree (no new branch / PR) and re-driving from the resume brief.
+ */
+export type ResumeInput = {
+  reason: ResumeReason;
+  /** Review-pass counter; one round = one whole `CHANGES_REQUESTED` pass. */
+  round: number;
+  /** The worktree handle from the prior round — reused verbatim. */
+  worktree: WorktreeHandle;
+  /** What the poller fired: the human's reply, or the review verdict. */
+  payload: ResumeSignalPayload;
+};
+
 /** A dispatch unit: an Epic (or standalone issue) pointed at one adapter. */
 export type ImplementationInput = {
   repo: string;
   epicNumber: number;
   adapter: string;
+  /**
+   * Present only on a continuation execution (a resume). Absent on the initial
+   * dispatch. When set, `prepare-worktree` reuses `resume.worktree` instead of
+   * creating one, and writes the reason-specific resume brief to
+   * `.middle/prompt.md` before the drive.
+   */
+  resume?: ResumeInput;
 };
 
 /**
@@ -91,10 +115,25 @@ export type ImplementationDeps = {
     question: string;
     context?: string;
   }) => Promise<void>;
+  /**
+   * Enqueue a continuation execution for the next round (a resume). Injected so
+   * the workflow stays free of the engine: in prod the dispatcher wires this to
+   * `engine.start("implementation", input)` on the long-lived engine that hosts
+   * parked executions; tests wire it to their embedded engine. The continuation
+   * reuses the prior round's worktree via `input.resume.worktree`.
+   */
+  enqueueContinuation: (input: ImplementationInput) => Promise<void>;
+  /**
+   * The review-round ceiling: after this many `CHANGES_REQUESTED` passes without
+   * an `APPROVED`, the workflow parks in `waiting-human` and stops auto-resuming
+   * (a never-satisfied loop must not run forever). Defaults to 5.
+   */
+  reviewRoundCap?: number;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_REVIEW_ROUND_CAP = 5;
 
 /**
  * Session names are deterministic so compensations can recompute them, and
@@ -141,6 +180,89 @@ time. Operating rules for this dispatch:
   );
 }
 
+/**
+ * Overwrite `.middle/prompt.md` with the reason-specific resume brief for a
+ * continuation execution. The agent re-reads this on its `@`-referenced resume
+ * drive (`buildPromptText` kind `answer` / `resume`):
+ *
+ * - `answered-question` — inlines the human's reply so the agent reads the
+ *   answer and continues the workstream.
+ * - `review-changes` — an "address review" brief. The agent pulls the PR's
+ *   review threads itself (`gh`) and follows the `implementing-github-issues`
+ *   skill's "Addressing review feedback" procedure (batch → internal review
+ *   loop → push once → reply in-thread → re-request review → re-park). Carries
+ *   the round and cap so a bounded loop is visible to the agent.
+ *
+ * This unconditionally overwrites (unlike `ensurePromptFile`, which preserves an
+ * operator brief on the *initial* dispatch) — a resume's brief is the live one.
+ */
+function writeResumeBrief(
+  worktreePath: string,
+  epicNumber: number,
+  resume: ResumeInput,
+  reviewRoundCap: number,
+): void {
+  const middleDir = join(worktreePath, ".middle");
+  mkdirSync(middleDir, { recursive: true });
+  const promptPath = join(middleDir, "prompt.md");
+  const operatingRules = `## Operating rules for this dispatch
+
+- You are running autonomously under middle. There is no human watching in real
+  time. Continue the workstream — do not restart it. The branch, draft PR,
+  \`plan.md\`, and \`decisions.md\` are all intact.
+- Work continuously; pause only if you are genuinely blocked (write
+  \`.middle/blocked.json\` and exit). The terminal state is the PR marked ready.
+`;
+
+  if (resume.reason === "answered-question") {
+    const reply = resume.payload.reason === "answered-question" ? resume.payload.reply : undefined;
+    const answer = reply
+      ? `> ${reply.body.replace(/\n/g, "\n> ")}\n\n— @${reply.authorLogin}`
+      : "(the human's reply text was unavailable — check the Epic thread on GitHub)";
+    writeFileSync(
+      promptPath,
+      `# middle dispatch brief — Epic #${epicNumber} (resumed: a human answered)
+
+A human answered the open question you parked on. Their reply:
+
+${answer}
+
+Read this answer, fold it into your plan / decisions log, and continue the
+workstream from where you left off.
+
+${operatingRules}`,
+    );
+    return;
+  }
+
+  // review-changes
+  const decision = resume.payload.reason === "review-changes" ? resume.payload.decision : null;
+  writeFileSync(
+    promptPath,
+    `# middle dispatch brief — Epic #${epicNumber} (resumed: address review — round ${resume.round} of ${reviewRoundCap})
+
+A reviewer requested changes on the PR${decision ? ` (decision: ${decision})` : ""}. Address this
+review pass now, following the \`implementing-github-issues\` skill's
+**"Addressing review feedback"** procedure:
+
+1. Pull **every** open review thread on the PR yourself via \`gh\` (the review
+   comments and the review bodies). Read the whole pass before changing anything.
+2. **Batch** the findings and resolve each **class-wide** — a fix plus a test per
+   fix, not one comment at a time.
+3. Run the **internal clean-eyes review loop** over the batched diff (a review
+   subagent), looping until it surfaces nothing new, to catch adjacent edges
+   before re-review.
+4. **Push once** — one push for the whole pass, not per fix.
+5. Reply in-thread to each addressed comment, **re-request review**, then stop.
+   The workflow re-parks for the next verdict.
+
+This is review round ${resume.round} of ${reviewRoundCap}. After ${reviewRoundCap} rounds without an
+\`APPROVED\` the workflow parks for a human and stops auto-resuming.
+
+${operatingRules}`,
+  );
+}
+
 /** A park-worthy stop ends the session and waits for a human/reviewer signal. */
 function isParkKind(kind: StopClassification["kind"]): boolean {
   return kind === "asked-question" || kind === "done";
@@ -161,9 +283,10 @@ function finalStateFor(classification: StopClassification): WorkflowState {
     case "rate-limited":
       return "rate-limited";
     case "asked-question":
-      // A resumed asked-question that did not settle stays parked for a human;
-      // a single-cycle resume cannot re-park in this execution (re-park is the
-      // re-enqueue path, sub-issue #36).
+      // Defensive only: `finalize` is reached for terminal stops and the
+      // synthesized review-resolved `done`. Park kinds (`asked-question`,
+      // `done`) route to `parkForResume`, not here — a resume re-enqueues a
+      // continuation rather than finalizing in place.
       return "waiting-human";
     case "bare-stop":
       // the minimal spine has no nudge loop — a clean stop is terminal here
@@ -203,6 +326,7 @@ export function createImplementationWorkflow(
 ): Workflow<ImplementationInput> {
   const launchTimeout = deps.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
   const stopTimeout = deps.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+  const reviewRoundCap = deps.reviewRoundCap ?? DEFAULT_REVIEW_ROUND_CAP;
 
   async function prepareWorktree(ctx: StepContext<ImplementationInput>): Promise<PrepareResult> {
     createWorkflowRecord(deps.db, {
@@ -212,6 +336,15 @@ export function createImplementationWorkflow(
       epicNumber: ctx.input.epicNumber,
       adapter: ctx.input.adapter,
     });
+    const resume = ctx.input.resume;
+    if (resume) {
+      // Continuation: reuse the prior round's worktree (same branch, same PR —
+      // no new branch, no new PR) and re-prime the brief for this resume reason.
+      const handle = resume.worktree;
+      updateWorkflow(deps.db, ctx.executionId, { worktreePath: handle.path });
+      writeResumeBrief(handle.path, ctx.input.epicNumber, resume, reviewRoundCap);
+      return { handle };
+    }
     const handle = await deps.worktree.createWorktree({
       repoPath: deps.resolveRepoPath(ctx.input.repo),
       repo: ctx.input.repo,
@@ -341,7 +474,13 @@ export function createImplementationWorkflow(
 
   async function launchAndDrive(ctx: StepContext<ImplementationInput>): Promise<DriveResult> {
     const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
-    return driveOnce(ctx, handle, "initial");
+    const resume = ctx.input.resume;
+    const promptKind = !resume
+      ? "initial"
+      : resume.reason === "answered-question"
+        ? "answer"
+        : "resume";
+    return driveOnce(ctx, handle, promptKind);
   }
 
   /**
@@ -399,42 +538,101 @@ export function createImplementationWorkflow(
   }
 
   /**
-   * Reached after the `waitFor` resolves. Terminal stops fall straight through
-   * (the signal was pre-seeded). Park-worthy stops only reach here once the
-   * poller has fired `engine.signal(id, RESUME_EVENT, …)` — so consume the
-   * durable row and re-drive a fresh session re-primed per reason, then
-   * finalize on the resumed outcome. Worktree teardown + terminal state happen
-   * here, once, for every path.
+   * Tear the worktree down and resolve the terminal `workflows.state` for a
+   * settled classification. Called for genuinely-terminal stops and for a
+   * review-resolved (`APPROVED` / clean re-review) `done`. middle never merges —
+   * the human merges; this just records the terminal state and frees the worktree.
    */
-  async function resumeOrFinalize(ctx: StepContext<ImplementationInput>): Promise<void> {
-    const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
-    const initial = ctx.steps["launch-and-drive"] as DriveResult;
-
-    let settled = initial.classification;
-    if (isParkKind(initial.classification.kind)) {
-      // We were resumed: consume the durable wait record and re-drive.
-      consumeWaitForSignal(deps.db, ctx.executionId);
-      const reason = reasonFor(initial.classification.kind);
-      const promptKind = reason === "answered-question" ? "answer" : "resume";
-      const resumed = await driveOnce(ctx, handle, promptKind);
-      settled = resumed.classification;
-    }
-
-    // Finalize: tear the worktree down and resolve the terminal state.
+  async function finalize(
+    ctx: StepContext<ImplementationInput>,
+    handle: WorktreeHandle,
+    settled: StopClassification,
+  ): Promise<void> {
     await deps.worktree.destroyWorktree(handle);
-    if (settled.kind !== "rate-limited" && finalStateFor(settled) === "completed") {
-      // Probe-via-real-work: a completed dispatch proves the adapter is serving
-      // again, so a previously RATE_LIMITED adapter reverts to AVAILABLE.
-      markAvailableOnSuccess(deps.db, ctx.input.adapter);
-    } else if (settled.kind === "rate-limited") {
+    if (settled.kind === "rate-limited") {
       setRateLimited(deps.db, {
         adapter: ctx.input.adapter,
         resetAt: parseResetAt(settled.resetAt),
         source: "transcript",
         detail: settled.resetAt,
       });
+    } else if (finalStateFor(settled) === "completed") {
+      // Probe-via-real-work: a completed dispatch proves the adapter is serving
+      // again, so a previously RATE_LIMITED adapter reverts to AVAILABLE.
+      markAvailableOnSuccess(deps.db, ctx.input.adapter);
     }
     updateWorkflow(deps.db, ctx.executionId, { state: finalStateFor(settled) });
+  }
+
+  /**
+   * Reached after the `waitFor` resolves. Three outcomes:
+   *
+   *  - **Terminal stop** — `record-terminal` pre-seeded `{ terminal: true }`, so
+   *    this drive's own classification is final; `finalize` ends it.
+   *  - **Review resolved** — the poller fired `outcome: "resolved"` (`APPROVED`
+   *    or a clean re-review). The loop ends (terminal); the human merges.
+   *  - **A continuing resume** — an answered question, or a `CHANGES_REQUESTED`
+   *    pass under the round cap. Hand off to a fresh continuation execution that
+   *    reuses this worktree (re-primed per reason); this round ends `completed`
+   *    and the continuation becomes the Epic's live (latest non-terminal) row.
+   *
+   * The review-round counter increments **per pass**. Once a `CHANGES_REQUESTED`
+   * verdict would exceed `reviewRoundCap`, the workflow parks in `waiting-human`
+   * with no re-arm and no continuation — a never-satisfied loop is bounded.
+   */
+  async function resumeOrFinalize(ctx: StepContext<ImplementationInput>): Promise<void> {
+    const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
+    const initial = ctx.steps["launch-and-drive"] as DriveResult;
+    const signal = (ctx.signals as Record<string, unknown>)[RESUME_EVENT] as
+      | { terminal?: boolean }
+      | ResumeSignalPayload
+      | undefined;
+
+    // Terminal stop: the branch pre-seeded the signal; this drive is final.
+    if (signal && (signal as { terminal?: boolean }).terminal) {
+      await finalize(ctx, handle, initial.classification);
+      return;
+    }
+
+    // We genuinely parked, and the poller fired a resume verdict. Consume the
+    // durable wait record so the workflow no longer reads as parked.
+    const payload = signal as ResumeSignalPayload;
+    consumeWaitForSignal(deps.db, ctx.executionId);
+
+    // A resolved review (APPROVED, or a 0-actionable re-review) ends the loop.
+    if (payload.reason === "review-changes" && payload.outcome === "resolved") {
+      await finalize(ctx, handle, { kind: "done" });
+      return;
+    }
+
+    // A continuing resume. Only a `CHANGES_REQUESTED` pass advances the review
+    // counter; an answered question carries the round through unchanged.
+    const currentRound = ctx.input.resume?.round ?? 0;
+    let nextRound = currentRound;
+    if (payload.reason === "review-changes") {
+      nextRound = currentRound + 1;
+      if (nextRound > reviewRoundCap) {
+        // Bounded: stop auto-resuming and park for a human. Keep the worktree;
+        // do not re-arm a wait (the poller stops watching) and do not re-enqueue.
+        // Everything the agent has pushed stays on the branch / PR.
+        updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
+        return;
+      }
+    }
+
+    // The drive that just parked ran a working adapter; revert any stale
+    // RATE_LIMITED before handing off.
+    markAvailableOnSuccess(deps.db, ctx.input.adapter);
+    // Hand control to a fresh continuation that reuses this worktree.
+    await deps.enqueueContinuation({
+      repo: ctx.input.repo,
+      epicNumber: ctx.input.epicNumber,
+      adapter: ctx.input.adapter,
+      resume: { reason: payload.reason, round: nextRound, worktree: handle, payload },
+    });
+    // This round handed off — terminal in the bunqueue sense. The worktree is
+    // NOT torn down; the continuation reuses it.
+    updateWorkflow(deps.db, ctx.executionId, { state: "completed" });
   }
 
   return (
