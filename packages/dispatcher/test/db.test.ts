@@ -58,10 +58,10 @@ describe("runMigrations", () => {
     db.close();
   });
 
-  test("applies 001_initial and reports version 1", () => {
+  test("applies every migration and reports the latest version", () => {
     const db = openDb(dbPath);
-    expect(runMigrations(db)).toBe(1);
-    expect(currentSchemaVersion(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2);
+    expect(currentSchemaVersion(db)).toBe(2);
     db.close();
   });
 
@@ -81,11 +81,20 @@ describe("runMigrations", () => {
     db.close();
   });
 
-  test("is idempotent — running twice leaves version at 1 and does not throw", () => {
+  test("is idempotent — running twice leaves version at the latest and does not throw", () => {
     const db = openDb(dbPath);
     runMigrations(db);
-    expect(runMigrations(db)).toBe(1);
-    expect(currentSchemaVersion(db)).toBe(1);
+    expect(runMigrations(db)).toBe(2);
+    expect(currentSchemaVersion(db)).toBe(2);
+    db.close();
+  });
+
+  test("002 adds the waitfor_signals.fired_at column", () => {
+    const db = openAndMigrate(dbPath);
+    const cols = (db.query("PRAGMA table_info(waitfor_signals)").all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    expect(cols).toContain("fired_at");
     db.close();
   });
 
@@ -117,7 +126,7 @@ describe("runMigrations", () => {
 describe("openAndMigrate", () => {
   test("opens, migrates, and returns a ready database", () => {
     const db = openAndMigrate(dbPath);
-    expect(currentSchemaVersion(db)).toBe(1);
+    expect(currentSchemaVersion(db)).toBe(2);
     db.close();
   });
 });
