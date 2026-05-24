@@ -72,3 +72,11 @@ Every `src/index.ts(x)` opens with one leading TSDoc block — the module's **fr
 Required (a check fails otherwise): the leading `/** … */` block, `@packageDocumentation`, `@module <name>`, the three section headers (`Public surface:`, `Where things live:`, `Gotchas:`), and a `claude-md:` flag that is exactly `true` or `false`. The `claude-md` flag is the **single source of truth** for the per-folder-`CLAUDE.md` decision (below) — set it deliberately; never re-derive it per pass.
 
 The check lives in `packages/cli/src/checks/module-index.ts`, runs as a gating `bun test` (`packages/cli/test/module-index.test.ts`), and surfaces as a `docs` warning in `mm doctor`.
+
+### TSDoc on public surfaces
+
+The module-index frontmatter is *discovery*; TSDoc is the *API reference* (`starlight-typedoc` reads it). They co-exist.
+
+- Every public export carries a TSDoc/JSDoc comment. Comments describe **behavior and contracts** — what it does, what it guarantees, what it assumes — not a restatement of the identifier's name. "`openDb` — opens the db" is noise; "`openDb` — open a SQLite handle without running migrations; callers that need a current schema use `openAndMigrate`" is signal.
+- Each `index.ts(x)` carries an `@packageDocumentation` block (it's part of the module-index frontmatter above) — this seeds TypeDoc's per-module overview.
+- Coverage is **advisory**: `checkTsdocCoverage` (`packages/cli/src/checks/tsdoc-coverage.ts`) reports public exports missing a doc comment as a `tsdoc` warning in `mm doctor` and a smoke test in `bun test`. The gated guarantee is `@packageDocumentation` presence (enforced above); per-export coverage is a backlog signal to chip away at, not a build break.
