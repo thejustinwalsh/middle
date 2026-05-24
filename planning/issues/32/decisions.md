@@ -140,3 +140,29 @@ requirement). The brief in `.middle/prompt.md` is the "address-review brief" the
 are pulled behind.
 
 **Evidence:** skill "Addressing review feedback" section; `prompt.ts` resume framing.
+
+## A handed-off continuation round terminates as `completed`, not a new `superseded` state
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-24
+
+**Decision:** When `resume-or-finalize` re-enqueues a continuation, the round that
+handed off is marked `state = 'completed'` (the continuation becomes the Epic's
+latest non-terminal row). I did **not** add a dedicated `superseded` state.
+
+**Why:** The handed-off row must be terminal so `findActiveWorkflowBySession`
+(hook correlation) and `loadPollableWaits` ignore it — otherwise a stale round
+would compete with the live continuation for the deterministic session name.
+Adding a `superseded` state means modifying the `workflows.state` CHECK
+constraint, which SQLite can't `ALTER` — it needs a full table rebuild (create
++ copy + drop + rename, with the `events` FK in tow). That's disproportionate
+for what is, today, a cosmetic distinction: the only consumer that would tell
+`completed` from `superseded` apart is the Phase 9 dashboard (out of scope), and
+`markAvailableOnSuccess` firing on a handoff is *correct* (the round's drive ran
+a working adapter). The honest accounting (one Epic can have several `completed`
+rows, one per round) is a Phase 8/9 concern — Phase 8 routes dispatches through
+the persistent engine and revisits the `workflows` row lifecycle, which is the
+natural place to introduce `superseded` if the dashboard needs it.
+
+**Evidence:** `001_initial.sql` (state CHECK; no in-place ALTER for CHECK in
+SQLite); `workflow-record.ts` `TERMINAL_STATES` / `findActiveWorkflowBySession`;
+`rate-limits.ts:88` (`markAvailableOnSuccess` no-ops unless RATE_LIMITED).
