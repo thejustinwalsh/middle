@@ -422,7 +422,12 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
 
   async function cleanupWorktree(ctx: StepContext<RecommenderInput>): Promise<void> {
     await teardown(ctx);
-    updateWorkflow(deps.db, ctx.executionId, { state: "completed" });
+    // A malformed produced body is a failed run, not a silent success — the
+    // verify step already surfaced it and gated auto-dispatch; reflect it in the
+    // terminal state so the bad output isn't masked as "completed".
+    const verify = ctx.steps["verify-state-issue-parses"] as VerifyResult | undefined;
+    const finalState = verify && !verify.ok ? "failed" : "completed";
+    updateWorkflow(deps.db, ctx.executionId, { state: finalState });
   }
 
   return new Workflow<RecommenderInput>("recommender")

@@ -353,6 +353,74 @@ describe("recommender workflow — #44 build-prompt: every required input, verba
   });
 });
 
+/** A body that parses but fails validation: a Ready row using an unconfigured adapter. */
+function bodyWithUnconfiguredAdapter(): string {
+  return renderStateIssue({
+    version: 1,
+    generated: new Date().toISOString(),
+    runId: "00000000",
+    intervalMinutes: 15,
+    readyToDispatch: [{ rank: 1, epic: "#6 Some epic", adapter: "ghost", subIssues: 2, reason: "ready" }],
+    needsHumanInput: [],
+    blocked: [],
+    inFlight: [],
+    excluded: [],
+    rateLimits: { claude: "AVAILABLE", codex: "UNKNOWN", github: "UNKNOWN" },
+    slotUsage: { adapters: [], total: { used: 0, max: 0 }, global: { used: 0, max: 0 } },
+  });
+}
+
+describe("recommender workflow — #45 verify-state-issue-parses: gate auto-dispatch", () => {
+  test("a valid produced body verifies ok and the workflow proceeds to trigger-auto-dispatch", async () => {
+    const h = makeHarness({ bodies: [validBody(), validBody()], autoDispatch: true, wireTrigger: true });
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expect(h.triggered).toEqual([{ repo: REPO, stateIssue: STATE_ISSUE }]); // proceeded
+    expect(h.surfaced).toEqual([]); // nothing surfaced
+  });
+
+  test("a malformed produced body does NOT proceed to auto-dispatch and surfaces the problem", async () => {
+    // Second readBody (the verify read) returns garbage that won't parse.
+    const h = makeHarness({ bodies: [validBody(), "not a state issue body"], autoDispatch: true, wireTrigger: true });
+    const id = await runToEnd(h.deps);
+
+    // Failed run (bad output not masked as completed), no dispatch, surfaced, worktree cleaned.
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(h.triggered).toEqual([]);
+    expect(h.surfaced).toHaveLength(1);
+    expect(h.surfaced[0]).toContain("does not parse");
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+    expect(h.trace).not.toContain("trigger");
+  });
+
+  test("a body that parses but fails validation is also gated and surfaced", async () => {
+    const h = makeHarness({
+      bodies: [validBody(), bodyWithUnconfiguredAdapter()],
+      autoDispatch: true,
+      wireTrigger: true,
+    });
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(h.triggered).toEqual([]);
+    expect(h.surfaced).toHaveLength(1);
+    expect(h.surfaced[0]).toContain("failed validation");
+    expect(h.surfaced[0]).toContain("ghost"); // names the offending adapter
+  });
+
+  test("a failed surfaceProblem callback does not abort cleanup (best-effort surfacing)", async () => {
+    const h = makeHarness({ bodies: [validBody(), "garbage"], autoDispatch: true, wireTrigger: true });
+    h.deps.surfaceProblem = async () => {
+      throw new Error("gh comment failed");
+    };
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]); // still cleaned up
+  });
+});
+
 describe("recommender workflow — #44 buildRecommenderContext: from dispatcher state", () => {
   const mk = (id: string, adapter: string, epic: number | null, session: string, state?: string) => {
     createWorkflowRecord(db, { id, kind: "implementation", repo: REPO, epicNumber: epic, adapter });
