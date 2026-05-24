@@ -15,50 +15,62 @@
 
 export type StatusCheckbox = { subIssue: number; checked: boolean };
 
+const HEADING_RE = /^#{1,6}\s/;
+const STATUS_HEADING_RE = /^#{1,6}\s+status\b/i;
+
 /**
- * Parse the Status section's checkbox list. Each entry is a list item under the
- * first "## Status" heading carrying a `#N` issue reference; the `#N` is the
- * sub-issue the checkbox tracks. Collection stops at the next heading.
+ * The `[start, end)` line range of the **first** `## Status` section — from the
+ * line after that heading up to (not including) the next heading, or end of body.
+ * Returns null when there's no Status section. Pinning to the *first* section is
+ * the contract both the parser and the reverter share: a later `## Status` block,
+ * or a `#N` checkbox under any other heading, is out of scope and never touched.
+ */
+function firstStatusSectionRange(lines: string[]): { start: number; end: number } | null {
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const isHeading = HEADING_RE.test(lines[i]!);
+    if (start === -1) {
+      if (isHeading && STATUS_HEADING_RE.test(lines[i]!)) start = i + 1;
+    } else if (isHeading) {
+      return { start, end: i };
+    }
+  }
+  return start === -1 ? null : { start, end: lines.length };
+}
+
+/**
+ * Parse the first `## Status` section's checkbox list. Each entry is a list item
+ * carrying a `#N` issue reference; the `#N` is the sub-issue the checkbox tracks.
  */
 export function parseStatusCheckboxes(body: string): StatusCheckbox[] {
   const lines = body.split("\n");
+  const range = firstStatusSectionRange(lines);
+  if (!range) return [];
   const result: StatusCheckbox[] = [];
-  let inSection = false;
-  for (const line of lines) {
-    if (/^#{1,6}\s/.test(line)) {
-      inSection = /^#{1,6}\s+status\b/i.test(line);
-      continue;
-    }
-    if (!inSection) continue;
-    const box = /^\s*[-*]\s+\[([ xX])\]\s+.*?#(\d+)/.exec(line);
+  for (let i = range.start; i < range.end; i++) {
+    const box = /^\s*[-*]\s+\[([ xX])\]\s+.*?#(\d+)/.exec(lines[i]!);
     if (box) result.push({ subIssue: Number(box[2]), checked: box[1] !== " " });
   }
   return result;
 }
 
 /**
- * Flip the `[x]` back to `[ ]` on the Status line that references `#subIssue`.
- * Scoped to the first `## Status` section (mirroring `parseStatusCheckboxes`) so
- * a checked `#N` checkbox elsewhere in the body — a Related/Tasks list, a quoted
- * template — is never mutated.
+ * Flip the `[x]` back to `[ ]` on the first-`## Status`-section line that
+ * references `#subIssue`. Scoped to that section (via `firstStatusSectionRange`)
+ * so a checked `#N` checkbox elsewhere — a Related/Tasks list, a later Status
+ * block, a quoted template — is never mutated.
  */
 function revertCheckbox(body: string, subIssue: number): string {
   const lines = body.split("\n");
-  let inSection = false;
-  return lines
-    .map((line) => {
-      if (/^#{1,6}\s/.test(line)) {
-        inSection = /^#{1,6}\s+status\b/i.test(line);
-        return line;
-      }
-      if (!inSection) return line;
-      const box = /^(\s*[-*]\s+)\[[xX]\](\s+.*?#\d+)/.exec(line);
-      if (box && new RegExp(`#${subIssue}\\b`).test(line)) {
-        return line.replace(/\[[xX]\]/, "[ ]");
-      }
-      return line;
-    })
-    .join("\n");
+  const range = firstStatusSectionRange(lines);
+  if (!range) return body;
+  for (let i = range.start; i < range.end; i++) {
+    const box = /^\s*[-*]\s+\[[xX]\]\s+.*?#(\d+)/.exec(lines[i]!);
+    if (box && Number(box[1]) === subIssue) {
+      lines[i] = lines[i]!.replace(/\[[xX]\]/, "[ ]");
+    }
+  }
+  return lines.join("\n");
 }
 
 export type GateRunResult = { ok: true } | { ok: false; failedGate: string };

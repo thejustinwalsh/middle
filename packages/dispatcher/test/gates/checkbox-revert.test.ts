@@ -30,6 +30,17 @@ describe("parseStatusCheckboxes", () => {
   test("returns [] when there is no Status section", () => {
     expect(parseStatusCheckboxes("## Summary\nnothing\n")).toEqual([]);
   });
+
+  test("only the FIRST ## Status section is parsed; a later one is ignored", () => {
+    const body = `## Status
+- [x] #28 — first section
+## Other
+text
+## Status
+- [x] #29 — a second status block, out of scope
+`;
+    expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 28, checked: true }]);
+  });
 });
 
 /** A recording harness over the reconciler's seams. */
