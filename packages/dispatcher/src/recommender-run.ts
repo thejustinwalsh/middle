@@ -59,6 +59,8 @@ export type DispatchRecommenderOptions = {
   slots: RecommenderSlotLimits;
   /** The `config` block reported to the recommender. */
   runConfig: RecommenderRunConfig;
+  /** Hard cap on the agent run (from `[recommender] agent_timeout_minutes`); undefined → workflow default. */
+  agentTimeoutMs?: number;
   /** Test seams; production passes none. */
   overrides?: RecommenderRunOverrides;
 };
@@ -141,6 +143,7 @@ export async function resolveRecommenderOptions(
         autoDispatch: config.recommender?.autoDispatch ?? false,
         prMode: config.repo?.prMode ?? "worktree",
       },
+      agentTimeoutMs: config.recommender?.agentTimeoutMs,
     },
   };
 }
@@ -255,6 +258,7 @@ export async function dispatchRecommender(
         stateIssue: ov.stateIssue ?? ghStateIssueGateway,
         repoConfig: { adapters: opts.slots.adapters },
         config: opts.runConfig,
+        agentTimeoutMs: opts.agentTimeoutMs,
         gatherContext,
         surfaceProblem: ov.surfaceProblem ?? ghSurfaceProblem,
         // Phase 7 read-only: triggerAutoDispatch intentionally UNWIRED.

@@ -275,16 +275,17 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
     expect(countActiveImplementationSlots(db)).toEqual({ total: 0, perAdapter: {} });
   });
 
-  test("spawn-recommender-agent has the spec's 5-minute hard cap", () => {
+  test("spawn-recommender-agent uses the default 15-minute hard cap", () => {
     // The step `timeout` is the hard cap; assert it via the built workflow's
-    // step config rather than wall-clock. Defaults: 90s launch + 5min agent.
+    // step config rather than wall-clock. Defaults: 90s launch + 15min agent
+    // (bumped from 5min, which was too tight against a real repo).
     const h = makeHarness();
     delete (h.deps as { agentTimeoutMs?: number }).agentTimeoutMs;
     delete (h.deps as { launchTimeoutMs?: number }).launchTimeoutMs;
     const def = stepDef(h.deps, "spawn-recommender-agent");
     expect(def).toBeDefined();
-    // launch (90s) + agent (5min) + 30s backstop, per the factory.
-    expect(def!.timeout).toBe(90_000 + 5 * 60 * 1000 + 30_000);
+    // launch (90s) + agent (15min) + 30s backstop, per the factory.
+    expect(def!.timeout).toBe(90_000 + 15 * 60 * 1000 + 30_000);
   });
 
   test("prepare-shallow-worktree registers a compensation handler", () => {

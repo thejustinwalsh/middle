@@ -109,7 +109,11 @@ export type RecommenderDeps = {
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
-const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60 * 1000; // the spec's 5-minute hard cap
+// 15-minute hard cap. The spec's original 5 minutes proved too tight against a
+// real repo — the agent ran the full window ranking ~4 epics + ~15 issues and
+// rewriting the schema-strict state issue without finishing. Operators tune it
+// per repo via `[recommender] agent_timeout_minutes`.
+const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
  * Deterministic, repo-namespaced session name for the recommender's dedicated

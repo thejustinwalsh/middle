@@ -64,6 +64,7 @@ enabled = true
 interval_minutes = 15
 adapter = "claude"
 auto_dispatch = false
+agent_timeout_minutes = 20
 
 [state_issue]
 number = 142
@@ -165,6 +166,7 @@ describe("loadConfig — per-repo merge", () => {
     expect(config.limits!.complexityCeiling).toBe(3);
     expect(config.recommender!.intervalMinutes).toBe(15);
     expect(config.recommender!.autoDispatch).toBe(false);
+    expect(config.recommender!.agentTimeoutMs).toBe(20 * 60_000);
     expect(config.stateIssue!.number).toBe(142);
     expect(config.bootstrap!.version).toBe(1);
   });
