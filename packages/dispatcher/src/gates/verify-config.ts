@@ -80,11 +80,15 @@ function validateGate(raw: unknown, index: number): Gate {
 
   let resolvedPhases: number[] | undefined;
   if (phases !== undefined) {
+    // A present-but-empty `phases = []` matches no sub-issue, silently disabling
+    // the gate for every phase — the failure mode the loud-validation contract
+    // exists to prevent. To run a gate everywhere, omit `phases` entirely.
     if (
       !Array.isArray(phases) ||
+      phases.length === 0 ||
       !phases.every((p) => typeof p === "number" && Number.isInteger(p) && p > 0)
     ) {
-      throw new VerifyConfigError(`gate "${name}": "phases" must be an array of positive integers`);
+      throw new VerifyConfigError(`gate "${name}": "phases" must be a non-empty array of positive integers (omit it to run for every phase)`);
     }
     resolvedPhases = phases as number[];
   }

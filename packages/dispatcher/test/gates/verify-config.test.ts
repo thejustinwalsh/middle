@@ -81,6 +81,10 @@ describe("parseVerifyConfig — malformed fails loudly", () => {
     ["non-positive timeout", '[[gate]]\nname = "x"\ncommand = "a"\ntimeout_seconds = 0'],
     ["non-int phases", '[[gate]]\nname = "x"\ncommand = "a"\nphases = [1.5]'],
     ["negative phases", '[[gate]]\nname = "x"\ncommand = "a"\nphases = [-1]'],
+    // An empty `phases = []` is a degenerate scope that matches no sub-issue:
+    // the gate runs for *no* phase, silently disabling verification — the same
+    // "fails loudly, never a silent zero-gate run" class as a typo'd key.
+    ["empty phases", '[[gate]]\nname = "x"\ncommand = "a"\nphases = []'],
     ["unknown key", '[[gate]]\nname = "x"\ncommand = "a"\ncomand = "typo"'],
     ["invalid toml", "[[gate]\nname = "],
   ];
