@@ -519,6 +519,26 @@ Closes #<num>
 
 **Stop here.** The skill does not merge the PR. The human reviews and merges; that's the final gate.
 
+## Addressing review feedback (the review loop)
+
+After the PR is ready, a reviewer — a human or a bot like CodeRabbit — may request changes. Fixing exactly the cited line and nothing more is a trap for autonomous dispatch: round-trips are costly (a human relays each), and the auto-review loop caps rounds (5, then it escalates to a human). Fixing only the literal instance lets one *class* of issue burn the whole budget, one adjacent edge per round.
+
+**Rule: resolve the class, not the instance — within the comment's blast radius.** When a comment reveals a fragile *approach* (not a one-off), harden that whole approach across the function/section the comment touches, in the same pass, each adjacent fix carrying its own test. Don't expand beyond that blast radius.
+
+Gate every comment through three questions:
+1. **One-off or symptom?** A typo or single missing guard → fix it literally. "This approach is fragile / can be bypassed / misses cases" → it's a symptom; fix the class.
+2. **Same blast radius?** The adjacent issue is in the function/section under review → fix it now. Elsewhere in the codebase → file a follow-up, don't touch it.
+3. **Robustness or new behavior?** Hardening/consistency of the thing under review → proceed. New capability or scope → stop; that's scope creep.
+
+Guardrails:
+- **Every proactive fix gets a test.** If you can't write a failing test for the adjacent case, you're speculating — don't change it.
+- **Stay in the blast radius.** Pre-existing issues elsewhere, unrelated cleanup, new features → follow-up issues, never folded into the review fix.
+- **Say so in the thread.** Reply naming both the literal fix and the adjacent hardening ("fixed X as flagged; also tightened Y/Z in the same matcher — same class"), so the widened scope is explicit and reviewable.
+
+Example of the trap: a comment "this heading match is too loose" is a *symptom* — the whole section matcher is suspect. Fixing only the one regex invites the reviewer to find the next adjacent edge (an alternate heading level, a lookalike heading, a fenced example) one round at a time. One pass asking "every way identifying this section can go wrong" resolves them together.
+
+This deliberately extends `superpowers:receiving-code-review` (which leans pure-literal — "one item at a time", YAGNI) for the autonomous-dispatch context, where round-trips are costly and capped.
+
 ## Quick reference
 
 | Step | Command |
