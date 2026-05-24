@@ -58,7 +58,7 @@ async function run(
 
 /** A login is a bot if GitHub types it `Bot` or its login carries the `[bot]` suffix. */
 function isBotAuthor(login: string, type: string | undefined): boolean {
-  return type === "Bot" || /\[bot\]$/.test(login);
+  return type === "Bot" || login.endsWith("[bot]");
 }
 
 /** Parse `owner/name` for use in `gh api /repos/{owner}/{name}/...` paths. */
@@ -91,9 +91,16 @@ export async function resolveAgentLogin(): Promise<string | undefined> {
 export const ghGitHub: GitHubGateway = {
   async listIssueComments(repo, issueNumber) {
     const result = await run([
-      "gh", "issue", "view", String(issueNumber),
-      "--repo", repo, "--json", "comments",
-      "--jq", ".comments[] | {authorLogin: .author.login, body: .body, url: .url}",
+      "gh",
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "comments",
+      "--jq",
+      ".comments[] | {authorLogin: .author.login, body: .body, url: .url}",
     ]);
     if (result.exitCode !== 0) {
       throw new Error(`gh issue view #${issueNumber} comments failed: ${result.stderr.trim()}`);
@@ -107,8 +114,17 @@ export const ghGitHub: GitHubGateway = {
 
   async findEpicPr(repo, epicNumber) {
     const result = await run([
-      "gh", "pr", "list", "--repo", repo, "--state", "open",
-      "--json", "number,body,isDraft", "--limit", "100",
+      "gh",
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--json",
+      "number,body,isDraft",
+      "--limit",
+      "100",
     ]);
     if (result.exitCode !== 0) {
       throw new Error(`gh pr list failed: ${result.stderr.trim()}`);
@@ -123,8 +139,14 @@ export const ghGitHub: GitHubGateway = {
 
   async getPullRequest(repo, prNumber) {
     const result = await run([
-      "gh", "pr", "view", String(prNumber),
-      "--repo", repo, "--json", "number,body,isDraft",
+      "gh",
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "number,body,isDraft",
     ]);
     if (result.exitCode !== 0) return null;
     return JSON.parse(result.stdout) as PullRequest;
@@ -135,7 +157,14 @@ export const ghGitHub: GitHubGateway = {
     await writeFile(bodyFile, body);
     try {
       const result = await run([
-        "gh", "pr", "edit", String(prNumber), "--repo", repo, "--body-file", bodyFile,
+        "gh",
+        "pr",
+        "edit",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body-file",
+        bodyFile,
       ]);
       if (result.exitCode !== 0) {
         throw new Error(`gh pr edit #${prNumber} failed: ${result.stderr.trim()}`);
@@ -161,7 +190,15 @@ export const ghGitHub: GitHubGateway = {
     // `-f body=...` is unsafe here: --raw-field takes the value literally (so
     // `@-` wouldn't read stdin) and a long multiline body fights shell quoting.
     const result = await run(
-      ["gh", "api", "--method", "PATCH", `/repos/${owner}/${name}/issues/comments/${commentId}`, "--input", "-"],
+      [
+        "gh",
+        "api",
+        "--method",
+        "PATCH",
+        `/repos/${owner}/${name}/issues/comments/${commentId}`,
+        "--input",
+        "-",
+      ],
       JSON.stringify({ body }),
     );
     if (result.exitCode !== 0) {
@@ -192,7 +229,11 @@ export const ghGitHub: GitHubGateway = {
       return null;
     }
     const result = await run([
-      "gh", "api", apiPath, "--jq", "{login: .user.login, type: .user.type}",
+      "gh",
+      "api",
+      apiPath,
+      "--jq",
+      "{login: .user.login, type: .user.type}",
     ]);
     if (result.exitCode !== 0) return null;
     const { login, type } = JSON.parse(result.stdout) as { login: string; type?: string };

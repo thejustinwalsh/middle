@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { claudeAdapter } from "@middle/adapter-claude";
 import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
-import { dispatchRecommender, resolveRecommenderOptions } from "@middle/dispatcher/src/recommender-run.ts";
+import {
+  dispatchRecommender,
+  resolveRecommenderOptions,
+} from "@middle/dispatcher/src/recommender-run.ts";
 
 export type RunRecommenderOptions = {
   /** Override the global config path (defaults to `~/.middle/config.toml`). */

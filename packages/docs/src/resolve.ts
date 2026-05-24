@@ -14,7 +14,12 @@ import type { DocsTarget, DocsTargetName } from "./target.ts";
  * detected only when it stands alone. Markdown is the universal fallback,
  * applied when none match — it is not in this list.
  */
-export const detectors = [starlightDetector, docusaurusDetector, mkdocsDetector, typedocDetector] as const;
+export const detectors = [
+  starlightDetector,
+  docusaurusDetector,
+  mkdocsDetector,
+  typedocDetector,
+] as const;
 
 /** Every valid `tool` override value, for error messages and validation. */
 export const DOCS_TARGET_NAMES: readonly DocsTargetName[] = [
@@ -40,11 +45,23 @@ function forcedTarget(tool: string, pathOverride?: string): DocsTarget {
         supportsLlmsTxt: true,
       });
     case "docusaurus":
-      return makeTarget({ name: "docusaurus", docsRoot: pathOverride ?? "docs", supportsLlmsTxt: false });
+      return makeTarget({
+        name: "docusaurus",
+        docsRoot: pathOverride ?? "docs",
+        supportsLlmsTxt: false,
+      });
     case "mkdocs":
-      return makeTarget({ name: "mkdocs", docsRoot: pathOverride ?? "docs", supportsLlmsTxt: false });
+      return makeTarget({
+        name: "mkdocs",
+        docsRoot: pathOverride ?? "docs",
+        supportsLlmsTxt: false,
+      });
     case "typedoc":
-      return makeTarget({ name: "typedoc", docsRoot: pathOverride ?? "docs", supportsLlmsTxt: false });
+      return makeTarget({
+        name: "typedoc",
+        docsRoot: pathOverride ?? "docs",
+        supportsLlmsTxt: false,
+      });
     case "markdown":
       return markdownTarget(pathOverride ?? "docs");
     default:

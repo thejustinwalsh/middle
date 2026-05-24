@@ -57,7 +57,9 @@ function validateGate(raw: unknown, index: number): Gate {
   }
   for (const key of Object.keys(raw)) {
     if (!KNOWN_GATE_KEYS.has(key)) {
-      throw new VerifyConfigError(`${where}: unknown key "${key}" (did you mean one of name, command, timeout_seconds, phases?)`);
+      throw new VerifyConfigError(
+        `${where}: unknown key "${key}" (did you mean one of name, command, timeout_seconds, phases?)`,
+      );
     }
   }
 
@@ -67,12 +69,18 @@ function validateGate(raw: unknown, index: number): Gate {
     throw new VerifyConfigError(`${where}: "name" is required and must be a non-empty string`);
   }
   if (typeof command !== "string" || command.trim() === "") {
-    throw new VerifyConfigError(`gate "${name}": "command" is required and must be a non-empty string`);
+    throw new VerifyConfigError(
+      `gate "${name}": "command" is required and must be a non-empty string`,
+    );
   }
 
   let resolvedTimeout = DEFAULT_GATE_TIMEOUT_SECONDS;
   if (timeoutSeconds !== undefined) {
-    if (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    if (
+      typeof timeoutSeconds !== "number" ||
+      !Number.isFinite(timeoutSeconds) ||
+      timeoutSeconds <= 0
+    ) {
       throw new VerifyConfigError(`gate "${name}": "timeout_seconds" must be a positive number`);
     }
     resolvedTimeout = timeoutSeconds;
@@ -88,7 +96,9 @@ function validateGate(raw: unknown, index: number): Gate {
       phases.length === 0 ||
       !phases.every((p) => typeof p === "number" && Number.isInteger(p) && p > 0)
     ) {
-      throw new VerifyConfigError(`gate "${name}": "phases" must be a non-empty array of positive integers (omit it to run for every phase)`);
+      throw new VerifyConfigError(
+        `gate "${name}": "phases" must be a non-empty array of positive integers (omit it to run for every phase)`,
+      );
     }
     resolvedPhases = phases as number[];
   }
@@ -109,7 +119,7 @@ export function parseVerifyConfig(toml: string): VerifyConfig {
 
   const rawGates = isPlainObject(parsed) ? parsed.gate : undefined;
   if (!Array.isArray(rawGates) || rawGates.length === 0) {
-    throw new VerifyConfigError('verify.toml must declare at least one [[gate]]');
+    throw new VerifyConfigError("verify.toml must declare at least one [[gate]]");
   }
 
   const gates = rawGates.map((g, i) => validateGate(g, i));

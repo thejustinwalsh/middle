@@ -58,7 +58,9 @@ export function renderEvidence(subIssue: number, report: GateRunReport): string 
   const table = [
     "| Gate | Result | Duration |",
     "| --- | --- | --- |",
-    ...report.results.map((r) => `| ${r.name} | ${statusLabel(r)} | ${(r.durationMs / 1000).toFixed(1)}s |`),
+    ...report.results.map(
+      (r) => `| ${r.name} | ${statusLabel(r)} | ${(r.durationMs / 1000).toFixed(1)}s |`,
+    ),
   ].join("\n");
 
   const details = report.results.map(detailsBlock).join("\n\n");

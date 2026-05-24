@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { Database } from "bun:sqlite";
 import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
@@ -147,9 +146,22 @@ export async function resolveRecommenderOptions(
 }
 
 /** Default human surface: comment the problem on the state issue via `gh`. */
-async function ghSurfaceProblem(opts: { repo: string; stateIssue: number; problem: string }): Promise<void> {
+async function ghSurfaceProblem(opts: {
+  repo: string;
+  stateIssue: number;
+  problem: string;
+}): Promise<void> {
   const proc = Bun.spawn(
-    ["gh", "issue", "comment", String(opts.stateIssue), "--repo", opts.repo, "--body", opts.problem],
+    [
+      "gh",
+      "issue",
+      "comment",
+      String(opts.stateIssue),
+      "--repo",
+      opts.repo,
+      "--body",
+      opts.problem,
+    ],
     { stdout: "ignore", stderr: "pipe" },
   );
   if ((await proc.exited) !== 0) {

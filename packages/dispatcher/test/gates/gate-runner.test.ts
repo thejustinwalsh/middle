@@ -25,10 +25,9 @@ describe("runGate", () => {
   });
 
   test("a failing gate captures the non-zero exit and stderr", async () => {
-    const r = await runGate(
-      gate({ name: "fail", command: "echo boom >&2; exit 3" }),
-      { cwd: tmpdir() },
-    );
+    const r = await runGate(gate({ name: "fail", command: "echo boom >&2; exit 3" }), {
+      cwd: tmpdir(),
+    });
     expect(r.passed).toBe(false);
     expect(r.exitCode).toBe(3);
     expect(r.timedOut).toBe(false);
@@ -37,10 +36,9 @@ describe("runGate", () => {
 
   test("a gate that exceeds its timeout is killed and reported as timed out", async () => {
     const start = Date.now();
-    const r = await runGate(
-      gate({ name: "slow", command: "sleep 10", timeoutSeconds: 0.2 }),
-      { cwd: tmpdir() },
-    );
+    const r = await runGate(gate({ name: "slow", command: "sleep 10", timeoutSeconds: 0.2 }), {
+      cwd: tmpdir(),
+    });
     expect(r.timedOut).toBe(true);
     expect(r.passed).toBe(false);
     // It must return promptly — not wait out the full sleep.

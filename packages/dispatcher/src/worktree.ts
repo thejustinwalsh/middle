@@ -152,12 +152,7 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
 export async function destroyWorktree(handle: WorktreeHandle): Promise<void> {
   const registered = await rawList(handle.repoPath);
   if (registered.some((w) => w.path === handle.path)) {
-    const result = await runGit(handle.repoPath, [
-      "worktree",
-      "remove",
-      "--force",
-      handle.path,
-    ]);
+    const result = await runGit(handle.repoPath, ["worktree", "remove", "--force", handle.path]);
     if (result.exitCode !== 0) {
       throw new WorktreeError(`git worktree remove failed: ${result.stderr.trim()}`);
     }
@@ -195,7 +190,5 @@ export async function listWorktrees(opts: {
   const repoPath = realpathSync(opts.repoPath);
   const root = resolveRoot(opts.worktreeRoot);
   const raw = await rawList(repoPath);
-  return raw
-    .filter((w) => w.path.startsWith(root + sep))
-    .map((w) => toHandle(repoPath, root, w));
+  return raw.filter((w) => w.path.startsWith(root + sep)).map((w) => toHandle(repoPath, root, w));
 }

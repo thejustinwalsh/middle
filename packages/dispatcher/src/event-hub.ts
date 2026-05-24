@@ -200,8 +200,10 @@ export class EventHub {
   }
 
   #fanOut(frame: string): void {
-    // Snapshot first: `unsubscribe` mutates the set during iteration.
-    for (const sub of [...this.#subscribers]) {
+    // `unsubscribe` deletes the current subscriber mid-iteration; removing the
+    // element a `for…of` over a Set is currently visiting is safe and does not
+    // disturb the walk, so no snapshot is needed.
+    for (const sub of this.#subscribers) {
       if (!sub.write(frame)) this.unsubscribe(sub);
     }
   }

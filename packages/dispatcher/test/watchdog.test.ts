@@ -76,9 +76,13 @@ function eventTypes(workflowId: string): string[] {
 
 function failureReason(workflowId: string): string | undefined {
   const row = db
-    .query("SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY id DESC LIMIT 1")
+    .query(
+      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
+    )
     .get(workflowId, FAILED_EVENT) as { payload_json: string | null } | null;
-  return row?.payload_json ? (JSON.parse(row.payload_json) as { reason: string }).reason : undefined;
+  return row?.payload_json
+    ? (JSON.parse(row.payload_json) as { reason: string }).reason
+    : undefined;
 }
 
 /** A tmux stub: configurable liveness, records every killSession. */
@@ -141,7 +145,12 @@ describe("watchdog — launch timeout", () => {
 describe("watchdog — prompt not accepted", () => {
   test("a running session that went ready but never started a turn is failed 'prompt-not-accepted'", async () => {
     const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
-    recordEvent(db, { workflowId: id, ts: NOW - 2 * 90_000, type: "session.started", payloadJson: null });
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 2 * 90_000,
+      type: "session.started",
+      payloadJson: null,
+    });
     const tmux = makeTmux(true);
     await runWatchdog(baseDeps({ tmux: tmux.ops }));
     expect(getWorkflow(db, id)!.state).toBe("failed");
@@ -151,15 +160,30 @@ describe("watchdog — prompt not accepted", () => {
 
   test("a running session whose prompt landed (turn.started present) is not failed", async () => {
     const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
-    recordEvent(db, { workflowId: id, ts: NOW - 2 * 90_000, type: "session.started", payloadJson: null });
-    recordEvent(db, { workflowId: id, ts: NOW - 2 * 90_000 + 1, type: "turn.started", payloadJson: null });
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 2 * 90_000,
+      type: "session.started",
+      payloadJson: null,
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 2 * 90_000 + 1,
+      type: "turn.started",
+      payloadJson: null,
+    });
     await runWatchdog(baseDeps({ tmux: makeTmux(true).ops }));
     expect(getWorkflow(db, id)!.state).toBe("running");
   });
 
   test("a running session still within the launch window is not yet failed", async () => {
     const id = seed({ state: "running", sessionName: "middle-14", updatedAt: NOW });
-    recordEvent(db, { workflowId: id, ts: NOW - 10_000, type: "session.started", payloadJson: null });
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 10_000,
+      type: "session.started",
+      payloadJson: null,
+    });
     await runWatchdog(baseDeps({ tmux: makeTmux(true).ops }));
     expect(getWorkflow(db, id)!.state).toBe("running");
   });
@@ -350,7 +374,9 @@ describe("reconcileTranscriptDrift", () => {
       lastHeartbeat: NOW - 10 * MIN,
       updatedAt: NOW - 10 * MIN,
     });
-    const corrected = reconcileTranscriptDrift(baseDeps({ getAdapter: makeAdapter(NOW - 1 * MIN) }));
+    const corrected = reconcileTranscriptDrift(
+      baseDeps({ getAdapter: makeAdapter(NOW - 1 * MIN) }),
+    );
     expect(corrected).toBe(1);
     const row = db.query("SELECT last_heartbeat FROM workflows WHERE id = ?").get(id) as {
       last_heartbeat: number;
@@ -365,7 +391,9 @@ describe("reconcileTranscriptDrift", () => {
       lastHeartbeat: NOW - 1 * MIN,
       updatedAt: NOW - 1 * MIN,
     });
-    const corrected = reconcileTranscriptDrift(baseDeps({ getAdapter: makeAdapter(NOW - 10 * MIN) }));
+    const corrected = reconcileTranscriptDrift(
+      baseDeps({ getAdapter: makeAdapter(NOW - 10 * MIN) }),
+    );
     expect(corrected).toBe(0);
     const row = db.query("SELECT last_heartbeat FROM workflows WHERE id = ?").get(id) as {
       last_heartbeat: number;

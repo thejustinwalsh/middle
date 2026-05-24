@@ -58,9 +58,7 @@ function doParse(body: string): ParsedState {
   if (closeIdx === -1) fail("missing close marker");
 
   // Drop dispatcher-tick markers — "ignored by parsers" per the schema doc.
-  const inner = lines
-    .slice(openIdx + 1, closeIdx)
-    .filter((line) => !DISPATCHER_TICK_RE.test(line));
+  const inner = lines.slice(openIdx + 1, closeIdx).filter((line) => !DISPATCHER_TICK_RE.test(line));
 
   const metaMatch = META_RE.exec(inner[0] ?? "");
   if (!metaMatch) fail("malformed metadata line");
@@ -174,13 +172,14 @@ function parseBlocked(content: string[]): BlockedItem[] {
   });
 }
 
-const IN_FLIGHT_RE =
-  /^- \*\*#(\d+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
+const IN_FLIGHT_RE = /^- \*\*#(\d+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
 
 function parseInFlight(content: string[]): InFlightItem[] {
   if (content.length === 1 && content[0] === IN_FLIGHT_EMPTY) return [];
   if (content.length === 0) {
-    fail('In-flight section is empty — an empty section must use the documented "- _no agents in flight_" state');
+    fail(
+      'In-flight section is empty — an empty section must use the documented "- _no agents in flight_" state',
+    );
   }
   return content.map((line) => {
     const m = IN_FLIGHT_RE.exec(line);

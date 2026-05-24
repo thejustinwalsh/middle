@@ -3,7 +3,11 @@ import {
   MIN_TMUX_VERSION,
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
-import { BOOTSTRAP_SKILLS_DIR, CANONICAL_SKILLS_DIR, diffSkills } from "../bootstrap/skills-sync.ts";
+import {
+  BOOTSTRAP_SKILLS_DIR,
+  CANONICAL_SKILLS_DIR,
+  diffSkills,
+} from "../bootstrap/skills-sync.ts";
 import { checkModuleIndex } from "../checks/module-index.ts";
 import { checkTsdocCoverage } from "../checks/tsdoc-coverage.ts";
 
@@ -70,10 +74,11 @@ async function checkGhAuth(): Promise<Check> {
     };
   }
   // gh auth status writes its summary to stderr
-  const summary = (result.stderr.trim() || result.stdout.trim())
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("✓") || line.includes("Logged in")) ?? "authenticated";
+  const summary =
+    (result.stderr.trim() || result.stdout.trim())
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("✓") || line.includes("Logged in")) ?? "authenticated";
   return { name: "gh auth", status: "pass", detail: summary };
 }
 
@@ -106,7 +111,11 @@ function checkSkillsDrift(): Check {
 function checkModuleIndexFrontmatter(): Check {
   const { violations } = checkModuleIndex();
   if (violations.length === 0) {
-    return { name: "docs", status: "pass", detail: "module-index frontmatter present + consistent" };
+    return {
+      name: "docs",
+      status: "pass",
+      detail: "module-index frontmatter present + consistent",
+    };
   }
   return {
     name: "docs",

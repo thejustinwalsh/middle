@@ -37,9 +37,4 @@ export type {
   RepoInfo,
   UninitResult,
 } from "./types.ts";
-export {
-  BOOTSTRAP_VERSION,
-  STATE_ISSUE_TITLE,
-  STATE_LABEL,
-  STATE_LABEL_COLOR,
-} from "./types.ts";
+export { BOOTSTRAP_VERSION, STATE_ISSUE_TITLE, STATE_LABEL, STATE_LABEL_COLOR } from "./types.ts";

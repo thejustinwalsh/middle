@@ -38,7 +38,8 @@ function fencedLineMask(lines: string[]): boolean[] {
     const m = /^\s*(```+|~~~+)/.exec(line);
     if (m) {
       const marker = m[1]![0]!; // "`" or "~"
-      if (fence === null) fence = marker; // opening
+      if (fence === null)
+        fence = marker; // opening
       else if (marker === fence) fence = null; // matching close
       // a non-matching marker while inside a fence is content; state unchanged
       return true; // a fence-marker line is never parsed as content

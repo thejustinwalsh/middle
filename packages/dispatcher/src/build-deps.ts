@@ -2,7 +2,11 @@ import type { Database } from "bun:sqlite";
 import type { AgentAdapter } from "@middle/core";
 import { makePrReadyGateHandler, type PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { PlanCommentReader } from "./gates/plan-comment.ts";
-import { ghGitHub, type GitHubGateway, resolveAgentLogin as ghResolveAgentLogin } from "./github.ts";
+import {
+  ghGitHub,
+  type GitHubGateway,
+  resolveAgentLogin as ghResolveAgentLogin,
+} from "./github.ts";
 import type { SessionGate } from "./hook-server.ts";
 import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
 import { findActiveWorkflowBySession, getWorkflow } from "./workflow-record.ts";

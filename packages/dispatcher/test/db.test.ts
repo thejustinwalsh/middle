@@ -36,9 +36,9 @@ const EXPECTED_INDEXES = [
 
 function names(db: Database, type: "table" | "index"): string[] {
   return (
-    db
-      .query(`SELECT name FROM sqlite_master WHERE type = ? ORDER BY name`)
-      .all(type) as { name: string }[]
+    db.query(`SELECT name FROM sqlite_master WHERE type = ? ORDER BY name`).all(type) as {
+      name: string;
+    }[]
   ).map((r) => r.name);
 }
 
@@ -128,9 +128,9 @@ describe("runMigrations", () => {
       `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
        VALUES ('d1', 'documentation', 'o/r', 'claude', 'pending', 0, 0)`,
     );
-    expect((db.query("SELECT kind FROM workflows WHERE id = 'd1'").get() as { kind: string }).kind).toBe(
-      "documentation",
-    );
+    expect(
+      (db.query("SELECT kind FROM workflows WHERE id = 'd1'").get() as { kind: string }).kind,
+    ).toBe("documentation");
     const insertBogus = () =>
       db.run(
         `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
@@ -162,12 +162,13 @@ describe("runMigrations", () => {
       expect(runMigrations(db, realDir)).toBe(3);
 
       // The row survived the rebuild...
-      expect((db.query("SELECT kind FROM workflows WHERE id = 'w1'").get() as { kind: string }).kind).toBe(
-        "recommender",
-      );
+      expect(
+        (db.query("SELECT kind FROM workflows WHERE id = 'w1'").get() as { kind: string }).kind,
+      ).toBe("recommender");
       // ...its child event's FK still resolves to the rebuilt table...
       expect(
-        (db.query("SELECT type FROM events WHERE workflow_id = 'w1'").get() as { type: string }).type,
+        (db.query("SELECT type FROM events WHERE workflow_id = 'w1'").get() as { type: string })
+          .type,
       ).toBe("session.started");
       // ...and FK integrity holds across the whole db.
       expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);

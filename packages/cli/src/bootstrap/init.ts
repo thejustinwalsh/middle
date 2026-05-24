@@ -73,11 +73,7 @@ export async function initRepo(
   const info = await validateTarget(repo, deps);
   const existing = readExistingConfig(repo);
   const mode: InitResult["mode"] =
-    existing === null
-      ? "fresh"
-      : existing.version === BOOTSTRAP_VERSION
-        ? "reinit"
-        : "migrate";
+    existing === null ? "fresh" : existing.version === BOOTSTRAP_VERSION ? "reinit" : "migrate";
 
   const actions: string[] = [];
   const dry = opts.dryRun;

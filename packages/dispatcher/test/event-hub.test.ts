@@ -65,7 +65,10 @@ describe("EventHub", () => {
     const hub = new EventHub();
     const res = hub.serve(eventsRequest());
     await readFrames(res, 1); // drain `connected`
-    hub.broadcast({ type: "workflow", data: { id: "wf-2", repo: "o/r", epic: 9, state: "waiting" } });
+    hub.broadcast({
+      type: "workflow",
+      data: { id: "wf-2", repo: "o/r", epic: 9, state: "waiting" },
+    });
     const [frame] = await readFrames(res, 1);
     expect(frame).toContain("event: workflow");
     expect(frame).toContain('"id":"wf-2"');
@@ -98,7 +101,10 @@ describe("EventHub", () => {
     expect(hub.subscriberCount()).toBe(1);
     // Far more than maxBuffer broadcasts: the subscriber must be dropped, not throw.
     for (let i = 0; i < 50; i++) {
-      hub.broadcast({ type: "workflow", data: { id: `wf-${i}`, repo: "o/r", epic: 1, state: "running" } });
+      hub.broadcast({
+        type: "workflow",
+        data: { id: `wf-${i}`, repo: "o/r", epic: 1, state: "running" },
+      });
     }
     expect(hub.subscriberCount()).toBe(0);
     // The stream is still a valid (closed) Response; cancel to release it.

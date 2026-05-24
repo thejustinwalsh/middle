@@ -42,7 +42,9 @@ describe("pr-ready gate handler", () => {
   });
 
   test("denies when the Epic PR has unevidenced criteria", async () => {
-    const handler = makePrReadyGateHandler(deps({ findEpicPr: async () => ({ body: UNEVIDENCED }) }));
+    const handler = makePrReadyGateHandler(
+      deps({ findEpicPr: async () => ({ body: UNEVIDENCED }) }),
+    );
     const result = await handler({
       sessionName: "s",
       payload: { tool_input: { command: "gh pr ready" } },

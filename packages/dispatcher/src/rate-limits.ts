@@ -32,9 +32,9 @@ type RateLimitRow = {
 
 /** Current rate-limit state for an adapter, or null if never observed. */
 export function getRateLimitState(db: Database, adapter: string): RateLimitState | null {
-  const row = db.query("SELECT * FROM rate_limit_state WHERE adapter = ?").get(adapter) as
-    | RateLimitRow
-    | null;
+  const row = db
+    .query("SELECT * FROM rate_limit_state WHERE adapter = ?")
+    .get(adapter) as RateLimitRow | null;
   if (!row) return null;
   return {
     adapter: row.adapter,

@@ -58,11 +58,18 @@ describe("HookServer control routes", () => {
     startWith(makeControl());
     const res = await fetch(`${base}/control/dispatch`, {
       method: "POST",
-      body: JSON.stringify({ repo: "o/r", repoPath: "/abs/checkout", epicNumber: 7, adapter: "claude" }),
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ workflowId: "wf-abc" });
-    expect(startCalls).toEqual([{ repo: "o/r", repoPath: "/abs/checkout", epicNumber: 7, adapter: "claude" }]);
+    expect(startCalls).toEqual([
+      { repo: "o/r", repoPath: "/abs/checkout", epicNumber: 7, adapter: "claude" },
+    ]);
   });
 
   test("POST /control/dispatch rejects invalid bodies with 400 and starts nothing", async () => {
@@ -76,7 +83,10 @@ describe("HookServer control routes", () => {
       { repo: "o/r", repoPath: "/abs", adapter: "claude" }, // missing epic
     ];
     for (const body of bad) {
-      const res = await fetch(`${base}/control/dispatch`, { method: "POST", body: JSON.stringify(body) });
+      const res = await fetch(`${base}/control/dispatch`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
       expect(res.status).toBe(400);
     }
     // A non-JSON body is also a 400, not a crash.
@@ -90,7 +100,12 @@ describe("HookServer control routes", () => {
     collisionEpics.add(7);
     const res = await fetch(`${base}/control/dispatch`, {
       method: "POST",
-      body: JSON.stringify({ repo: "o/r", repoPath: "/abs/checkout", epicNumber: 7, adapter: "claude" }),
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
     });
     expect(res.status).toBe(409);
     expect(startCalls).toEqual([]);
@@ -113,7 +128,12 @@ describe("HookServer control routes", () => {
         },
       }),
     );
-    const body = JSON.stringify({ repo: "o/r", repoPath: "/abs", epicNumber: 9, adapter: "claude" });
+    const body = JSON.stringify({
+      repo: "o/r",
+      repoPath: "/abs",
+      epicNumber: 9,
+      adapter: "claude",
+    });
     const [a, b] = await Promise.all([
       fetch(`${base}/control/dispatch`, { method: "POST", body }),
       fetch(`${base}/control/dispatch`, { method: "POST", body }),
@@ -136,7 +156,9 @@ describe("HookServer control routes", () => {
   test("GET /control/events replays the injected init events", async () => {
     startWith(
       makeControl({
-        initEvents: () => [{ type: "workflow", data: { id: "wf-live", repo: "o/r", epic: 3, state: "waiting" } }],
+        initEvents: () => [
+          { type: "workflow", data: { id: "wf-live", repo: "o/r", epic: 3, state: "waiting" } },
+        ],
       }),
     );
     const res = await fetch(`${base}/control/events`);

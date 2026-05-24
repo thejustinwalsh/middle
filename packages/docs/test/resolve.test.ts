@@ -94,7 +94,10 @@ describe("resolveDocsTarget — config override", () => {
   });
 
   test("tool + path override sets both framework and root", () => {
-    const target = resolveDocsTarget(fixture("plain"), docsConfig({ tool: "starlight", path: "site/docs" }));
+    const target = resolveDocsTarget(
+      fixture("plain"),
+      docsConfig({ tool: "starlight", path: "site/docs" }),
+    );
     expect(target.name).toBe("starlight");
     expect(target.docsRoot).toBe("site/docs");
     expect(target.resolveOutputPath({ slug: "x" })).toBe("site/docs/x.md");
@@ -128,6 +131,12 @@ describe("resolveOutputPath — slug normalization", () => {
 
 describe("DOCS_TARGET_NAMES", () => {
   test("lists every resolvable target", () => {
-    expect([...DOCS_TARGET_NAMES]).toEqual(["starlight", "docusaurus", "mkdocs", "typedoc", "markdown"]);
+    expect([...DOCS_TARGET_NAMES]).toEqual([
+      "starlight",
+      "docusaurus",
+      "mkdocs",
+      "typedoc",
+      "markdown",
+    ]);
   });
 });

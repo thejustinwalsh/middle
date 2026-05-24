@@ -92,7 +92,10 @@ export function reasonFromSignalName(name: string): ResumeReason | null {
 }
 
 /** The newest non-bot reply posted after the wait armed, or null. */
-export function classifyNewHumanReply(comments: IssueComment[], sinceMs: number): IssueComment | null {
+export function classifyNewHumanReply(
+  comments: IssueComment[],
+  sinceMs: number,
+): IssueComment | null {
   const fresh = comments
     .filter((c) => !c.authorIsBot && c.createdAt > sinceMs)
     .sort((a, b) => b.createdAt - a.createdAt);

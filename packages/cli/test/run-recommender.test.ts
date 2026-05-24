@@ -20,7 +20,11 @@ const GIT_ENV = {
 async function git(cwd: string, args: string[]): Promise<void> {
   // Fail loud on a non-zero exit so a broken fixture surfaces here, not as a
   // misleading assertion failure further down. stderr is captured for the message.
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe", env: GIT_ENV });
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: GIT_ENV,
+  });
   if ((await proc.exited) !== 0) {
     throw new Error(`git ${args.join(" ")} (in ${cwd}): ${await new Response(proc.stderr).text()}`);
   }
@@ -48,14 +52,14 @@ beforeEach(async () => {
   mkdirSync(join(repoPath, ".middle"), { recursive: true });
   writeFileSync(
     join(repoPath, ".middle", "config.toml"),
-    ['[state_issue]', "number = 42", 'label = "agent-queue:state"', ""].join("\n"),
+    ["[state_issue]", "number = 42", 'label = "agent-queue:state"', ""].join("\n"),
   );
   configPath = join(dir, "global.toml");
   writeFileSync(
     configPath,
     [
       "[global]",
-      "default_adapter = \"claude\"",
+      'default_adapter = "claude"',
       `db_path = "${join(dir, "db.sqlite3")}"`,
       `worktree_root = "${join(dir, "worktrees")}"`,
       "",

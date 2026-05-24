@@ -24,7 +24,11 @@ function world(prBody: string) {
 
   const github: EvidenceGateway = {
     async listIssueComments() {
-      return comments.map((c) => ({ authorLogin: "agent", body: c.body, url: `https://x/pull/99#issuecomment-${c.id}` }));
+      return comments.map((c) => ({
+        authorLogin: "agent",
+        body: c.body,
+        url: `https://x/pull/99#issuecomment-${c.id}`,
+      }));
     },
     async postComment(_repo, _issue, body) {
       comments.push({ id: nextId++, body });
@@ -193,12 +197,22 @@ describe("verification gates wired into checkbox-revert (end to end)", () => {
           github: ghThatFailsEvidence(),
         });
         const deps: CheckboxReconcileDeps = {
-          async getPrBody() { return w.state.body; },
-          async setPrBody(b) { w.state.body = b; },
-          async postComment(b) { await w.github.postComment("o/r", 99, b); },
+          async getPrBody() {
+            return w.state.body;
+          },
+          async setPrBody(b) {
+            w.state.body = b;
+          },
+          async postComment(b) {
+            await w.github.postComment("o/r", 99, b);
+          },
           runGates,
-          async getPreviousState() { return w.state.previous; },
-          async setPreviousState(p) { w.state.previous = p; },
+          async getPreviousState() {
+            return w.state.previous;
+          },
+          async setPreviousState(p) {
+            w.state.previous = p;
+          },
         };
 
         const result = await reconcileCheckboxes(deps);
@@ -220,17 +234,33 @@ describe("verification gates wired into checkbox-revert (end to end)", () => {
     try {
       // Both phases now pass; both boxes start checked, previously unchecked.
       const allPass = parseVerifyConfig(
-        ['[[gate]]', 'name = "ok"', 'command = "echo ok"'].join("\n"),
+        ["[[gate]]", 'name = "ok"', 'command = "echo ok"'].join("\n"),
       );
       const w = world(PR_BODY);
-      const runGates = makeRunPhaseGates({ repo: "o/r", prNumber: 99, worktreePath: s.dir, config: allPass, github: w.github });
+      const runGates = makeRunPhaseGates({
+        repo: "o/r",
+        prNumber: 99,
+        worktreePath: s.dir,
+        config: allPass,
+        github: w.github,
+      });
       const deps: CheckboxReconcileDeps = {
-        async getPrBody() { return w.state.body; },
-        async setPrBody(b) { w.state.body = b; },
-        async postComment(b) { await w.github.postComment("o/r", 99, b); },
+        async getPrBody() {
+          return w.state.body;
+        },
+        async setPrBody(b) {
+          w.state.body = b;
+        },
+        async postComment(b) {
+          await w.github.postComment("o/r", 99, b);
+        },
         runGates,
-        async getPreviousState() { return w.state.previous; },
-        async setPreviousState(p) { w.state.previous = p; },
+        async getPreviousState() {
+          return w.state.previous;
+        },
+        async setPreviousState(p) {
+          w.state.previous = p;
+        },
       };
 
       await reconcileCheckboxes(deps); // first pass

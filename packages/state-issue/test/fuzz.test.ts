@@ -160,61 +160,57 @@ const BASE_SEED = 0x5eed_0000;
 const ITERATIONS = 10_000;
 
 describe("parser/renderer round-trip fuzz", () => {
-  test(
-    `renders, parses, and re-renders ${ITERATIONS} random valid states byte-identically`,
-    () => {
-      let coveredAllEmpty = false;
-      let coveredAllFull = false;
+  test(`renders, parses, and re-renders ${ITERATIONS} random valid states byte-identically`, () => {
+    let coveredAllEmpty = false;
+    let coveredAllFull = false;
 
-      for (let i = 0; i < ITERATIONS; i++) {
-        const seed = BASE_SEED + i;
-        const state = genState(new Rng(seed));
+    for (let i = 0; i < ITERATIONS; i++) {
+      const seed = BASE_SEED + i;
+      const state = genState(new Rng(seed));
 
-        if (
-          state.readyToDispatch.length === 0 &&
-          state.needsHumanInput.length === 0 &&
-          state.blocked.length === 0 &&
-          state.inFlight.length === 0 &&
-          state.excluded.length === 0
-        ) {
-          coveredAllEmpty = true;
-        }
-        if (
-          state.readyToDispatch.length > 0 &&
-          state.needsHumanInput.length > 0 &&
-          state.blocked.length > 0 &&
-          state.inFlight.length > 0 &&
-          state.excluded.length > 0
-        ) {
-          coveredAllFull = true;
-        }
-
-        const once = renderStateIssue(state);
-        const parsed = parseStateIssue(once);
-        if (isParseError(parsed)) {
-          throw new Error(`seed ${seed}: parse failed — ${parsed.message}\n--- body ---\n${once}`);
-        }
-        if (!Bun.deepEquals(parsed, state)) {
-          throw new Error(
-            `seed ${seed}: parsed state differs from original\n` +
-              `--- original ---\n${JSON.stringify(state, null, 2)}\n` +
-              `--- parsed ---\n${JSON.stringify(parsed, null, 2)}`,
-          );
-        }
-        const twice = renderStateIssue(parsed);
-        if (twice !== once) {
-          throw new Error(
-            `seed ${seed}: round-trip not byte-identical\n` +
-              `--- once ---\n${once}\n--- twice ---\n${twice}`,
-          );
-        }
+      if (
+        state.readyToDispatch.length === 0 &&
+        state.needsHumanInput.length === 0 &&
+        state.blocked.length === 0 &&
+        state.inFlight.length === 0 &&
+        state.excluded.length === 0
+      ) {
+        coveredAllEmpty = true;
+      }
+      if (
+        state.readyToDispatch.length > 0 &&
+        state.needsHumanInput.length > 0 &&
+        state.blocked.length > 0 &&
+        state.inFlight.length > 0 &&
+        state.excluded.length > 0
+      ) {
+        coveredAllFull = true;
       }
 
-      // The fuzz space must actually exercise both the documented empty states
-      // and fully-populated sections, not just one regime.
-      expect(coveredAllEmpty).toBe(true);
-      expect(coveredAllFull).toBe(true);
-    },
-    30_000,
-  );
+      const once = renderStateIssue(state);
+      const parsed = parseStateIssue(once);
+      if (isParseError(parsed)) {
+        throw new Error(`seed ${seed}: parse failed — ${parsed.message}\n--- body ---\n${once}`);
+      }
+      if (!Bun.deepEquals(parsed, state)) {
+        throw new Error(
+          `seed ${seed}: parsed state differs from original\n` +
+            `--- original ---\n${JSON.stringify(state, null, 2)}\n` +
+            `--- parsed ---\n${JSON.stringify(parsed, null, 2)}`,
+        );
+      }
+      const twice = renderStateIssue(parsed);
+      if (twice !== once) {
+        throw new Error(
+          `seed ${seed}: round-trip not byte-identical\n` +
+            `--- once ---\n${once}\n--- twice ---\n${twice}`,
+        );
+      }
+    }
+
+    // The fuzz space must actually exercise both the documented empty states
+    // and fully-populated sections, not just one regime.
+    expect(coveredAllEmpty).toBe(true);
+    expect(coveredAllFull).toBe(true);
+  }, 30_000);
 });

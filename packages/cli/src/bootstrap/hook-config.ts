@@ -138,7 +138,10 @@ function stripCodexBlock(content: string): string {
     }
     if (!inside) out.push(line);
   }
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+/, "");
 }
 
 /** Remove middle's `[hooks]` block from `.codex/config.toml`; delete if empty. */

@@ -54,9 +54,7 @@ describe("validate", () => {
   test("fails when a Ready row epic has no title", () => {
     const bad = {
       ...fullState,
-      readyToDispatch: [
-        { rank: 1, epic: "#42", adapter: "claude", subIssues: 1, reason: "x" },
-      ],
+      readyToDispatch: [{ rank: 1, epic: "#42", adapter: "claude", subIssues: 1, reason: "x" }],
     };
     expect(validate(bad, config).ok).toBe(false);
   });
@@ -81,9 +79,7 @@ describe("validate", () => {
     const bad = {
       ...fullState,
       generated: "nope",
-      readyToDispatch: [
-        { rank: 1, epic: "#1 x", adapter: "gemini", subIssues: 1, reason: "x" },
-      ],
+      readyToDispatch: [{ rank: 1, epic: "#1 x", adapter: "gemini", subIssues: 1, reason: "x" }],
     };
     const result = validate(bad, config);
     expect(result.ok).toBe(false);

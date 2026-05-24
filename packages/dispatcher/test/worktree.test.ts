@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createWorktree,
-  destroyWorktree,
-  listWorktrees,
-  WorktreeError,
-} from "../src/worktree.ts";
+import { createWorktree, destroyWorktree, listWorktrees, WorktreeError } from "../src/worktree.ts";
 
 let scratch: string;
 let repoPath: string;

@@ -6,7 +6,10 @@ import { STATE_ISSUE_TITLE, STATE_LABEL, STATE_LABEL_COLOR } from "./types.ts";
 
 type RunResult = { stdout: string; stderr: string; exitCode: number };
 
-async function run(argv: string[], opts: { cwd?: string; stdin?: string } = {}): Promise<RunResult> {
+async function run(
+  argv: string[],
+  opts: { cwd?: string; stdin?: string } = {},
+): Promise<RunResult> {
   const proc = Bun.spawn(argv, {
     cwd: opts.cwd,
     stdin: opts.stdin === undefined ? "ignore" : new TextEncoder().encode(opts.stdin),
@@ -29,10 +32,16 @@ export function parseRepoSlug(url: string): { owner: string; name: string } | nu
 const realGithub: GithubGateway = {
   async ensureStateLabel(info: RepoInfo): Promise<void> {
     const result = await run([
-      "gh", "label", "create", STATE_LABEL,
-      "--repo", `${info.owner}/${info.name}`,
-      "--color", STATE_LABEL_COLOR,
-      "--description", "Maintained by middle-management",
+      "gh",
+      "label",
+      "create",
+      STATE_LABEL,
+      "--repo",
+      `${info.owner}/${info.name}`,
+      "--color",
+      STATE_LABEL_COLOR,
+      "--description",
+      "Maintained by middle-management",
     ]);
     // gh exits non-zero if the label already exists — that's the desired state.
     if (result.exitCode !== 0 && !/already exists/i.test(result.stderr)) {
@@ -42,14 +51,21 @@ const realGithub: GithubGateway = {
 
   async findStateIssues(info: RepoInfo): Promise<number[]> {
     const result = await run([
-      "gh", "issue", "list",
-      "--repo", `${info.owner}/${info.name}`,
-      "--label", STATE_LABEL,
-      "--state", "open",
+      "gh",
+      "issue",
+      "list",
+      "--repo",
+      `${info.owner}/${info.name}`,
+      "--label",
+      STATE_LABEL,
+      "--state",
+      "open",
       // `gh issue list` defaults to 30, newest-first — without a high limit the
       // canonical *oldest* state issue can be truncated off, breaking reuse.
-      "--limit", "1000",
-      "--json", "number,title,createdAt",
+      "--limit",
+      "1000",
+      "--json",
+      "number,title,createdAt",
     ]);
     if (result.exitCode !== 0) {
       throw new Error(`gh issue list failed: ${result.stderr.trim()}`);
@@ -72,11 +88,17 @@ const realGithub: GithubGateway = {
     await writeFile(bodyFile, body);
     try {
       const result = await run([
-        "gh", "issue", "create",
-        "--repo", `${info.owner}/${info.name}`,
-        "--label", STATE_LABEL,
-        "--title", title,
-        "--body-file", bodyFile,
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        `${info.owner}/${info.name}`,
+        "--label",
+        STATE_LABEL,
+        "--title",
+        title,
+        "--body-file",
+        bodyFile,
       ]);
       if (result.exitCode !== 0) {
         throw new Error(`gh issue create failed: ${result.stderr.trim()}`);
@@ -92,10 +114,16 @@ const realGithub: GithubGateway = {
   async closeStateIssue(info: RepoInfo, issue: number, comment: string): Promise<void> {
     if (issue <= 0) return;
     const result = await run([
-      "gh", "issue", "close", String(issue),
-      "--repo", `${info.owner}/${info.name}`,
-      "--reason", "not planned",
-      "--comment", comment,
+      "gh",
+      "issue",
+      "close",
+      String(issue),
+      "--repo",
+      `${info.owner}/${info.name}`,
+      "--reason",
+      "not planned",
+      "--comment",
+      comment,
     ]);
     if (result.exitCode !== 0 && !/could not be found|already closed/i.test(result.stderr)) {
       throw new Error(`gh issue close failed: ${result.stderr.trim()}`);
@@ -126,10 +154,17 @@ export const realDeps: BootstrapDeps = {
     const slug = parseRepoSlug(url);
     if (!slug) throw new Error(`could not parse owner/name from origin remote: "${url}"`);
     const branch = await run([
-      "gh", "repo", "view", `${slug.owner}/${slug.name}`,
-      "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name",
+      "gh",
+      "repo",
+      "view",
+      `${slug.owner}/${slug.name}`,
+      "--json",
+      "defaultBranchRef",
+      "--jq",
+      ".defaultBranchRef.name",
     ]);
-    const defaultBranch = branch.exitCode === 0 && branch.stdout.trim() ? branch.stdout.trim() : "main";
+    const defaultBranch =
+      branch.exitCode === 0 && branch.stdout.trim() ? branch.stdout.trim() : "main";
     return { owner: slug.owner, name: slug.name, defaultBranch };
   },
 

@@ -74,7 +74,9 @@ export class DbHookStore implements HookStore {
       // The agent (or a late retry) outlived its workflow row, or the session
       // name never matched one. Nothing to attach the event to — log and drop;
       // never throw, or a stray hook could crash the receiver.
-      console.error(`[hook-store] dropping ${event}: no active workflow for session ${sessionName}`);
+      console.error(
+        `[hook-store] dropping ${event}: no active workflow for session ${sessionName}`,
+      );
       return;
     }
     const now = this.#now();

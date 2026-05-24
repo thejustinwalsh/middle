@@ -137,7 +137,12 @@ function makeHarness(opts?: {
     buildPromptText: (o) => `/recommending-github-issues @${o.promptFile}`,
     async enterAutoMode() {},
     resolveTranscriptPath: (p) => p.transcript_path as string,
-    readTranscriptState: () => ({ lastActivity: "", contextTokens: 0, turnCount: 0, lastToolUse: null }),
+    readTranscriptState: () => ({
+      lastActivity: "",
+      contextTokens: 0,
+      turnCount: 0,
+      lastToolUse: null,
+    }),
     classifyStop: () => ({ kind: "done" }),
   };
 
@@ -177,7 +182,11 @@ function makeHarness(opts?: {
       },
     },
     repoConfig: REPO_CONFIG,
-    config: { defaultAdapter: "claude", autoDispatch: opts?.autoDispatch ?? false, prMode: "worktree" },
+    config: {
+      defaultAdapter: "claude",
+      autoDispatch: opts?.autoDispatch ?? false,
+      prMode: "worktree",
+    },
     gatherContext: () => {
       trace.push("build-prompt:gather");
       return opts?.context ?? SAMPLE_CONTEXT;
@@ -208,7 +217,9 @@ async function runToEnd(deps: RecommenderDeps, timeoutMs = 5000): Promise<string
     if (s && terminal.has(s)) return handle.id;
     await Bun.sleep(15);
   }
-  throw new Error(`recommender ${handle.id} did not settle (exec '${engine.getExecution(handle.id)?.state}')`);
+  throw new Error(
+    `recommender ${handle.id} did not settle (exec '${engine.getExecution(handle.id)?.state}')`,
+  );
 }
 
 /** The step node's definition (name/timeout/retry/compensate), or undefined. */
@@ -380,7 +391,9 @@ describe("recommender workflow — #44 build-prompt: every required input, verba
     expect(h.sent.some((t) => t === "/recommending-github-issues @.middle/prompt.md")).toBe(true);
     // gatherContext called exactly once (no recompute); prior_body read before gather.
     expect(h.trace.filter((t) => t === "build-prompt:gather")).toHaveLength(1);
-    expect(h.trace.indexOf("build-prompt:read-prior")).toBeLessThan(h.trace.indexOf("build-prompt:gather"));
+    expect(h.trace.indexOf("build-prompt:read-prior")).toBeLessThan(
+      h.trace.indexOf("build-prompt:gather"),
+    );
   });
 });
 
@@ -391,7 +404,9 @@ function bodyWithUnconfiguredAdapter(): string {
     generated: new Date().toISOString(),
     runId: "00000000",
     intervalMinutes: 15,
-    readyToDispatch: [{ rank: 1, epic: "#6 Some epic", adapter: "ghost", subIssues: 2, reason: "ready" }],
+    readyToDispatch: [
+      { rank: 1, epic: "#6 Some epic", adapter: "ghost", subIssues: 2, reason: "ready" },
+    ],
     needsHumanInput: [],
     blocked: [],
     inFlight: [],
@@ -403,7 +418,11 @@ function bodyWithUnconfiguredAdapter(): string {
 
 describe("recommender workflow — #45 verify-state-issue-parses: gate auto-dispatch", () => {
   test("a valid produced body verifies ok and the workflow proceeds to trigger-auto-dispatch", async () => {
-    const h = makeHarness({ bodies: [validBody(), validBody()], autoDispatch: true, wireTrigger: true });
+    const h = makeHarness({
+      bodies: [validBody(), validBody()],
+      autoDispatch: true,
+      wireTrigger: true,
+    });
     const id = await runToEnd(h.deps);
 
     expect(getWorkflow(db, id)!.state).toBe("completed");
@@ -413,7 +432,11 @@ describe("recommender workflow — #45 verify-state-issue-parses: gate auto-disp
 
   test("a malformed produced body does NOT proceed to auto-dispatch and surfaces the problem", async () => {
     // Second readBody (the verify read) returns garbage that won't parse.
-    const h = makeHarness({ bodies: [validBody(), "not a state issue body"], autoDispatch: true, wireTrigger: true });
+    const h = makeHarness({
+      bodies: [validBody(), "not a state issue body"],
+      autoDispatch: true,
+      wireTrigger: true,
+    });
     const id = await runToEnd(h.deps);
 
     // Failed run (bad output not masked as completed), no dispatch, surfaced, worktree cleaned.
@@ -441,7 +464,11 @@ describe("recommender workflow — #45 verify-state-issue-parses: gate auto-disp
   });
 
   test("a failed surfaceProblem callback does not abort cleanup (best-effort surfacing)", async () => {
-    const h = makeHarness({ bodies: [validBody(), "garbage"], autoDispatch: true, wireTrigger: true });
+    const h = makeHarness({
+      bodies: [validBody(), "garbage"],
+      autoDispatch: true,
+      wireTrigger: true,
+    });
     h.deps.surfaceProblem = async () => {
       throw new Error("gh comment failed");
     };
@@ -453,7 +480,13 @@ describe("recommender workflow — #45 verify-state-issue-parses: gate auto-disp
 });
 
 describe("recommender workflow — #44 buildRecommenderContext: from dispatcher state", () => {
-  const mk = (id: string, adapter: string, epic: number | null, session: string, state?: string) => {
+  const mk = (
+    id: string,
+    adapter: string,
+    epic: number | null,
+    session: string,
+    state?: string,
+  ) => {
     createWorkflowRecord(db, { id, kind: "implementation", repo: REPO, epicNumber: epic, adapter });
     updateWorkflow(db, id, { sessionName: session, state: (state ?? "running") as never });
   };
@@ -461,7 +494,11 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
   test("derives rate_limits, in_flight, and slots from db + config", () => {
     mk("a", "claude", 6, "middle-x-6");
     mk("b", "claude", 7, "middle-x-7");
-    setRateLimited(db, { adapter: "codex", resetAt: Date.parse("2026-05-24T16:32:00Z"), source: "transcript" });
+    setRateLimited(db, {
+      adapter: "codex",
+      resetAt: Date.parse("2026-05-24T16:32:00Z"),
+      source: "transcript",
+    });
 
     const ctx = buildRecommenderContext({
       db,
@@ -487,7 +524,13 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
   });
 
   test("excludes the recommender's own row from in_flight and slots", () => {
-    createWorkflowRecord(db, { id: "rec", kind: "recommender", repo: REPO, epicNumber: null, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "rec",
+      kind: "recommender",
+      repo: REPO,
+      epicNumber: null,
+      adapter: "claude",
+    });
     updateWorkflow(db, "rec", { state: "running" });
     const ctx = buildRecommenderContext({
       db,
@@ -504,7 +547,13 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
 
   test("scopes per-repo slots/in_flight to the repo, but global_used spans all repos", () => {
     mk("a", "claude", 6, "middle-x-6"); // REPO
-    createWorkflowRecord(db, { id: "b", kind: "implementation", repo: "other/repo", epicNumber: 9, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "b",
+      kind: "implementation",
+      repo: "other/repo",
+      epicNumber: 9,
+      adapter: "claude",
+    });
     updateWorkflow(db, "b", { sessionName: "other-9", state: "running" as never });
 
     const ctx = buildRecommenderContext({

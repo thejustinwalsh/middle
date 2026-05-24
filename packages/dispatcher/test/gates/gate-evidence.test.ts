@@ -12,9 +12,36 @@ const MIXED: GateRunReport = {
   ok: false,
   failedGate: "test",
   results: [
-    { name: "typecheck", command: "bun run typecheck", exitCode: 0, stdout: "all good\n", stderr: "", timedOut: false, passed: true, durationMs: 1200 },
-    { name: "test", command: "bun test", exitCode: 1, stdout: "1 failing\n", stderr: "AssertionError\n", timedOut: false, passed: false, durationMs: 340 },
-    { name: "acceptance", command: "bun run accept", exitCode: null, stdout: "", stderr: "", timedOut: true, passed: false, durationMs: 30000 },
+    {
+      name: "typecheck",
+      command: "bun run typecheck",
+      exitCode: 0,
+      stdout: "all good\n",
+      stderr: "",
+      timedOut: false,
+      passed: true,
+      durationMs: 1200,
+    },
+    {
+      name: "test",
+      command: "bun test",
+      exitCode: 1,
+      stdout: "1 failing\n",
+      stderr: "AssertionError\n",
+      timedOut: false,
+      passed: false,
+      durationMs: 340,
+    },
+    {
+      name: "acceptance",
+      command: "bun run accept",
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      passed: false,
+      durationMs: 30000,
+    },
   ],
 };
 
@@ -46,7 +73,18 @@ describe("renderEvidence", () => {
     const report: GateRunReport = {
       ok: false,
       failedGate: "x",
-      results: [{ name: "x", command: "c", exitCode: 1, stdout: "```\nnested fence\n```\n", stderr: "", timedOut: false, passed: false, durationMs: 5 }],
+      results: [
+        {
+          name: "x",
+          command: "c",
+          exitCode: 1,
+          stdout: "```\nnested fence\n```\n",
+          stderr: "",
+          timedOut: false,
+          passed: false,
+          durationMs: 5,
+        },
+      ],
     };
     const out = renderEvidence(1, report);
     // The wrapping fence must be longer than any backtick run in the content.
@@ -67,7 +105,11 @@ function gatewayHarness(initial: IssueComment[] = []) {
     },
     async postComment(_repo, issueNumber, body) {
       const id = nextId++;
-      comments.push({ authorLogin: "agent", body, url: `https://x/issues/${issueNumber}#issuecomment-${id}` });
+      comments.push({
+        authorLogin: "agent",
+        body,
+        url: `https://x/issues/${issueNumber}#issuecomment-${id}`,
+      });
       posted.push(body);
     },
     async editComment(_repo, commentId, body) {
@@ -82,7 +124,13 @@ function gatewayHarness(initial: IssueComment[] = []) {
 describe("upsertEvidenceComment", () => {
   test("posts a fresh comment when none exists for the phase", async () => {
     const h = gatewayHarness();
-    await upsertEvidenceComment({ gh: h.gw, repo: "o/r", prNumber: 99, subIssue: 40, report: MIXED });
+    await upsertEvidenceComment({
+      gh: h.gw,
+      repo: "o/r",
+      prNumber: 99,
+      subIssue: 40,
+      report: MIXED,
+    });
     expect(h.posted).toHaveLength(1);
     expect(h.edited).toHaveLength(0);
     expect(h.posted[0]).toContain(evidenceMarker(40));
@@ -90,8 +138,20 @@ describe("upsertEvidenceComment", () => {
 
   test("re-runs update the same comment in place rather than posting a duplicate", async () => {
     const h = gatewayHarness();
-    await upsertEvidenceComment({ gh: h.gw, repo: "o/r", prNumber: 99, subIssue: 40, report: MIXED });
-    await upsertEvidenceComment({ gh: h.gw, repo: "o/r", prNumber: 99, subIssue: 40, report: { ok: true, results: [] } });
+    await upsertEvidenceComment({
+      gh: h.gw,
+      repo: "o/r",
+      prNumber: 99,
+      subIssue: 40,
+      report: MIXED,
+    });
+    await upsertEvidenceComment({
+      gh: h.gw,
+      repo: "o/r",
+      prNumber: 99,
+      subIssue: 40,
+      report: { ok: true, results: [] },
+    });
     expect(h.posted).toHaveLength(1); // still only the original post
     expect(h.edited).toHaveLength(1); // the re-run edited it
     expect(h.comments).toHaveLength(1);
@@ -99,8 +159,20 @@ describe("upsertEvidenceComment", () => {
 
   test("a different phase's evidence gets its own comment", async () => {
     const h = gatewayHarness();
-    await upsertEvidenceComment({ gh: h.gw, repo: "o/r", prNumber: 99, subIssue: 40, report: MIXED });
-    await upsertEvidenceComment({ gh: h.gw, repo: "o/r", prNumber: 99, subIssue: 41, report: MIXED });
+    await upsertEvidenceComment({
+      gh: h.gw,
+      repo: "o/r",
+      prNumber: 99,
+      subIssue: 40,
+      report: MIXED,
+    });
+    await upsertEvidenceComment({
+      gh: h.gw,
+      repo: "o/r",
+      prNumber: 99,
+      subIssue: 41,
+      report: MIXED,
+    });
     expect(h.comments).toHaveLength(2);
     expect(h.edited).toHaveLength(0);
   });

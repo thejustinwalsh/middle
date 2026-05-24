@@ -47,8 +47,12 @@ describe("createWorkflowRecord", () => {
 });
 
 describe("countActiveImplementationSlots", () => {
-  const mk = (id: string, kind: "implementation" | "recommender", adapter: string, epic: number | null) =>
-    createWorkflowRecord(db, { id, kind, repo: "o/r", epicNumber: epic, adapter });
+  const mk = (
+    id: string,
+    kind: "implementation" | "recommender",
+    adapter: string,
+    epic: number | null,
+  ) => createWorkflowRecord(db, { id, kind, repo: "o/r", epicNumber: epic, adapter });
 
   test("counts non-terminal implementation rows, grouped by adapter", () => {
     mk("a", "implementation", "claude", 1);
@@ -136,26 +140,62 @@ describe("getWorkflow", () => {
 
 describe("hasNonTerminalEpicWorkflow", () => {
   test("true while an implementation Epic workflow is non-terminal, false once terminal", () => {
-    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 7, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 7,
+      adapter: "claude",
+    });
     expect(hasNonTerminalEpicWorkflow(db, "o/r", 7)).toBe(true);
     updateWorkflow(db, "a", { state: "completed" });
     expect(hasNonTerminalEpicWorkflow(db, "o/r", 7)).toBe(false);
   });
 
   test("scopes by repo and epic; a recommender row never collides", () => {
-    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 7, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 7,
+      adapter: "claude",
+    });
     expect(hasNonTerminalEpicWorkflow(db, "o/r", 8)).toBe(false); // different epic
     expect(hasNonTerminalEpicWorkflow(db, "x/y", 7)).toBe(false); // different repo
-    createWorkflowRecord(db, { id: "rec", kind: "recommender", repo: "o/r", epicNumber: 9, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "rec",
+      kind: "recommender",
+      repo: "o/r",
+      epicNumber: 9,
+      adapter: "claude",
+    });
     expect(hasNonTerminalEpicWorkflow(db, "o/r", 9)).toBe(false); // recommender doesn't claim the slot
   });
 });
 
 describe("listNonTerminalWorkflows", () => {
   test("returns id/repo/epic/state for non-terminal implementation rows only", () => {
-    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 1, adapter: "claude" });
-    createWorkflowRecord(db, { id: "b", kind: "implementation", repo: "o/r", epicNumber: 2, adapter: "claude" });
-    createWorkflowRecord(db, { id: "rec", kind: "recommender", repo: "o/r", epicNumber: null, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    createWorkflowRecord(db, {
+      id: "b",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 2,
+      adapter: "claude",
+    });
+    createWorkflowRecord(db, {
+      id: "rec",
+      kind: "recommender",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
     updateWorkflow(db, "a", { state: "waiting-human" });
     updateWorkflow(db, "b", { state: "completed" }); // terminal → excluded
     const rows = listNonTerminalWorkflows(db);
@@ -165,7 +205,13 @@ describe("listNonTerminalWorkflows", () => {
 
 describe("setUpdateWorkflowObserver", () => {
   test("notifies the observer of each patch, and stops after reset", () => {
-    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 1, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
     const seen: Array<{ id: string; state?: string }> = [];
     setUpdateWorkflowObserver((id, patch) => seen.push({ id, state: patch.state }));
     try {
@@ -183,7 +229,13 @@ describe("setUpdateWorkflowObserver", () => {
   });
 
   test("a throwing observer does not break the DB write", () => {
-    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 1, adapter: "claude" });
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
     setUpdateWorkflowObserver(() => {
       throw new Error("observer boom");
     });

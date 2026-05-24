@@ -44,7 +44,10 @@ export function readPackageJson(repoPath: string): Record<string, unknown> | nul
 }
 
 /** True if `name` appears in package.json `dependencies` or `devDependencies`. */
-export function hasDependency(pkg: Record<string, unknown> | null, predicate: (dep: string) => boolean): boolean {
+export function hasDependency(
+  pkg: Record<string, unknown> | null,
+  predicate: (dep: string) => boolean,
+): boolean {
   if (!pkg) return false;
   for (const field of ["dependencies", "devDependencies"] as const) {
     const deps = pkg[field];

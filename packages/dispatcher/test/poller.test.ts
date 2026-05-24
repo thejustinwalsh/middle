@@ -42,7 +42,13 @@ const ARMED_AT = 1_000_000;
 /** Seed a parked workflow with an armed wait for `reason`, armed at ARMED_AT. */
 function seedParked(reason: ResumeReason, epic = EPIC): string {
   const id = crypto.randomUUID();
-  createWorkflowRecord(db, { id, kind: "implementation", repo: REPO, epicNumber: epic, adapter: "claude" });
+  createWorkflowRecord(db, {
+    id,
+    kind: "implementation",
+    repo: REPO,
+    epicNumber: epic,
+    adapter: "claude",
+  });
   updateWorkflow(db, id, { state: "waiting-human" });
   // armWaitForSignal stamps created_at = Date.now(); normalize it to ARMED_AT so
   // recency comparisons in the poller are deterministic.
@@ -126,7 +132,10 @@ describe("classifyNewHumanReply", () => {
   test("returns null when only bot/stale comments exist", () => {
     expect(
       classifyNewHumanReply(
-        [comment({ authorIsBot: true, createdAt: ARMED_AT + 100 }), comment({ createdAt: ARMED_AT - 1 })],
+        [
+          comment({ authorIsBot: true, createdAt: ARMED_AT + 100 }),
+          comment({ createdAt: ARMED_AT - 1 }),
+        ],
         ARMED_AT,
       ),
     ).toBeNull();
@@ -138,7 +147,15 @@ describe("classifyReviewOutcome", () => {
     const v = classifyReviewOutcome(
       prSnapshot({
         reviewDecision: "CHANGES_REQUESTED",
-        reviews: [{ id: 7, state: "CHANGES_REQUESTED", authorLogin: "coderabbitai[bot]", submittedAt: ARMED_AT + 10, body: "Actionable comments posted: 3" }],
+        reviews: [
+          {
+            id: 7,
+            state: "CHANGES_REQUESTED",
+            authorLogin: "coderabbitai[bot]",
+            submittedAt: ARMED_AT + 10,
+            body: "Actionable comments posted: 3",
+          },
+        ],
       }),
       ARMED_AT,
     );
@@ -149,7 +166,15 @@ describe("classifyReviewOutcome", () => {
     const v = classifyReviewOutcome(
       prSnapshot({
         reviewDecision: "APPROVED",
-        reviews: [{ id: 8, state: "APPROVED", authorLogin: "human", submittedAt: ARMED_AT + 10, body: "lgtm" }],
+        reviews: [
+          {
+            id: 8,
+            state: "APPROVED",
+            authorLogin: "human",
+            submittedAt: ARMED_AT + 10,
+            body: "lgtm",
+          },
+        ],
       }),
       ARMED_AT,
     );
@@ -160,7 +185,15 @@ describe("classifyReviewOutcome", () => {
     const v = classifyReviewOutcome(
       prSnapshot({
         reviewDecision: "CHANGES_REQUESTED", // bot didn't flip its standing verdict
-        reviews: [{ id: 9, state: "COMMENTED", authorLogin: "coderabbitai[bot]", submittedAt: ARMED_AT + 10, body: "**Actionable comments posted: 0**\n\nLooks good." }],
+        reviews: [
+          {
+            id: 9,
+            state: "COMMENTED",
+            authorLogin: "coderabbitai[bot]",
+            submittedAt: ARMED_AT + 10,
+            body: "**Actionable comments posted: 0**\n\nLooks good.",
+          },
+        ],
       }),
       ARMED_AT,
     );
@@ -169,13 +202,25 @@ describe("classifyReviewOutcome", () => {
 
   test("the `changes-requested` label alone (no fresh review) → changes-requested", () => {
     const v = classifyReviewOutcome(prSnapshot({ labels: ["changes-requested"] }), ARMED_AT);
-    expect(v).toEqual({ outcome: "changes-requested", reviewId: null, decision: "CHANGES_REQUESTED" });
+    expect(v).toEqual({
+      outcome: "changes-requested",
+      reviewId: null,
+      decision: "CHANGES_REQUESTED",
+    });
   });
 
   test("only stale reviews and no actionable label → null (nothing changed)", () => {
     const v = classifyReviewOutcome(
       prSnapshot({
-        reviews: [{ id: 1, state: "CHANGES_REQUESTED", authorLogin: "x", submittedAt: ARMED_AT - 5, body: "old" }],
+        reviews: [
+          {
+            id: 1,
+            state: "CHANGES_REQUESTED",
+            authorLogin: "x",
+            submittedAt: ARMED_AT - 5,
+            body: "old",
+          },
+        ],
       }),
       ARMED_AT,
     );
@@ -232,14 +277,27 @@ describe("runPoller — review-changes", () => {
     const github = makeGateway({
       pr: prSnapshot({
         reviewDecision: "CHANGES_REQUESTED",
-        reviews: [{ id: 7, state: "CHANGES_REQUESTED", authorLogin: "coderabbitai[bot]", submittedAt: ARMED_AT + 10, body: "Actionable comments posted: 2" }],
+        reviews: [
+          {
+            id: 7,
+            state: "CHANGES_REQUESTED",
+            authorLogin: "coderabbitai[bot]",
+            submittedAt: ARMED_AT + 10,
+            body: "Actionable comments posted: 2",
+          },
+        ],
       }),
     });
     const { fired, fireSignal } = captureFires();
     expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(1);
     expect(fired[0]).toEqual({
       workflowId: id,
-      payload: { reason: "review-changes", outcome: "changes-requested", reviewId: 7, decision: "CHANGES_REQUESTED" },
+      payload: {
+        reason: "review-changes",
+        outcome: "changes-requested",
+        reviewId: 7,
+        decision: "CHANGES_REQUESTED",
+      },
     });
   });
 
@@ -248,7 +306,15 @@ describe("runPoller — review-changes", () => {
     const github = makeGateway({
       pr: prSnapshot({
         reviewDecision: "APPROVED",
-        reviews: [{ id: 8, state: "APPROVED", authorLogin: "human", submittedAt: ARMED_AT + 10, body: "ship it" }],
+        reviews: [
+          {
+            id: 8,
+            state: "APPROVED",
+            authorLogin: "human",
+            submittedAt: ARMED_AT + 10,
+            body: "ship it",
+          },
+        ],
       }),
     });
     const { fired, fireSignal } = captureFires();
@@ -266,7 +332,15 @@ describe("runPoller — review-changes", () => {
     const github = makeGateway({
       pr: prSnapshot({
         reviewDecision: "CHANGES_REQUESTED",
-        reviews: [{ id: 9, state: "COMMENTED", authorLogin: "coderabbitai[bot]", submittedAt: ARMED_AT + 10, body: "**Actionable comments posted: 0**" }],
+        reviews: [
+          {
+            id: 9,
+            state: "COMMENTED",
+            authorLogin: "coderabbitai[bot]",
+            submittedAt: ARMED_AT + 10,
+            body: "**Actionable comments posted: 0**",
+          },
+        ],
       }),
     });
     const { fired, fireSignal } = captureFires();

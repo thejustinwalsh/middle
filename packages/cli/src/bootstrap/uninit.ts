@@ -64,7 +64,9 @@ export async function uninitRepo(
       note(`close state issue #${stateIssue}`);
       if (!dry) await deps.github.closeStateIssue(target, stateIssue, "Removed via `mm uninit`.");
     } else {
-      note(`state issue #${stateIssue}: could not resolve repo identity — left open, close it manually`);
+      note(
+        `state issue #${stateIssue}: could not resolve repo identity — left open, close it manually`,
+      );
     }
   }
 

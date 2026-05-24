@@ -136,7 +136,10 @@ export type ImplementationDeps = {
    * `bare-stop` without that signal nudges the agent (bounded) instead of
    * finalizing; without it, the legacy "bare-stop → completed" mapping holds.
    */
-  epicPrReadiness?: (repo: string, epicNumber: number) => Promise<{ exists: boolean; isDraft: boolean }>;
+  epicPrReadiness?: (
+    repo: string,
+    epicNumber: number,
+  ) => Promise<{ exists: boolean; isDraft: boolean }>;
   /** Max "continue" nudges on a bare-stop before parking in waiting-human. */
   maxNudges?: number;
   /** Per-nudge Stop-await timeout. */
@@ -307,7 +310,10 @@ function reasonFor(kind: DriveOutcome["kind"]): ResumeReason {
 /** Read the workstream's committed plan from the worktree (for the plan-comment guard). */
 function readPlanBody(worktreePath: string, epicNumber: number): string {
   try {
-    return readFileSync(join(worktreePath, "planning", "issues", String(epicNumber), "plan.md"), "utf8");
+    return readFileSync(
+      join(worktreePath, "planning", "issues", String(epicNumber), "plan.md"),
+      "utf8",
+    );
   } catch {
     return "";
   }

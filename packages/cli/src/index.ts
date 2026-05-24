@@ -88,13 +88,17 @@ program
 
 program
   .command("run-recommender")
-  .description("Trigger a recommender run for a repo (rewrites its state issue; read-only — dispatches nothing)")
+  .description(
+    "Trigger a recommender run for a repo (rewrites its state issue; read-only — dispatches nothing)",
+  )
   .argument("<repo>", "path to the local repo checkout")
   .action(async (repo: string) => process.exit(await runRecommender(repo)));
 
 program
   .command("docs")
-  .description("Trigger a docs-harvester run for a repo (audits the docs surface; read-only — writes nothing)")
+  .description(
+    "Trigger a docs-harvester run for a repo (audits the docs surface; read-only — writes nothing)",
+  )
   .argument("<repo>", "path to the local repo checkout")
   .action(async (repo: string) => process.exit(await runDocs(repo)));
 

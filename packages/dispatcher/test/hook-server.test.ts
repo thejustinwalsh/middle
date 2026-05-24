@@ -194,7 +194,9 @@ describe("HookServer — lifecycle", () => {
 
 describe("HookServer — recommender trigger endpoint", () => {
   test("404s when no trigger is wired (gate-only mode)", async () => {
-    const res = await fetch(`http://127.0.0.1:${server.port}/trigger/recommender`, { method: "POST" });
+    const res = await fetch(`http://127.0.0.1:${server.port}/trigger/recommender`, {
+      method: "POST",
+    });
     expect(res.status).toBe(404);
   });
 
@@ -263,7 +265,9 @@ describe("HookServer — recommender trigger endpoint", () => {
     const wired = new HookServer(undefined, undefined, async (req) => {
       calls.push(req);
       // Mirror the real trigger: missing repoPath → 400, never a 500.
-      return req.repoPath ? { status: 202, body: "ok" } : { status: 400, body: "repoPath required" };
+      return req.repoPath
+        ? { status: 202, body: "ok" }
+        : { status: 400, body: "repoPath required" };
     });
     wired.start(0);
     try {

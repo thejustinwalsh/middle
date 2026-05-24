@@ -77,7 +77,10 @@ function parseWorkflowFrame(frame: string): { id: string; state: string } | null
   const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
   if (!dataLine) return null;
   try {
-    const data = JSON.parse(dataLine.slice("data:".length).trim()) as { id?: unknown; state?: unknown };
+    const data = JSON.parse(dataLine.slice("data:".length).trim()) as {
+      id?: unknown;
+      state?: unknown;
+    };
     if (typeof data.id === "string" && typeof data.state === "string") {
       return { id: data.id, state: data.state };
     }
@@ -219,12 +222,19 @@ export async function runDispatch(
       const res = await fetch(`${base}/control/dispatch`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ repo: repoSlug, repoPath: resolve(repoPath), epicNumber, adapter: adapterName }),
+        body: JSON.stringify({
+          repo: repoSlug,
+          repoPath: resolve(repoPath),
+          epicNumber,
+          adapter: adapterName,
+        }),
         signal: ac.signal,
       });
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
-        console.error(`mm dispatch: dispatch rejected (${res.status})${detail ? ` — ${detail}` : ""}`);
+        console.error(
+          `mm dispatch: dispatch rejected (${res.status})${detail ? ` — ${detail}` : ""}`,
+        );
         return 1;
       }
       const body = (await res.json()) as { workflowId?: unknown };
