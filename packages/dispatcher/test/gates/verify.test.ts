@@ -133,6 +133,88 @@ describe("verification gates wired into checkbox-revert (end to end)", () => {
     }
   });
 
+  // The seam is what the reconciler loop awaits per transition: any throw it
+  // lets escape aborts reconcileCheckboxes mid-loop — skipping later phases'
+  // reverts and the state persist. So no failure inside it may throw; each must
+  // surface as a loud non-ok verdict the reconciler can revert + comment on.
+  describe("seam never throws into the reconcile loop", () => {
+    /** A github whose evidence path (listIssueComments) always fails. */
+    function ghThatFailsEvidence(): EvidenceGateway {
+      return {
+        async listIssueComments() {
+          throw new Error("GitHub API down");
+        },
+        async postComment() {},
+        async editComment() {},
+      };
+    }
+
+    test("an evidence-upsert failure yields ok:false (not a throw), preserving a real gate failure", async () => {
+      const s = scratch();
+      try {
+        const runGates = makeRunPhaseGates({
+          repo: "o/r",
+          prNumber: 99,
+          worktreePath: s.dir,
+          config,
+          github: ghThatFailsEvidence(),
+        });
+        // Phase 100 gates pass but evidence can't post → ok:false, evidence-comment.
+        await expect(runGates(100)).resolves.toEqual({ ok: false, failedGate: "evidence-comment" });
+        // Phase 101 gates fail *and* evidence can't post → the real gate name wins.
+        await expect(runGates(101)).resolves.toEqual({ ok: false, failedGate: "fail-gate" });
+      } finally {
+        s.cleanup();
+      }
+    });
+
+    test("a gate-runner failure (worktree gone) yields ok:false instead of throwing", async () => {
+      const w = world(PR_BODY);
+      // A worktree path that doesn't exist makes Bun.spawn throw on cwd.
+      const runGates = makeRunPhaseGates({
+        repo: "o/r",
+        prNumber: 99,
+        worktreePath: join(tmpdir(), "middle-verify-absent", "nope"),
+        config,
+        github: w.github,
+      });
+      await expect(runGates(100)).resolves.toEqual({ ok: false, failedGate: "gate-runner" });
+    });
+
+    test("reconcileCheckboxes still processes every transition + persists state when evidence fails", async () => {
+      const s = scratch();
+      try {
+        const w = world(PR_BODY);
+        const runGates = makeRunPhaseGates({
+          repo: "o/r",
+          prNumber: 99,
+          worktreePath: s.dir,
+          config,
+          github: ghThatFailsEvidence(),
+        });
+        const deps: CheckboxReconcileDeps = {
+          async getPrBody() { return w.state.body; },
+          async setPrBody(b) { w.state.body = b; },
+          async postComment(b) { await w.github.postComment("o/r", 99, b); },
+          runGates,
+          async getPreviousState() { return w.state.previous; },
+          async setPreviousState(p) { w.state.previous = p; },
+        };
+
+        const result = await reconcileCheckboxes(deps);
+
+        // Both transitions were processed despite evidence failing on the first —
+        // proof the loop didn't abort. (Both revert: 100 because evidence failed,
+        // 101 because its gate failed.)
+        expect(result.reverted).toEqual([100, 101]);
+        // State was persisted for the next pass (the reverted boxes are unchecked).
+        expect(w.state.previous).toEqual({ 100: false, 101: false });
+      } finally {
+        s.cleanup();
+      }
+    });
+  });
+
   test("re-running after a fix keeps the box checked and updates evidence in place", async () => {
     const s = scratch();
     try {
