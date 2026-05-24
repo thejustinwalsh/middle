@@ -17,5 +17,6 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noEmit": true
-  }
+  },
+  "exclude": ["**/test/fixtures/**"]
 }

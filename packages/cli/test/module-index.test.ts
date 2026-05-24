@@ -154,6 +154,7 @@ describe("checkModuleIndex — the real middle packages tree", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "packages/core/src/index.ts",
+        "packages/docs/src/index.ts",
         "packages/cli/src/index.ts",
         "packages/cli/src/bootstrap/index.ts",
         "packages/dispatcher/src/index.ts",

@@ -69,6 +69,13 @@
         "smol-toml": "^1.6.1",
       },
     },
+    "packages/docs": {
+      "name": "@middle/docs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@middle/core": "workspace:*",
+      },
+    },
     "packages/skills": {
       "name": "@middle/skills",
       "version": "0.0.0",
@@ -95,6 +102,8 @@
     "@middle/dashboard": ["@middle/dashboard@workspace:packages/dashboard"],
 
     "@middle/dispatcher": ["@middle/dispatcher@workspace:packages/dispatcher"],
+
+    "@middle/docs": ["@middle/docs@workspace:packages/docs"],
 
     "@middle/skills": ["@middle/skills@workspace:packages/skills"],
 
