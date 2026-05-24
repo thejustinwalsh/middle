@@ -1,0 +1,128 @@
+import { describe, expect, test } from "bun:test";
+import {
+  type CheckboxReconcileDeps,
+  type GateRunResult,
+  parseStatusCheckboxes,
+  reconcileCheckboxes,
+} from "../../src/gates/checkbox-revert.ts";
+
+const BODY = `## Summary
+Closes #27
+
+## Status
+- [ ] #28 — Plan-comment guard
+- [x] #29 — PR-ready guard
+- [ ] #30 — Checkbox-revert reconciler
+
+## Notes
+- [ ] not a sub-issue line, ignored
+`;
+
+describe("parseStatusCheckboxes", () => {
+  test("extracts one entry per Status line carrying a #N reference, stopping at the next heading", () => {
+    expect(parseStatusCheckboxes(BODY)).toEqual([
+      { subIssue: 28, checked: false },
+      { subIssue: 29, checked: true },
+      { subIssue: 30, checked: false },
+    ]);
+  });
+
+  test("returns [] when there is no Status section", () => {
+    expect(parseStatusCheckboxes("## Summary\nnothing\n")).toEqual([]);
+  });
+});
+
+/** A recording harness over the reconciler's seams. */
+function harness(opts: {
+  body: string;
+  previous: Record<number, boolean>;
+  gates: (subIssue: number) => GateRunResult;
+}) {
+  const state = { body: opts.body, previous: { ...opts.previous } };
+  const comments: string[] = [];
+  const ran: number[] = [];
+  const deps: CheckboxReconcileDeps = {
+    async getPrBody() {
+      return state.body;
+    },
+    async setPrBody(body) {
+      state.body = body;
+    },
+    async postComment(body) {
+      comments.push(body);
+    },
+    async runGates(subIssue) {
+      ran.push(subIssue);
+      return opts.gates(subIssue);
+    },
+    async getPreviousState() {
+      return state.previous;
+    },
+    async setPreviousState(s) {
+      state.previous = s;
+    },
+  };
+  return { state, comments, ran, deps };
+}
+
+describe("reconcileCheckboxes", () => {
+  const STATUS = `## Status
+- [x] #30 — Checkbox-revert reconciler
+`;
+
+  test("a passing [ ]→[x] transition is left checked, no comment, state recorded", async () => {
+    const h = harness({ body: STATUS, previous: { 30: false }, gates: () => ({ ok: true }) });
+    const result = await reconcileCheckboxes(h.deps);
+
+    expect(result.reverted).toEqual([]);
+    expect(h.ran).toEqual([30]);
+    expect(h.state.body).toContain("- [x] #30");
+    expect(h.comments).toEqual([]);
+    expect(h.state.previous[30]).toBe(true);
+  });
+
+  test("a failing [ ]→[x] transition is reverted and a comment names the failed gate", async () => {
+    const h = harness({
+      body: STATUS,
+      previous: { 30: false },
+      gates: () => ({ ok: false, failedGate: "typecheck" }),
+    });
+    const result = await reconcileCheckboxes(h.deps);
+
+    expect(result.reverted).toEqual([30]);
+    expect(h.state.body).toContain("- [ ] #30");
+    expect(h.state.body).not.toContain("- [x] #30");
+    expect(h.comments.length).toBe(1);
+    expect(h.comments[0]).toContain("#30");
+    expect(h.comments[0]).toContain("typecheck");
+    // recorded as unchecked so the next push doesn't re-treat it as a transition
+    expect(h.state.previous[30]).toBe(false);
+  });
+
+  test("a box already checked on the previous pass is not re-run", async () => {
+    const h = harness({ body: STATUS, previous: { 30: true }, gates: () => ({ ok: true }) });
+    const result = await reconcileCheckboxes(h.deps);
+
+    expect(h.ran).toEqual([]);
+    expect(result.reverted).toEqual([]);
+    expect(h.state.body).toContain("- [x] #30");
+  });
+
+  test("with several transitions, only the failing sub-issue is reverted", async () => {
+    const body = `## Status
+- [x] #28 — Plan-comment guard
+- [x] #30 — Checkbox-revert reconciler
+`;
+    const h = harness({
+      body,
+      previous: { 28: false, 30: false },
+      gates: (n) => (n === 30 ? { ok: false, failedGate: "test" } : { ok: true }),
+    });
+    const result = await reconcileCheckboxes(h.deps);
+
+    expect(result.reverted).toEqual([30]);
+    expect(h.state.body).toContain("- [x] #28");
+    expect(h.state.body).toContain("- [ ] #30");
+    expect(h.state.previous).toEqual({ 28: true, 30: false });
+  });
+});

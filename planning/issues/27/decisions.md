@@ -64,3 +64,29 @@ a PR number from the hook.
 **Why:** One Epic = one PR, so the Epic number deterministically identifies the PR and can't be
 spoofed by a `gh pr ready <n>` argument pointing elsewhere. This is also what "the gate covers
 the whole Epic" requires — the PR body carries the union of every sub-issue's criteria.
+
+## Checkbox-revert: `#N` references map a Status line to its sub-issue
+**File(s):** `packages/dispatcher/src/gates/checkbox-revert.ts`
+**Date:** 2026-05-23
+
+**Decision:** Each Status checkbox line must carry a `#N` issue reference; that `#N` is how a
+checkbox is mapped to the sub-issue whose gates run. Lines without a `#N` are ignored. This PR's
+own Status section follows the convention (`- [ ] #28 — …`).
+**Why:** The skill's PR template phrased Status as "Phase N: name", which doesn't pin a checkbox
+to a concrete sub-issue number. The reconciler needs an unambiguous checkbox→sub-issue mapping
+to know which sub-issue's gates to run; an explicit `#N` reference is the most robust signal and
+renders as a live link on GitHub.
+
+## Checkbox-revert: transition diffing via persisted previous-state, runner injected
+**File(s):** `packages/dispatcher/src/gates/checkbox-revert.ts`
+**Date:** 2026-05-23
+
+**Decision:** `reconcileCheckboxes` diffs the current checkbox state against a persisted
+previous-state map and only runs gates for fresh `[ ] → [x]` transitions. A reverted box is
+recorded as unchecked so it isn't re-treated as a transition next push. The gate *runner* and the
+per-push *trigger* are injected/deferred — full gate execution + the push hook integrate in
+Phase 6 (explicitly out of scope for #30).
+**Why:** Re-running every checked box's gates on every push would be wasteful and could fight an
+agent legitimately holding a checked box. Diffing keeps the gate firing exactly on the transition
+the spec calls out. Injecting the runner keeps this task to "detection + revert + comment" as
+scoped.
