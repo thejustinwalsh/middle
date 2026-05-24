@@ -80,3 +80,15 @@ The module-index frontmatter is *discovery*; TSDoc is the *API reference* (`star
 - Every public export carries a TSDoc/JSDoc comment. Comments describe **behavior and contracts** — what it does, what it guarantees, what it assumes — not a restatement of the identifier's name. "`openDb` — opens the db" is noise; "`openDb` — open a SQLite handle without running migrations; callers that need a current schema use `openAndMigrate`" is signal.
 - Each `index.ts(x)` carries an `@packageDocumentation` block (it's part of the module-index frontmatter above) — this seeds TypeDoc's per-module overview.
 - Coverage is **advisory**: `checkTsdocCoverage` (`packages/cli/src/checks/tsdoc-coverage.ts`) reports public exports missing a doc comment as a `tsdoc` warning in `mm doctor` and a smoke test in `bun test`. The gated guarantee is `@packageDocumentation` presence (enforced above); per-export coverage is a backlog signal to chip away at, not a build break.
+
+### Per-folder `CLAUDE.md`
+
+A module has a nested `CLAUDE.md` **iff** its module-index frontmatter `claude-md` flag is `true`. **Read the flag — never re-derive the decision.** The flag is the single source of truth precisely so different agents don't non-deterministically add or drop a `CLAUDE.md` each pass. Re-evaluate only when you introduce a new local invariant — and then you flip the flag in the *same* change that adds the `CLAUDE.md`.
+
+The predicate behind setting the flag is objective — set `claude-md: true` only when **both** hold:
+1. the folder is a module boundary (it has an `index.ts(x)` front door), **and**
+2. there is ≥1 load-bearing local fact that is *not* derivable from the code **and** *not* already in this root `CLAUDE.md`.
+
+A nested `CLAUDE.md` carries **only** local, non-derivable, non-duplicative context. Root `CLAUDE.md` wins on any conflict — don't restate it; link to it. The file lives at the module's root: a package's `src/index.ts` maps to `<package>/CLAUDE.md`; a nested module's `index.ts` maps to its own directory.
+
+`checkModuleIndex` enforces the flag↔file consistency: `claude-md: true` with no file (or `false` with a stray file) is a gating test failure. Current nested files: `packages/state-issue`, `packages/dispatcher`, `packages/cli/src/bootstrap`.

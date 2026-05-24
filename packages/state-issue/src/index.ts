@@ -20,9 +20,10 @@
  *
  * Gotchas:
  * - Byte-identical round-trip is a hard invariant (see `schemas/state-issue.v1.md`
- *   and the root CLAUDE.md "state-issue contract").
+ *   and the root CLAUDE.md "state-issue contract"); local mechanics in this
+ *   package's CLAUDE.md.
  *
- * claude-md: false
+ * claude-md: true
  */
 export type {
   AdapterSlotUsage,

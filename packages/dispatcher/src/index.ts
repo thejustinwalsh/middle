@@ -29,7 +29,7 @@
  * - bunqueue lock-token / lifecycle-race handling and the watchdog's reconcile
  *   timing live here; see this package's CLAUDE.md.
  *
- * claude-md: false
+ * claude-md: true
  */
 export { dispatchEpic } from "./dispatch.ts";
 export type { DispatchEpicOptions, DispatchEpicResult } from "./dispatch.ts";

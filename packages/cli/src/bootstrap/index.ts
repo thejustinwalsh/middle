@@ -22,7 +22,7 @@
  * Gotchas:
  * - Skills must stay byte-identical canonical↔mirror; see this dir's CLAUDE.md.
  *
- * claude-md: false
+ * claude-md: true
  */
 export { initRepo } from "./init.ts";
 export { uninitRepo } from "./uninit.ts";
