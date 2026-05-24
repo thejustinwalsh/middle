@@ -28,13 +28,22 @@ const STATUS_HEADING_RE = /^##\s+status\s*$/i;
  * mistaken for the real Status section.
  */
 function fencedLineMask(lines: string[]): boolean[] {
-  let inFence = false;
+  // Track which marker opened the fence so a *non-matching* marker inside it
+  // (a `~~~` line within a ``` block, or vice versa) is treated as content, not
+  // a toggle. We don't enforce CommonMark fence-length rules (a ```` ``` ````
+  // closing a longer opener) — overkill for a PR-body checklist and the source
+  // of the very over-tightening this matcher has already been bitten by.
+  let fence: string | null = null;
   return lines.map((line) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      return true; // the delimiter line itself is not content
+    const m = /^\s*(```+|~~~+)/.exec(line);
+    if (m) {
+      const marker = m[1]![0]!; // "`" or "~"
+      if (fence === null) fence = marker; // opening
+      else if (marker === fence) fence = null; // matching close
+      // a non-matching marker while inside a fence is content; state unchanged
+      return true; // a fence-marker line is never parsed as content
     }
-    return inFence;
+    return fence !== null;
   });
 }
 

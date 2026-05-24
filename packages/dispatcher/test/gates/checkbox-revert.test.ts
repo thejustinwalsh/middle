@@ -56,6 +56,23 @@ describe("parseStatusCheckboxes", () => {
     expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
   });
 
+  test("mixed fence delimiters: a ~~~ inside a ``` block does not reopen real parsing", () => {
+    // Without matching-delimiter tracking, the inner ~~~ flips the fence state,
+    // so the fenced `## Status`/checkbox below it gets parsed as the real one.
+    const body = [
+      "## Summary",
+      "```",
+      "~~~",
+      "## Status",
+      "- [x] #99 — fenced example, must not be parsed",
+      "```",
+      "## Status",
+      "- [x] #30 — the real one",
+      "",
+    ].join("\n");
+    expect(parseStatusCheckboxes(body)).toEqual([{ subIssue: 30, checked: true }]);
+  });
+
   test("only the FIRST ## Status section is parsed; a later one is ignored", () => {
     const body = `## Status
 - [x] #28 — first section
