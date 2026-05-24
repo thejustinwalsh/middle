@@ -32,3 +32,18 @@ recommender's own run never counts against `maxConcurrent` — it is its own ded
 `maxConcurrent`)." There is no live concurrency gate yet (Phase 8), so the testable, faithful
 manifestation is the slot-accounting exclusion that `build-prompt`'s injected `slots` already
 needs (#44). One mechanism serves both #43's dedicated-slot assertion and #44's slot injection.
+
+## build-prompt renders `slots` in the skill's documented "Phase 1" shape
+**File(s):** `packages/dispatcher/src/workflows/recommender.ts` (`assembleRecommenderPrompt`)
+**Date:** 2026-05-24
+
+**Decision:** The internal `SlotsView` type is clean camelCase TS (`perAdapter`, `globalUsed`,
+`globalMax`), but the prompt serializes `slots` in the shape the `recommending-github-issues`
+skill's "Phase 1 — Receive context" documents: per-adapter entries at the top level keyed by
+adapter name, `total` a sibling with snake_case `global_used`/`global_max`. `config` and
+`rate_limits` likewise emit snake_case.
+
+**Why:** The recommender agent reads this JSON against the shape its skill documents. Emitting
+the documented shape avoids a fidelity gap the agent (or a reviewer) would otherwise flag,
+while keeping the dispatcher's internal types idiomatic. Dispatcher-owned values pass through
+verbatim — only the key names/structure are mapped, never the values.

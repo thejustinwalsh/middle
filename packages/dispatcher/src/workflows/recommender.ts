@@ -8,9 +8,11 @@ import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import type { SessionGate } from "../hook-server.ts";
 import { getRateLimitState } from "../rate-limits.ts";
+import type { RateLimitState } from "../rate-limits.ts";
 import {
   countActiveImplementationSlots,
   createWorkflowRecord,
+  listActiveImplementationWorkflows,
   updateWorkflow,
 } from "../workflow-record.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
@@ -132,6 +134,17 @@ export function assembleRecommenderPrompt(parts: {
 }): string {
   const { repo, stateIssue, schemaPath, priorBody, context, config } = parts;
   const json = (value: unknown): string => JSON.stringify(value, null, 2);
+  // Render slots in the skill's documented "Phase 1" shape: per-adapter entries
+  // at the top level keyed by adapter, `total` a sibling with snake_case globals.
+  const slotsForPrompt = {
+    ...context.slots.perAdapter,
+    total: {
+      used: context.slots.total.used,
+      max: context.slots.total.max,
+      global_used: context.slots.total.globalUsed,
+      global_max: context.slots.total.globalMax,
+    },
+  };
   return `# Recommender run — dispatcher context
 
 You are the dispatch recommender. Rewrite the state issue body following the
@@ -163,7 +176,7 @@ ${json(context.inFlight)}
 
 ## slots
 \`\`\`json
-${json(context.slots)}
+${json(slotsForPrompt)}
 \`\`\`
 
 ## prior_body
@@ -175,6 +188,58 @@ copy them through verbatim, do not recompute them.
 ${priorBody}
 PRIOR_BODY
 `;
+}
+
+/** Render an adapter's rate-limit row into the human-readable status string the
+ * state issue's "Rate limits" section uses. Unknown (never observed) → UNKNOWN. */
+function rateLimitStatus(state: RateLimitState | null): string {
+  if (!state || state.status === "UNKNOWN") return "UNKNOWN";
+  if (state.status === "AVAILABLE") return "AVAILABLE";
+  // RATE_LIMITED — annotate with the reset time when known.
+  return state.resetAt ? `RATE_LIMITED until ${new Date(state.resetAt).toISOString()}` : "RATE_LIMITED";
+}
+
+/**
+ * Derive the dispatcher-owned context (rate limits, in-flight, slots) from
+ * dispatcher state — the single source of truth the recommender consumes
+ * verbatim. The runner wires this as the workflow's `gatherContext`; the
+ * recommender never recomputes any of it (skill "Phase 1 — Receive context").
+ */
+export function buildRecommenderContext(opts: {
+  db: Database;
+  /** Configured adapter names — drives the per-adapter slot rows. */
+  adapters: string[];
+  /** Per-adapter concurrency cap (repo `limits.max_concurrent_per_adapter`). */
+  maxPerAdapter: Record<string, number>;
+  /** Repo-level total cap (`limits.max_concurrent`). */
+  repoMax: number;
+  /** Global cap (`global.max_concurrent`). */
+  globalMax: number;
+  /** The dispatcher's GitHub rate-limit read, if any (e.g. "4180/5000"). */
+  githubStatus?: string;
+}): RecommenderContext {
+  const used = countActiveImplementationSlots(opts.db);
+  const perAdapter: Record<string, { used: number; max: number }> = {};
+  for (const adapter of opts.adapters) {
+    perAdapter[adapter] = { used: used.perAdapter[adapter] ?? 0, max: opts.maxPerAdapter[adapter] ?? 0 };
+  }
+  return {
+    rateLimits: {
+      claude: rateLimitStatus(getRateLimitState(opts.db, "claude")),
+      codex: rateLimitStatus(getRateLimitState(opts.db, "codex")),
+      github: opts.githubStatus ?? "UNKNOWN",
+    },
+    inFlight: listActiveImplementationWorkflows(opts.db).map((w) => ({
+      issue: w.epicNumber,
+      adapter: w.adapter,
+      progress: w.state === "running" ? "running" : w.state,
+      session: w.sessionName,
+    })),
+    slots: {
+      perAdapter,
+      total: { used: used.total, max: opts.repoMax, globalUsed: used.total, globalMax: opts.globalMax },
+    },
+  };
 }
 
 type PrepareResult = { handle: WorktreeHandle };

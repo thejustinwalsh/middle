@@ -9,9 +9,15 @@ import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import { setRateLimited } from "../src/rate-limits.ts";
-import { getWorkflow, countActiveImplementationSlots } from "../src/workflow-record.ts";
+import {
+  countActiveImplementationSlots,
+  createWorkflowRecord,
+  getWorkflow,
+  updateWorkflow,
+} from "../src/workflow-record.ts";
 import {
   assembleRecommenderPrompt,
+  buildRecommenderContext,
   createRecommenderWorkflow,
   type RecommenderContext,
   type RecommenderDeps,
@@ -281,5 +287,117 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
     // Compensation tore the worktree down and freed the session.
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     for (const s of new Set(h.created)) expect(h.killed).toContain(s);
+  });
+});
+
+describe("recommender workflow — #44 build-prompt: every required input, verbatim", () => {
+  const PRIOR = "## Ready to dispatch\n\nprior body sentinel 4f2a\n";
+
+  test("assembles all eight Phase-1 inputs, with dispatcher-owned context verbatim", () => {
+    const prompt = assembleRecommenderPrompt({
+      repo: REPO,
+      stateIssue: STATE_ISSUE,
+      schemaPath: "/abs/schemas/state-issue.v1.md",
+      priorBody: PRIOR,
+      context: SAMPLE_CONTEXT,
+      config: { defaultAdapter: "claude", autoDispatch: false, prMode: "worktree" },
+    });
+
+    // repo, state_issue, schema_path
+    expect(prompt).toContain(REPO);
+    expect(prompt).toContain(`state_issue\`: ${STATE_ISSUE}`);
+    expect(prompt).toContain("/abs/schemas/state-issue.v1.md");
+    // prior_body (verbatim, sentinel survives)
+    expect(prompt).toContain("prior body sentinel 4f2a");
+    // config
+    expect(prompt).toContain('"default_adapter": "claude"');
+    expect(prompt).toContain('"auto_dispatch": false');
+    expect(prompt).toContain('"pr_mode": "worktree"');
+    // rate_limits — verbatim from dispatcher state
+    expect(prompt).toContain('"codex": "RATE_LIMITED until 16:32Z"');
+    expect(prompt).toContain('"github": "4180/5000"');
+    // in_flight — verbatim
+    expect(prompt).toContain('"session": "middle-x-6"');
+    expect(prompt).toContain('"progress": "sub-issue 2/5"');
+    // slots — rendered in the skill's documented Phase-1 shape (per-adapter at top
+    // level keyed by adapter; total a sibling with snake_case globals).
+    expect(prompt).toContain('"global_max": 4');
+    expect(prompt).toContain('"global_used": 2');
+    expect(prompt).toMatch(/"claude":\s*\{\s*"used": 1,\s*"max": 2\s*\}/);
+  });
+
+  test("writes the assembled prompt to .middle/prompt.md and launches it via the @-reference", async () => {
+    const h = makeHarness({ bodies: [PRIOR, validBody()] });
+    h.deps.schemaPath = "/somewhere/state-issue.v1.md";
+    // Capture the on-disk prompt just before the cleanup step tears the worktree down.
+    let writtenPrompt = "";
+    const realDestroy = h.deps.worktree.destroyWorktree;
+    h.deps.worktree.destroyWorktree = async (handle) => {
+      const p = join(handle.path, ".middle", "prompt.md");
+      if (existsSync(p)) writtenPrompt = readFileSync(p, "utf8");
+      return realDestroy(handle);
+    };
+
+    const id = await runToEnd(h.deps);
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+
+    // The build-prompt step wrote the full assembled prompt to .middle/prompt.md…
+    expect(writtenPrompt).toContain("/somewhere/state-issue.v1.md"); // schema_path on disk
+    expect(writtenPrompt).toContain("prior body sentinel 4f2a"); // prior_body verbatim
+    expect(writtenPrompt).toContain('"github": "4180/5000"'); // dispatcher-owned context verbatim
+    // …and the launch referenced that file (not an inline prompt — multi-line context).
+    expect(h.sent.some((t) => t === "/recommending-github-issues @.middle/prompt.md")).toBe(true);
+    // gatherContext called exactly once (no recompute); prior_body read before gather.
+    expect(h.trace.filter((t) => t === "build-prompt:gather")).toHaveLength(1);
+    expect(h.trace.indexOf("build-prompt:read-prior")).toBeLessThan(h.trace.indexOf("build-prompt:gather"));
+  });
+});
+
+describe("recommender workflow — #44 buildRecommenderContext: from dispatcher state", () => {
+  const mk = (id: string, adapter: string, epic: number | null, session: string, state?: string) => {
+    createWorkflowRecord(db, { id, kind: "implementation", repo: REPO, epicNumber: epic, adapter });
+    updateWorkflow(db, id, { sessionName: session, state: (state ?? "running") as never });
+  };
+
+  test("derives rate_limits, in_flight, and slots from db + config", () => {
+    mk("a", "claude", 6, "middle-x-6");
+    mk("b", "claude", 7, "middle-x-7");
+    setRateLimited(db, { adapter: "codex", resetAt: Date.parse("2026-05-24T16:32:00Z"), source: "transcript" });
+
+    const ctx = buildRecommenderContext({
+      db,
+      adapters: ["claude", "codex"],
+      maxPerAdapter: { claude: 2, codex: 1 },
+      repoMax: 3,
+      globalMax: 4,
+      githubStatus: "4180/5000",
+    });
+
+    expect(ctx.rateLimits.claude).toBe("UNKNOWN");
+    expect(ctx.rateLimits.codex).toContain("RATE_LIMITED until 2026-05-24T16:32:00");
+    expect(ctx.rateLimits.github).toBe("4180/5000");
+    expect(ctx.inFlight).toEqual([
+      { issue: 6, adapter: "claude", progress: "running", session: "middle-x-6" },
+      { issue: 7, adapter: "claude", progress: "running", session: "middle-x-7" },
+    ]);
+    expect(ctx.slots).toEqual({
+      perAdapter: { claude: { used: 2, max: 2 }, codex: { used: 0, max: 1 } },
+      total: { used: 2, max: 3, globalUsed: 2, globalMax: 4 },
+    });
+  });
+
+  test("excludes the recommender's own row from in_flight and slots", () => {
+    createWorkflowRecord(db, { id: "rec", kind: "recommender", repo: REPO, epicNumber: null, adapter: "claude" });
+    updateWorkflow(db, "rec", { state: "running" });
+    const ctx = buildRecommenderContext({
+      db,
+      adapters: ["claude"],
+      maxPerAdapter: { claude: 2 },
+      repoMax: 2,
+      globalMax: 4,
+    });
+    expect(ctx.inFlight).toEqual([]);
+    expect(ctx.slots.total.used).toBe(0);
+    expect(ctx.rateLimits.github).toBe("UNKNOWN");
   });
 });

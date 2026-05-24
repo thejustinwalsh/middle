@@ -318,6 +318,41 @@ export function countActiveImplementationSlots(db: Database): SlotUsageCounts {
   return { total, perAdapter };
 }
 
+/** A live implementation workflow, as the recommender's `in_flight` reports it. */
+export type ActiveImplementationWorkflow = {
+  epicNumber: number | null;
+  adapter: string;
+  sessionName: string | null;
+  state: WorkflowState;
+};
+
+/**
+ * The non-terminal `kind = "implementation"` workflows — the dispatcher's
+ * authoritative in-flight set the recommender consumes verbatim (it never
+ * recomputes them). The recommender's own row is excluded by the `kind` filter.
+ */
+export function listActiveImplementationWorkflows(db: Database): ActiveImplementationWorkflow[] {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const rows = db
+    .query(
+      `SELECT epic_number, adapter, session_name, state FROM workflows
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(...TERMINAL_STATES) as {
+    epic_number: number | null;
+    adapter: string;
+    session_name: string | null;
+    state: string;
+  }[];
+  return rows.map((r) => ({
+    epicNumber: r.epic_number,
+    adapter: r.adapter,
+    sessionName: r.session_name,
+    state: r.state as WorkflowState,
+  }));
+}
+
 /** Fetch a workflow row by id, or null if it does not exist. */
 export function getWorkflow(db: Database, id: string): WorkflowRecord | null {
   const row = db.query("SELECT * FROM workflows WHERE id = ?").get(id) as WorkflowRow | null;
