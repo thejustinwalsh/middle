@@ -26,6 +26,17 @@
  *
  * claude-md: false
  */
+/**
+ * The target abstraction the harvester writes through: a resolved `DocsTarget`
+ * (its `docsRoot` + `resolveOutputPath`), the `DocsDetector` contract each
+ * framework implements, the `DocsTargetName` union, and the `DocKind` of a page.
+ */
 export type { DocsTarget, DocsDetector, DocsTargetName, DocKind } from "./target.ts";
+/**
+ * Resolution entry points: `resolveDocsTarget` applies override → detect →
+ * markdown fallback; `detectors` is the priority-ordered detector list;
+ * `DOCS_TARGET_NAMES` is the set of valid `[docs] tool` override values.
+ */
 export { resolveDocsTarget, detectors, DOCS_TARGET_NAMES } from "./resolve.ts";
+/** The plain-markdown fallback target — the `docs/` shape used when no framework is prescribed. */
 export { markdownTarget } from "./detectors/markdown.ts";

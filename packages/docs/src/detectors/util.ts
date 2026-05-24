@@ -27,7 +27,12 @@ export function readJsonIfExists(repoPath: string, name: string): Record<string,
   if (raw === null) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
+    // Arrays are `typeof "object"` but are not `Record<string, unknown>` — a
+    // config file that parses to an array (or any non-object) is malformed for
+    // our callers, so reject it rather than hand back a mistyped value.
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
@@ -53,7 +58,9 @@ export function hasDependency(pkg: Record<string, unknown> | null, predicate: (d
 /**
  * Build a `DocsTarget` with a uniform `resolveOutputPath`: `<docsRoot>/<slug><ext>`,
  * with POSIX separators (docs paths are repo-relative URLs, not OS paths). The
- * slug's own slashes are preserved so nested pages route into subfolders.
+ * slug's own slashes are preserved so nested pages route into subfolders, but
+ * the output is always a repo-relative path under `docsRoot`: a page slug can
+ * never escape it via `..` traversal or emit an absolute-looking path.
  */
 export function makeTarget(opts: {
   name: DocsTargetName;
@@ -68,8 +75,19 @@ export function makeTarget(opts: {
     docsRoot,
     supportsLlmsTxt: opts.supportsLlmsTxt,
     resolveOutputPath(page: { slug: string; kind?: DocKind }): string {
-      const slug = page.slug.replace(/^\/+/, "").replace(/\.mdx?$/, "");
-      return `${docsRoot}/${slug}${ext}`;
+      // Sanitize the slug into safe, repo-relative POSIX segments: normalize
+      // separators, drop the markdown extension, and discard empty / `.` / `..`
+      // segments so a hostile or sloppy slug can neither traverse out of
+      // docsRoot nor leave a leading slash behind.
+      const slug = page.slug
+        .replace(/\\/g, "/")
+        .replace(/\.mdx?$/, "")
+        .split("/")
+        .filter((seg) => seg !== "" && seg !== "." && seg !== "..")
+        .join("/");
+      // docsRoot can normalize to "" (e.g. a "./" root); join without a leading
+      // slash so the result stays repo-relative rather than "/page.md".
+      return docsRoot ? `${docsRoot}/${slug}${ext}` : `${slug}${ext}`;
     },
   };
 }
