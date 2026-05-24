@@ -1,4 +1,28 @@
-// @middle/adapter-claude — implements AgentAdapter for the Claude CLI.
+/**
+ * @packageDocumentation
+ * @module @middle/adapter-claude
+ *
+ * The `AgentAdapter` implementation for the Claude Code CLI: launch command,
+ * boot-dialog driving, transcript reads, stop classification, and rate-limit
+ * detection.
+ *
+ * Public surface:
+ * - `claudeAdapter` — the `AgentAdapter` the dispatcher consumes
+ * - `detectBypassPrompt`, `detectTrustPrompt`, `detectNeedsLogin` — pane probes
+ *
+ * Where things live:
+ * - `index.ts` — the adapter object + boot-dialog driver (`enterAutoMode`)
+ * - `classify.ts` — stop classification + rate-limit detection
+ * - `hooks.ts` — hook installation
+ * - `prompt.ts` — the launch prompt text
+ * - `transcript.ts` — transcript path resolution + state reads
+ *
+ * Gotchas:
+ * - `enterAutoMode` answers Claude's folder-trust + bypass dialogs in sequence
+ *   before SessionStart fires; the option indices are load-bearing (see inline).
+ *
+ * claude-md: false
+ */
 import type { AgentAdapter } from "@middle/core";
 import { capturePane, sendKeys } from "@middle/core";
 import { classifyStop, detectRateLimit } from "./classify.ts";
@@ -106,6 +130,12 @@ async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   console.error(`[${tag}] enterAutoMode: boot-dialog window (${BOOT_DETECT_TIMEOUT_MS}ms) elapsed`);
 }
 
+/**
+ * The Claude Code CLI agent adapter. Implements {@link AgentAdapter} for the
+ * dispatcher: builds the interactive launch command (auto mode, no `-p`),
+ * dismisses the boot-time bypass/trust dialogs, reads the transcript for stop
+ * classification, and detects rate-limit and needs-login states from pane text.
+ */
 export const claudeAdapter: AgentAdapter = {
   name: "claude",
   readyEvent: "session.started",

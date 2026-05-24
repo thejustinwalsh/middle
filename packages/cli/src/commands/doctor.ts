@@ -4,6 +4,8 @@ import {
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
 import { BOOTSTRAP_SKILLS_DIR, CANONICAL_SKILLS_DIR, diffSkills } from "../bootstrap/skills-sync.ts";
+import { checkModuleIndex } from "../checks/module-index.ts";
+import { checkTsdocCoverage } from "../checks/tsdoc-coverage.ts";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type Check = { name: string; status: CheckStatus; detail: string };
@@ -95,6 +97,43 @@ function checkSkillsDrift(): Check {
 }
 
 /**
+ * Flag any `src/index.ts(x)` whose module-index frontmatter is malformed or
+ * whose `claude-md` flag disagrees with its nested `CLAUDE.md` presence. Like
+ * the skills-drift check this is a warning here — the hard gate is the
+ * `bun test` suite (CI) — so a doc-convention lapse is visible to an operator
+ * without blocking `mm dispatch`.
+ */
+function checkModuleIndexFrontmatter(): Check {
+  const { violations } = checkModuleIndex();
+  if (violations.length === 0) {
+    return { name: "docs", status: "pass", detail: "module-index frontmatter present + consistent" };
+  }
+  return {
+    name: "docs",
+    status: "warn",
+    detail: `${violations.length} module-index issue(s): ${violations[0]!.file} — ${violations[0]!.message}`,
+  };
+}
+
+/**
+ * Report public exports that lack a doc comment. **Advisory** (always a warn,
+ * never a fail) — the gated doc guarantee is `@packageDocumentation` presence
+ * (the module-index check); this is an honest backlog signal that shrinks as
+ * agents add TSDoc.
+ */
+function checkTsdocCoverageWarn(): Check {
+  const { totalExports, undocumented } = checkTsdocCoverage();
+  if (undocumented.length === 0) {
+    return { name: "tsdoc", status: "pass", detail: `${totalExports} public exports documented` };
+  }
+  return {
+    name: "tsdoc",
+    status: "warn",
+    detail: `${undocumented.length}/${totalExports} public exports lack a doc comment (advisory)`,
+  };
+}
+
+/**
  * `mm doctor` — run a system check for every external tool the dispatcher
  * shells out to: `bun`, `tmux` (≥ 3.5), `claude`, `git`, `gh`, and `gh` auth.
  * Exits 0 when no check fails; 1 if anything is missing or broken. Warnings
@@ -109,6 +148,8 @@ export async function runDoctor(): Promise<number> {
     await checkBinary("gh", ["gh", "--version"]),
     await checkGhAuth(),
     checkSkillsDrift(),
+    checkModuleIndexFrontmatter(),
+    checkTsdocCoverageWarn(),
   ];
 
   console.log("middle — system check\n");

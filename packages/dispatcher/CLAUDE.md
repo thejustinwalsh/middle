@@ -1,0 +1,19 @@
+# @middle/dispatcher — local conventions
+
+Local invariants for the long-running dispatcher — the non-obvious facts behind bunqueue's lifecycle and the watchdog. Root `CLAUDE.md` wins on any conflict.
+
+## bunqueue lifecycle & the lock-token race
+
+- bunqueue's worker can throw `Invalid or expired lock token for job …` from inside `handleJobFailure` when the engine shuts down concurrently with a failing job. It surfaces as a runtime-killing `unhandledRejection`. `dispatch.ts` installs `installBunqueueRaceSwallower` for the duration of a dispatch: it swallows **only** that exact message and re-raises everything else. Don't broaden the match — any other rejection must still crash the way Bun would.
+- The engine runs `embedded: true` (in-process) for now. Treat shutdown as racy: a job may still be settling when teardown begins, which is why the swallower is scoped to the dispatch and removed on exit.
+
+## Watchdog: staleness only, never override a live decision
+
+- The watchdog is the safety net *behind* the hook stream — it acts only on **staleness**, never overriding an in-progress hook decision. Hooks + the on-disk transcript are the fast path and the source of truth; the watchdog reconciles drift.
+- Cadence is fixed: `WATCHDOG_INTERVAL_MS = 30_000`, `POLLER_INTERVAL_MS = 60_000`. The reconcile passes (launch-timeout → tmux liveness → activity freshness → sentinel re-arm) run every tick over `launching`/`running` workflows.
+- **Freshness checks are skipped while `controlled_by = 'human'`.** A human-controlled session must never be idle-killed; preserve that guard in any freshness change.
+- The sentinel pass re-arms a `waitFor` signal when `<worktree>/.middle/blocked.json` exists with no armed signal — this handles the agent-wrote-the-sentinel-after-we-advanced race. Don't drop it; it's load-bearing for the blocked/resume handshake.
+
+## The runnable entry is `main.ts`, not `index.ts`
+
+`package.json` `main` is `src/main.ts` (the process `mm start` spawns). `src/index.ts` is the documented API front door (re-exports only). Adding a runtime side effect belongs in `main.ts`; `index.ts` must stay side-effect-free.
