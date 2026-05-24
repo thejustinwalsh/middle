@@ -624,23 +624,16 @@ export function createImplementationWorkflow(
   }
 
   /**
-   * Terminal stop: record rate-limit bookkeeping and pre-seed RESUME_EVENT so
-   * the single top-level `waitFor` falls through without parking. The final
-   * `workflows.state` is set in `resume-or-finalize` (alongside worktree
+   * Terminal stop: pre-seed RESUME_EVENT so the single top-level `waitFor`
+   * falls through without parking. Rate-limit bookkeeping and the final
+   * `workflows.state` are set in `resume-or-finalize` (alongside worktree
    * teardown), so all terminal handling lives in one place. `ctx.signals` is
    * the live `exec.signals` (passed by reference), which is exactly what the
    * downstream `waitFor` reads.
    */
   async function recordTerminal(ctx: StepContext<ImplementationInput>): Promise<void> {
-    const { outcome } = ctx.steps["launch-and-drive"] as DriveResult;
-    if (outcome.kind === "rate-limited") {
-      setRateLimited(deps.db, {
-        adapter: ctx.input.adapter,
-        resetAt: parseResetAt(outcome.resetAt),
-        source: "transcript",
-        detail: outcome.resetAt,
-      });
-    }
+    // Rate-limit bookkeeping lives solely in `finalize` (the authoritative terminal
+    // handler), which always runs after this pre-seed falls the `waitFor` through.
     (ctx.signals as Record<string, unknown>)[RESUME_EVENT] = { terminal: true };
   }
 
@@ -733,16 +726,18 @@ export function createImplementationWorkflow(
       }
     }
 
-    // The drive that just parked ran a working adapter; revert any stale
-    // RATE_LIMITED before handing off.
-    markAvailableOnSuccess(deps.db, ctx.input.adapter);
-    // Hand control to a fresh continuation that reuses this worktree.
+    // Hand control to a fresh continuation that reuses this worktree. Enqueue
+    // FIRST: if it throws, neither the rate-limit state nor the row state has
+    // changed, so the poller retries cleanly on its next pass.
     await deps.enqueueContinuation({
       repo: ctx.input.repo,
       epicNumber: ctx.input.epicNumber,
       adapter: ctx.input.adapter,
       resume: { reason: payload.reason, round: nextRound, worktree: handle, payload },
     });
+    // The drive that just parked ran a working adapter; revert any stale
+    // RATE_LIMITED now that the hand-off is committed.
+    markAvailableOnSuccess(deps.db, ctx.input.adapter);
     // This round handed off — terminal in the bunqueue sense. The worktree is
     // NOT torn down; the continuation reuses it.
     updateWorkflow(deps.db, ctx.executionId, { state: "completed" });

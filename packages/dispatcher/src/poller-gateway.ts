@@ -54,6 +54,9 @@ export const ghPollGateway: GitHubPollGateway = {
 
   async findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null> {
     // The Epic's one PR closes the Epic — find the open PR referencing it.
+    // The server-side search is a prefix match, so `Closes #3` also surfaces
+    // `Closes #30`/`#300`; re-confirm the exact closing reference client-side on
+    // the returned bodies, anchoring the number with a non-digit boundary.
     const listOut = await gh([
       "pr",
       "list",
@@ -64,10 +67,11 @@ export const ghPollGateway: GitHubPollGateway = {
       "--search",
       `in:body Closes #${epicNumber}`,
       "--json",
-      "number",
+      "number,body",
     ]);
-    const prs = JSON.parse(listOut) as Array<{ number: number }>;
-    const prNumber = prs[0]?.number;
+    const closesRe = new RegExp(`\\bcloses\\s+#${epicNumber}(?!\\d)`, "i");
+    const prs = JSON.parse(listOut) as Array<{ number: number; body: string | null }>;
+    const prNumber = prs.find((pr) => closesRe.test(pr.body ?? ""))?.number;
     if (prNumber === undefined) return null;
 
     const viewOut = await gh([
