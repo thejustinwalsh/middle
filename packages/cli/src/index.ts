@@ -1,5 +1,27 @@
 #!/usr/bin/env bun
-// @middle/cli — the `mm` binary. commander wiring over the command functions.
+/**
+ * @packageDocumentation
+ * @module @middle/cli
+ *
+ * The `mm` binary — commander wiring over the command functions in `commands/`.
+ * Each subcommand delegates to a `run*` function and exits with its return code.
+ *
+ * Public surface:
+ * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
+ *   `dispatch`, `version`
+ *
+ * Where things live:
+ * - `commands/` — one `run*` function per subcommand
+ * - `bootstrap/` — `mm init`/`uninit` internals (skill/hook/config stamping)
+ * - `bootstrap-assets/` — the files `mm init` stamps into a target repo
+ * - `checks/` — repo-convention checks surfaced by `mm doctor`
+ * - `paths.ts` — shared path resolution
+ *
+ * Gotchas:
+ * - This file is the `mm` bin (shebang + mode 100755); keep it executable.
+ *
+ * claude-md: false
+ */
 import { Command } from "commander";
 import { runDispatch } from "./commands/dispatch.ts";
 import { runDoctor } from "./commands/doctor.ts";

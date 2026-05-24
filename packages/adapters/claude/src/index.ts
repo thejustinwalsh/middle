@@ -1,4 +1,28 @@
-// @middle/adapter-claude — implements AgentAdapter for the Claude CLI.
+/**
+ * @packageDocumentation
+ * @module @middle/adapter-claude
+ *
+ * The `AgentAdapter` implementation for the Claude Code CLI: launch command,
+ * boot-dialog driving, transcript reads, stop classification, and rate-limit
+ * detection.
+ *
+ * Public surface:
+ * - `claudeAdapter` — the `AgentAdapter` the dispatcher consumes
+ * - `detectBypassPrompt`, `detectTrustPrompt`, `detectNeedsLogin` — pane probes
+ *
+ * Where things live:
+ * - `index.ts` — the adapter object + boot-dialog driver (`enterAutoMode`)
+ * - `classify.ts` — stop classification + rate-limit detection
+ * - `hooks.ts` — hook installation
+ * - `prompt.ts` — the launch prompt text
+ * - `transcript.ts` — transcript path resolution + state reads
+ *
+ * Gotchas:
+ * - `enterAutoMode` answers Claude's folder-trust + bypass dialogs in sequence
+ *   before SessionStart fires; the option indices are load-bearing (see inline).
+ *
+ * claude-md: false
+ */
 import type { AgentAdapter } from "@middle/core";
 import { capturePane, sendKeys } from "@middle/core";
 import { classifyStop, detectRateLimit } from "./classify.ts";
