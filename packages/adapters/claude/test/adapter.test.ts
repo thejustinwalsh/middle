@@ -85,6 +85,14 @@ describe("buildPromptText", () => {
     expect(text).toContain("@.middle/answer.md");
     expect(text.toLowerCase()).toContain("answer");
   });
+
+  test("recommender force-invokes the recommender skill with the @-referenced context", () => {
+    const text = claudeAdapter.buildPromptText({
+      promptFile: ".middle/prompt.md",
+      kind: "recommender",
+    });
+    expect(text).toBe("/recommending-github-issues @.middle/prompt.md");
+  });
 });
 
 describe("resolveTranscriptPath", () => {
