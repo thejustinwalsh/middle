@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter, StopClassification } from "@middle/core";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
+import { type PlanCommentReader, verifyPlanComment } from "../gates/plan-comment.ts";
 import type { SessionGate } from "../hook-server.ts";
 import type { ResumeSignalPayload } from "../poller.ts";
 import { markAvailableOnSuccess, parseResetAt, setRateLimited } from "../rate-limits.ts";
@@ -129,11 +130,32 @@ export type ImplementationDeps = {
    * (a never-satisfied loop must not run forever). Defaults to 5.
    */
   reviewRoundCap?: number;
+  /**
+   * Positive done-signal (skill enforcement #80): the only thing that turns a
+   * `bare-stop` into completion is a ready, non-draft Epic PR. When wired, a
+   * `bare-stop` without that signal nudges the agent (bounded) instead of
+   * finalizing; without it, the legacy "bare-stop → completed" mapping holds.
+   */
+  epicPrReadiness?: (repo: string, epicNumber: number) => Promise<{ exists: boolean; isDraft: boolean }>;
+  /** Max "continue" nudges on a bare-stop before parking in waiting-human. */
+  maxNudges?: number;
+  /** Per-nudge Stop-await timeout. */
+  nudgeStopTimeoutMs?: number;
+  /**
+   * Plan-comment guard (skill enforcement #1): when wired, a `done` dispatch only
+   * truly completes if a comment on the Epic carries the plan body. Optional so
+   * gate-free unit tests keep their unguarded completion behavior.
+   */
+  planCommentReader?: PlanCommentReader;
+  /** The agent's gh account — restricts the plan-comment match to its comments. */
+  agentLogin?: string;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_REVIEW_ROUND_CAP = 5;
+const DEFAULT_MAX_NUDGES = 3;
+const DEFAULT_NUDGE_STOP_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Session names are deterministic so compensations can recompute them, and
@@ -263,19 +285,37 @@ ${operatingRules}`,
   );
 }
 
+/**
+ * The drive loop's resolved outcome: a `StopClassification` plus one
+ * dispatcher-only terminal `nudge-exhausted` (#80) — a `bare-stop` that never
+ * produced a positive done-signal within the nudge budget. Kept out of the core
+ * `StopClassification` union: a single Stop is never "nudge-exhausted"; only the
+ * loop is.
+ */
+type DriveOutcome = StopClassification | { kind: "nudge-exhausted" };
+
 /** A park-worthy stop ends the session and waits for a human/reviewer signal. */
-function isParkKind(kind: StopClassification["kind"]): boolean {
+function isParkKind(kind: DriveOutcome["kind"]): boolean {
   return kind === "asked-question" || kind === "done";
 }
 
-/** The resume reason a park-worthy classification maps to. */
-function reasonFor(kind: StopClassification["kind"]): ResumeReason {
+/** The resume reason a park-worthy outcome maps to. */
+function reasonFor(kind: DriveOutcome["kind"]): ResumeReason {
   return kind === "done" ? "review-changes" : "answered-question";
 }
 
-/** The terminal `workflows.state` a settled classification resolves to. */
-function finalStateFor(classification: StopClassification): WorkflowState {
-  switch (classification.kind) {
+/** Read the workstream's committed plan from the worktree (for the plan-comment guard). */
+function readPlanBody(worktreePath: string, epicNumber: number): string {
+  try {
+    return readFileSync(join(worktreePath, "planning", "issues", String(epicNumber), "plan.md"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** The terminal `workflows.state` a settled outcome resolves to. */
+function finalStateFor(outcome: DriveOutcome): WorkflowState {
+  switch (outcome.kind) {
     case "done":
       return "completed";
     case "failed":
@@ -283,19 +323,20 @@ function finalStateFor(classification: StopClassification): WorkflowState {
     case "rate-limited":
       return "rate-limited";
     case "asked-question":
-      // Defensive only: `finalize` is reached for terminal stops and the
-      // synthesized review-resolved `done`. Park kinds (`asked-question`,
-      // `done`) route to `parkForResume`, not here — a resume re-enqueues a
-      // continuation rather than finalizing in place.
+      // Defensive only: park kinds (`asked-question`, `done`) route to
+      // `parkForResume`, not here — a resume re-enqueues a continuation.
+      return "waiting-human";
+    case "nudge-exhausted":
+      // #80: bounded nudges produced no positive done-signal — park for a human.
       return "waiting-human";
     case "bare-stop":
-      // the minimal spine has no nudge loop — a clean stop is terminal here
+      // legacy: no positive-done-signal seam wired, so a clean stop completes.
       return "completed";
   }
 }
 
 type PrepareResult = { handle: WorktreeHandle };
-type DriveResult = { classification: StopClassification; sessionName: string };
+type DriveResult = { outcome: DriveOutcome; sessionName: string };
 
 /**
  * The `implementation` workflow with the Phase 5 park → external-signal →
@@ -327,6 +368,41 @@ export function createImplementationWorkflow(
   const launchTimeout = deps.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
   const stopTimeout = deps.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const reviewRoundCap = deps.reviewRoundCap ?? DEFAULT_REVIEW_ROUND_CAP;
+  const maxNudges = deps.maxNudges ?? DEFAULT_MAX_NUDGES;
+  const nudgeStopTimeout = deps.nudgeStopTimeoutMs ?? DEFAULT_NUDGE_STOP_TIMEOUT_MS;
+
+  /**
+   * Resolve a `bare-stop` into a terminal outcome (#80). Completion requires a
+   * ready, non-draft Epic PR; without it, send a same-session "continue" nudge
+   * and re-await the Stop, up to `maxNudges`. A nudge that yields a definitive
+   * classification short-circuits; exhausting the budget parks for a human.
+   */
+  async function resolveBareStop(args: {
+    tag: string;
+    sessionName: string;
+    repo: string;
+    epicNumber: number;
+    classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
+  }): Promise<DriveOutcome> {
+    const readiness = deps.epicPrReadiness!;
+    for (let nudges = 0; ; nudges += 1) {
+      const pr = await readiness(args.repo, args.epicNumber);
+      if (pr.exists && !pr.isDraft) {
+        console.error(`${args.tag} positive done-signal: ready Epic PR — completing`);
+        return { kind: "done" };
+      }
+      if (nudges >= maxNudges) {
+        console.error(`${args.tag} no done-signal after ${maxNudges} nudges — parking for a human`);
+        return { kind: "nudge-exhausted" };
+      }
+      console.error(`${args.tag} bare-stop, no ready PR — nudge ${nudges + 1}/${maxNudges}`);
+      await deps.tmux.sendText(args.sessionName, "continue");
+      await deps.tmux.sendEnter(args.sessionName);
+      const stopPayload = await deps.sessionGate.awaitStop(args.sessionName, nudgeStopTimeout);
+      const classification = args.classifyAt(stopPayload);
+      if (classification.kind !== "bare-stop") return classification;
+    }
+  }
 
   async function prepareWorktree(ctx: StepContext<ImplementationInput>): Promise<PrepareResult> {
     createWorkflowRecord(deps.db, {
@@ -452,17 +528,48 @@ export function createImplementationWorkflow(
       // observe: the Stop boundary is the signal — not a process exit
       console.error(`${tag} waiting for Stop hook (timeout ${stopTimeout}ms)`);
       const stopPayload = await deps.sessionGate.awaitStop(sessionName, stopTimeout);
-      const sentinelPresent = existsSync(join(handle.path, ".middle", "blocked.json"));
-      const classification = adapter.classifyStop({
-        payload: stopPayload,
-        transcriptPath,
-        sentinelPresent,
-        worktree: handle.path,
-      });
+      const classifyAt = (payload: typeof stopPayload): StopClassification =>
+        adapter.classifyStop({
+          payload,
+          transcriptPath,
+          sentinelPresent: existsSync(join(handle.path, ".middle", "blocked.json")),
+          worktree: handle.path,
+        });
+      const classification = classifyAt(stopPayload);
       console.error(`${tag} Stop received — classification=${classification.kind}`);
+      // Positive done-signal (#80): a bare-stop is NOT completion on its own —
+      // only a ready, non-draft Epic PR is. Otherwise nudge (session still
+      // alive) up to maxNudges, then park. No readiness seam → legacy mapping.
+      let outcome: DriveOutcome = classification;
+      if (classification.kind === "bare-stop" && deps.epicPrReadiness) {
+        outcome = await resolveBareStop({
+          tag,
+          sessionName,
+          repo: ctx.input.repo,
+          epicNumber: ctx.input.epicNumber,
+          classifyAt,
+        });
+      }
+      // Plan-comment guard (skill enforcement #1): a `done` only truly completes
+      // if the agent posted its plan as an Epic comment. Demote an unposted
+      // `done` to `failed` here so it never enters the review-resolve park.
+      if (outcome.kind === "done" && deps.planCommentReader) {
+        const planBody = readPlanBody(handle.path, ctx.input.epicNumber);
+        const guard = await verifyPlanComment({
+          gh: deps.planCommentReader,
+          repo: ctx.input.repo,
+          epicNumber: ctx.input.epicNumber,
+          planBody,
+          agentLogin: deps.agentLogin,
+        });
+        if (!guard.ok) {
+          console.error(`${tag} plan-comment guard: ${guard.reason}`);
+          outcome = { kind: "failed", reason: guard.reason };
+        }
+      }
       // END SESSION — the turn is over; free the slot before parking/finalizing.
       await deps.tmux.killSession(sessionName);
-      return { classification, sessionName };
+      return { outcome, sessionName };
     } catch (error) {
       // never leak a tmux session on the failure path; the compensation rolls
       // back the worktree
@@ -491,8 +598,8 @@ export function createImplementationWorkflow(
    * then parks the execution because RESUME_EVENT is unset.
    */
   async function parkForResume(ctx: StepContext<ImplementationInput>): Promise<void> {
-    const { classification } = ctx.steps["launch-and-drive"] as DriveResult;
-    const reason = reasonFor(classification.kind);
+    const { outcome } = ctx.steps["launch-and-drive"] as DriveResult;
+    const reason = reasonFor(outcome.kind);
     armWaitForSignal(
       deps.db,
       signalNameFor(ctx.input.epicNumber, reason),
@@ -500,13 +607,13 @@ export function createImplementationWorkflow(
       JSON.stringify({ reason }),
     );
     updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
-    if (classification.kind === "asked-question" && deps.postQuestion) {
+    if (outcome.kind === "asked-question" && deps.postQuestion) {
       try {
         await deps.postQuestion({
           repo: ctx.input.repo,
           epicNumber: ctx.input.epicNumber,
-          question: classification.sentinel?.question ?? "(question text unavailable)",
-          context: classification.sentinel?.context,
+          question: outcome.sentinel?.question ?? "(question text unavailable)",
+          context: outcome.sentinel?.context,
         });
       } catch (error) {
         // Visibility is best-effort — the wait is already armed and durable, so
@@ -525,13 +632,13 @@ export function createImplementationWorkflow(
    * downstream `waitFor` reads.
    */
   async function recordTerminal(ctx: StepContext<ImplementationInput>): Promise<void> {
-    const { classification } = ctx.steps["launch-and-drive"] as DriveResult;
-    if (classification.kind === "rate-limited") {
+    const { outcome } = ctx.steps["launch-and-drive"] as DriveResult;
+    if (outcome.kind === "rate-limited") {
       setRateLimited(deps.db, {
         adapter: ctx.input.adapter,
-        resetAt: parseResetAt(classification.resetAt),
+        resetAt: parseResetAt(outcome.resetAt),
         source: "transcript",
-        detail: classification.resetAt,
+        detail: outcome.resetAt,
       });
     }
     (ctx.signals as Record<string, unknown>)[RESUME_EVENT] = { terminal: true };
@@ -546,8 +653,9 @@ export function createImplementationWorkflow(
   async function finalize(
     ctx: StepContext<ImplementationInput>,
     handle: WorktreeHandle,
-    settled: StopClassification,
+    settled: DriveOutcome,
   ): Promise<void> {
+    const finalState = finalStateFor(settled);
     await deps.worktree.destroyWorktree(handle);
     if (settled.kind === "rate-limited") {
       setRateLimited(deps.db, {
@@ -556,12 +664,12 @@ export function createImplementationWorkflow(
         source: "transcript",
         detail: settled.resetAt,
       });
-    } else if (finalStateFor(settled) === "completed") {
+    } else if (finalState === "completed") {
       // Probe-via-real-work: a completed dispatch proves the adapter is serving
       // again, so a previously RATE_LIMITED adapter reverts to AVAILABLE.
       markAvailableOnSuccess(deps.db, ctx.input.adapter);
     }
-    updateWorkflow(deps.db, ctx.executionId, { state: finalStateFor(settled) });
+    updateWorkflow(deps.db, ctx.executionId, { state: finalState });
   }
 
   /**
@@ -590,7 +698,7 @@ export function createImplementationWorkflow(
 
     // Terminal stop: the branch pre-seeded the signal; this drive is final.
     if (signal && (signal as { terminal?: boolean }).terminal) {
-      await finalize(ctx, handle, initial.classification);
+      await finalize(ctx, handle, initial.outcome);
       return;
     }
 
@@ -646,10 +754,12 @@ export function createImplementationWorkflow(
       // bunqueue's `retry` is `maxAttempts`; `1` means one attempt, no retries.
       .step("launch-and-drive", launchAndDrive, {
         retry: 1,
-        timeout: launchTimeout + stopTimeout + 60_000,
+        // Backstop above the internal waits, widened for the bare-stop nudge loop
+        // (up to maxNudges further Stop-awaits) so it can't fire mid-nudge.
+        timeout: launchTimeout + stopTimeout + maxNudges * nudgeStopTimeout + 60_000,
       })
       .branch((ctx) =>
-        isParkKind((ctx.steps["launch-and-drive"] as DriveResult).classification.kind)
+        isParkKind((ctx.steps["launch-and-drive"] as DriveResult).outcome.kind)
           ? "park"
           : "terminal",
       )

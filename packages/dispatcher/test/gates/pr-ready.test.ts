@@ -1,0 +1,113 @@
+import { describe, expect, test } from "bun:test";
+import type { CommentAuthorResolver } from "../../src/gates/pr-ready.ts";
+import {
+  commandIsPrReady,
+  evaluatePrReady,
+  extractCommand,
+  parseAcceptanceCriteria,
+} from "../../src/gates/pr-ready.ts";
+
+/** Never consulted — used when no criterion carries a deferral. */
+const noResolve: CommentAuthorResolver = async () => {
+  throw new Error("resolver should not be called");
+};
+
+const BODY = `## Summary
+Closes #27
+
+## Acceptance criteria
+- [ ] All sub-issues closed (#28, #29, #30, #80)
+- [x] Plan-comment guard catches a skipped plan (https://github.com/o/r/pull/86/files#diff-abc)
+- [ ] Deferred one (deferred: https://github.com/o/r/issues/27#issuecomment-999)
+
+## Verification
+some prose, not a criterion
+`;
+
+describe("parseAcceptanceCriteria", () => {
+  test("extracts the list items under the acceptance-criteria heading only", () => {
+    expect(parseAcceptanceCriteria(BODY)).toEqual([
+      "All sub-issues closed (#28, #29, #30, #80)",
+      "Plan-comment guard catches a skipped plan (https://github.com/o/r/pull/86/files#diff-abc)",
+      "Deferred one (deferred: https://github.com/o/r/issues/27#issuecomment-999)",
+    ]);
+  });
+
+  test("returns [] when there is no acceptance-criteria section", () => {
+    expect(parseAcceptanceCriteria("## Summary\nno criteria here\n")).toEqual([]);
+  });
+});
+
+describe("commandIsPrReady", () => {
+  test("matches a bare and an argumented `gh pr ready`", () => {
+    expect(commandIsPrReady("gh pr ready")).toBe(true);
+    expect(commandIsPrReady("gh pr ready 86")).toBe(true);
+  });
+  test("does not match other gh commands", () => {
+    expect(commandIsPrReady("gh pr view 86")).toBe(false);
+    expect(commandIsPrReady("gh pr create --draft")).toBe(false);
+  });
+});
+
+describe("extractCommand", () => {
+  test("reads tool_input.command from a PreToolUse payload", () => {
+    expect(extractCommand({ tool_input: { command: "gh pr ready 86" } })).toBe("gh pr ready 86");
+  });
+  test("returns null when there is no command", () => {
+    expect(extractCommand({ tool_input: {} })).toBeNull();
+    expect(extractCommand({})).toBeNull();
+  });
+});
+
+describe("evaluatePrReady", () => {
+  test("allows when every criterion carries an evidence link or a non-bot deferral", async () => {
+    const resolve: CommentAuthorResolver = async () => ({ login: "thejustinwalsh", isBot: false });
+    const result = await evaluatePrReady({ body: BODY, resolveCommentAuthor: resolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
+  test("denies and names the criterion that has no evidence", async () => {
+    const body = `## Acceptance criteria
+- [ ] Has a link https://example.com/x
+- [ ] Bare criterion with no evidence at all
+`;
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: noResolve });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") {
+      expect(result.reason).toContain("Bare criterion with no evidence at all");
+      expect(result.reason).not.toContain("Has a link");
+    }
+  });
+
+  test("a `#N` reference counts as an evidence link", async () => {
+    const body = "## Acceptance criteria\n- [ ] All sub-issues closed: #28 #29\n";
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: noResolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
+  test("a stakeholder-deferred criterion (non-bot comment) is allowed", async () => {
+    const body =
+      "## Acceptance criteria\n- [ ] Punted (deferred: https://github.com/o/r/issues/27#issuecomment-1)\n";
+    const resolve: CommentAuthorResolver = async () => ({ login: "maintainer", isBot: false });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
+  test("a deferral pointing at a bot comment is denied", async () => {
+    const body =
+      "## Acceptance criteria\n- [ ] Punted (deferred: https://github.com/o/r/issues/27#issuecomment-1)\n";
+    const resolve: CommentAuthorResolver = async () => ({ login: "coderabbitai[bot]", isBot: true });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") expect(result.reason).toContain("Punted");
+  });
+
+  test("denies when there is no acceptance-criteria section (no bypass by deletion)", async () => {
+    const result = await evaluatePrReady({
+      body: "## Summary\nnothing to gate\n",
+      resolveCommentAuthor: noResolve,
+    });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") expect(result.reason).toContain("no acceptance criteria");
+  });
+});

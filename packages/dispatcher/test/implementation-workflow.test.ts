@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
+import type { IssueComment, PlanCommentReader } from "../src/gates/plan-comment.ts";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
@@ -62,18 +63,22 @@ afterEach(async () => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/** A tmux stub that records every session it is asked to create and kill. */
+/** A tmux stub that records every session it creates/kills and all sent text. */
 function makeTmuxStub() {
   const created: string[] = [];
   const killed: string[] = [];
+  const sent: string[] = [];
   return {
     created,
     killed,
+    sent,
     ops: {
       async newSession(opts: { sessionName: string }) {
         created.push(opts.sessionName);
       },
-      async sendText() {},
+      async sendText(_sessionName: string, text: string) {
+        sent.push(text);
+      },
       async sendEnter() {},
       async killSession(sessionName: string) {
         killed.push(sessionName);
@@ -226,6 +231,21 @@ async function awaitParked(id: string, timeoutMs = 5000): Promise<void> {
   );
 }
 
+/**
+ * Wait for the `workflows` row to reach `state`, regardless of bunqueue exec
+ * state. Unlike `awaitParked` (which requires a live `waiting` execution), this
+ * also catches `waiting-human` reached via the terminal path — e.g.
+ * `nudge-exhausted`, which finalizes the execution but parks the row.
+ */
+async function awaitRow(id: string, state: string, timeoutMs = 6000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (getWorkflow(db, id)?.state === state) return;
+    await Bun.sleep(15);
+  }
+  throw new Error(`workflow ${id} did not reach '${state}' (was '${getWorkflow(db, id)?.state}')`);
+}
+
 /** Run the engine until the workflow row reaches a terminal-ish state. */
 async function awaitSettled(id: string, timeoutMs = 5000): Promise<string> {
   const terminal = new Set(["completed", "failed", "rate-limited", "compensated", "cancelled"]);
@@ -236,6 +256,13 @@ async function awaitSettled(id: string, timeoutMs = 5000): Promise<string> {
     await Bun.sleep(15);
   }
   throw new Error(`workflow ${id} did not settle within ${timeoutMs}ms (was '${getWorkflow(db, id)?.state}')`);
+}
+
+/** Start a dispatch and wait for it to settle; returns the workflow id. */
+async function runToEnd(deps: ImplementationDeps): Promise<string> {
+  const id = await start(deps);
+  await awaitSettled(id);
+  return id;
 }
 
 describe("implementation workflow — terminal stops fall through the waitFor", () => {
@@ -460,6 +487,143 @@ describe("implementation workflow — review-round cap", () => {
     expect(continuationIds).toHaveLength(2); // id1, id2 — no third round
     expect(getWaitForSignal(db, id2)).toBeNull(); // consumed, not re-armed
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
+  });
+});
+
+/** A worktree stub that materializes a temp dir and (optionally) writes a plan.md. */
+function makeWorktreeStub(planBody: string | null) {
+  const handles: { path: string }[] = [];
+  return {
+    handles,
+    ops: {
+      async createWorktree(opts: { repoPath: string; repo: string; issueNumber?: number }) {
+        const path = realpathSync(mkdtempSync(join(tmpdir(), "middle-wt-stub-")));
+        if (planBody !== null) {
+          const dir = join(path, "planning", "issues", String(opts.issueNumber));
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, "plan.md"), planBody);
+        }
+        const handle = {
+          repoPath: opts.repoPath,
+          path,
+          branch: "stub-branch",
+          repo: opts.repo,
+          unit: `issue-${opts.issueNumber}`,
+        };
+        handles.push(handle);
+        return handle;
+      },
+      async destroyWorktree(handle: { path: string }) {
+        rmSync(handle.path, { recursive: true, force: true });
+      },
+    },
+  };
+}
+
+/** A PlanCommentReader stub returning fixed comments on the Epic. */
+function makePlanReader(comments: IssueComment[]): PlanCommentReader {
+  return { async listIssueComments() { return comments; } };
+}
+
+describe("implementation workflow — plan-comment completion gate", () => {
+  const PLAN = "# Plan\n\nphases: do the thing\n";
+
+  test("a 'done' drive with no plan comment ends 'failed' (guard fires)", async () => {
+    const tmux = makeTmuxStub();
+    const wt = makeWorktreeStub(PLAN);
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: wt.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: "no plan here", url: "u" }]),
+      agentLogin: "agentbot",
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a 'done' with a matching plan comment passes the guard and parks for review", async () => {
+    const tmux = makeTmuxStub();
+    const wt = makeWorktreeStub(PLAN);
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: wt.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      planCommentReader: makePlanReader([{ authorLogin: "agentbot", body: PLAN, url: "u" }]),
+      agentLogin: "agentbot",
+    });
+    const id = await start(deps);
+
+    // Guard passed (not demoted to failed) → `done` parks on review-resolved.
+    await awaitRow(id, "waiting-human");
+    expectNoSessionLeak(tmux);
+  });
+
+  test("without a planCommentReader wired, a 'done' parks unguarded (back-compat)", async () => {
+    const deps = makeDeps({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
+    const id = await start(deps);
+    await awaitRow(id, "waiting-human");
+  });
+});
+
+describe("implementation workflow — positive done-signal (bare-stop nudge loop)", () => {
+  test("a bare-stop with no ready Epic PR nudges, then parks in waiting-human", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+      epicPrReadiness: async () => ({ exists: false, isDraft: false }),
+      maxNudges: 2,
+    });
+    const id = await start(deps);
+
+    // nudge-exhausted parks the row in waiting-human (via the terminal path).
+    await awaitRow(id, "waiting-human");
+    // nudged exactly maxNudges times before giving up
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(2);
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a ready, non-draft Epic PR is the positive done-signal — done (no nudge), parks for review", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+      epicPrReadiness: async () => ({ exists: true, isDraft: false }),
+      maxNudges: 2,
+    });
+    const id = await start(deps);
+
+    await awaitRow(id, "waiting-human");
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(0);
+  });
+
+  test("a draft Epic PR is not a positive done-signal — it still nudges", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+      epicPrReadiness: async () => ({ exists: true, isDraft: true }),
+      maxNudges: 1,
+    });
+    const id = await start(deps);
+
+    await awaitRow(id, "waiting-human");
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(1);
+  });
+
+  test("without an epicPrReadiness seam, a bare-stop keeps the legacy completion (back-compat)", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+    });
+    const id = await runToEnd(deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expect(tmux.sent.filter((t) => t === "continue").length).toBe(0);
   });
 });
 
