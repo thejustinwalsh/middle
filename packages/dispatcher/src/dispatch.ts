@@ -3,15 +3,11 @@ import { dirname } from "node:path";
 import type { AgentAdapter } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import type { Execution } from "bunqueue/workflow";
+import { buildImplementationDeps } from "./build-deps.ts";
 import { openAndMigrate } from "./db.ts";
-import { makePrReadyGateHandler } from "./gates/pr-ready-handler.ts";
-import { ghGitHub, resolveAgentLogin } from "./github.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
-import { findActiveWorkflowBySession, getWorkflow } from "./workflow-record.ts";
-import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
 import { createImplementationWorkflow } from "./workflows/implementation.ts";
-import { createWorktree, destroyWorktree } from "./worktree.ts";
 
 export type DispatchEpicOptions = {
   /** Local checkout path of the repo to dispatch. */
@@ -115,26 +111,38 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
     const db = openAndMigrate(opts.dbPath);
     cleanups.push(() => db.close());
 
-    // Wire the SQLite-backed store so hooks authenticate against the per-session
-    // token and flow into the events table + heartbeats. The PR-ready gate
-    // resolves a session to its Epic via the workflow row, then reads the Epic
-    // PR through `gh`.
-    const prReadyGate = makePrReadyGateHandler({
-      resolveSession: (sessionName) => {
-        const active = findActiveWorkflowBySession(db, sessionName);
-        if (!active) return null;
-        const workflow = getWorkflow(db, active.id);
-        if (!workflow || workflow.epicNumber === null) return null;
-        return { repo: workflow.repo, epicNumber: workflow.epicNumber };
-      },
-      findEpicPr: (repo, epicNumber) => ghGitHub.findEpicPr(repo, epicNumber),
-      resolveCommentAuthor: (url) => ghGitHub.getCommentAuthor(opts.repoSlug, url),
-    });
-    const hookServer = new HookServer(new DbHookStore(db), prReadyGate);
-    hookServer.start(opts.dispatcherPort);
-    cleanups.push(() => hookServer.stop());
+    // The engine is referenced by `enqueueContinuation` (runtime-only) but
+    // constructed AFTER the factory: `bindServer`'s `hookServer.start` is the one
+    // throwable setup step (EADDRINUSE), and it must throw BEFORE the engine
+    // exists so a bind failure can't leak live bunqueue workers. The `!` is safe
+    // because the closure runs only at workflow runtime, long after assignment.
+    let engine!: Engine;
 
-    const engine = new Engine({ embedded: true });
+    // Wire the deps + PR-ready gate via the shared factory. `bindServer` is the
+    // HookServer-dependent slice: it stands up the SQLite-backed receiver from
+    // the gate the factory built (so hooks authenticate against the per-session
+    // token and flow into the events table), then hands back the live session
+    // gate + its localhost dispatcherUrl (ephemeral port resolved post-start).
+    const { deps } = await buildImplementationDeps({
+      db,
+      repoSlug: opts.repoSlug,
+      getAdapter: opts.getAdapter,
+      resolveRepoPath: () => opts.repoPath,
+      worktreeRoot: opts.worktreeRoot,
+      // Resume hand-off: a continuation round re-enters the same workflow on
+      // this engine (the daemon hosts parked executions on a long-lived engine).
+      enqueueContinuation: async (input) => {
+        await engine.start("implementation", input);
+      },
+      bindServer: (prReadyGate) => {
+        const hookServer = new HookServer(new DbHookStore(db), prReadyGate);
+        hookServer.start(opts.dispatcherPort);
+        cleanups.push(() => hookServer.stop());
+        return { sessionGate: hookServer, dispatcherUrl: `http://127.0.0.1:${hookServer.port}` };
+      },
+    });
+
+    engine = new Engine({ embedded: true });
     // Push the engine drain onto the cleanups stack LAST, so it pops FIRST —
     // ahead of hookServer.stop / db.close. That ordering matters two ways:
     //  - on the failure path (engine.register/start/waitForSettle throws), the
@@ -154,35 +162,7 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
       ]);
     });
 
-    // The agent posts to GitHub as the dispatcher's gh identity; resolve it once
-    // so the plan-comment guard can restrict its match to the agent's comments.
-    const agentLogin = await resolveAgentLogin();
-
-    engine.register(
-      createImplementationWorkflow({
-        db,
-        getAdapter: opts.getAdapter,
-        sessionGate: hookServer,
-        tmux: { newSession, sendText, sendEnter, killSession },
-        worktree: { createWorktree, destroyWorktree },
-        resolveRepoPath: () => opts.repoPath,
-        worktreeRoot: opts.worktreeRoot,
-        dispatcherUrl: `http://127.0.0.1:${hookServer.port}`,
-        // Resume hand-off: a continuation round re-enters the same workflow on
-        // this engine (Phase 8 hosts parked executions on a long-lived engine).
-        enqueueContinuation: async (input) => {
-          await engine.start("implementation", input);
-        },
-        planCommentReader: ghGitHub,
-        agentLogin,
-        // Positive done-signal (#80): a bare-stop only completes if the Epic
-        // already has a ready, non-draft PR.
-        epicPrReadiness: async (repo, epicNumber) => {
-          const pr = await ghGitHub.findEpicPr(repo, epicNumber);
-          return { exists: pr !== null, isDraft: pr?.isDraft ?? false };
-        },
-      }),
-    );
+    engine.register(createImplementationWorkflow(deps));
 
     const handle = await engine.start("implementation", {
       repo: opts.repoSlug,
