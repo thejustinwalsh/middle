@@ -546,6 +546,14 @@ Guardrails:
 - **Stay in the blast radius.** Pre-existing issues elsewhere, unrelated cleanup, new features → follow-up issues, never folded into the review fix.
 - **Say so in the thread.** Reply naming both the literal fix and the adjacent hardening ("fixed X as flagged; also tightened Y/Z in the same matcher — same class"), so the widened scope is explicit and reviewable.
 
+**Per review round — batch, self-review, then push once.** Treat each review pass (every comment the reviewer posted at once) as a single unit, never comment-by-comment:
+1. **Batch** every finding in the pass. Don't fix-and-push one at a time — that's exactly what turns one class of issue into N rounds.
+2. **Resolve** them together by the rule above (resolve the class, a test per fix).
+3. **Run the internal review loop** (Phase 10b) over the batched diff — the clean-eyes pass, looped until it surfaces nothing new — so you also catch the *adjacent* edges this round's comments imply before the reviewer does.
+4. **Push once**, then wait for the verdict: green → done; another round → repeat from step 1.
+
+This is what makes the round cap survivable: each round closes a whole *class* and pre-empts its neighbors, so you converge in a round or two instead of bleeding one edge per round into a lockup. The internal loop (10b) is not just a pre-post gate — it runs on **every** round, on the batched changes, before each push.
+
 Example of the trap: a comment "this heading match is too loose" is a *symptom* — the whole section matcher is suspect. Fixing only the one regex invites the reviewer to find the next adjacent edge (an alternate heading level, a lookalike heading, a fenced example) one round at a time. One pass asking "every way identifying this section can go wrong" resolves them together.
 
 **Self-review before you push — be your own CodeRabbit.** Don't wait for the reviewer to find edge N+1. Before pushing *any* non-trivial edit (a review fix or your own implementation), adversarially review your own diff the way a strict bot reviewer would. For the function/section you touched, enumerate concretely: *how else could this be wrong, bypassed, or miss a case?* — alternate inputs, boundary and format variants, the same class of bug one step over (e.g. you just handled `## Status`; what about `# Status`, `## Status notes`, a fenced `## Status`, mismatched fences?). Write a failing test for each **realistic** one and fix it in this pass; **draw the line** on the pedantic ones and note them (YAGNI — over-tightening is its own spiral). The bar: a reviewer should only be able to surface a *new class* of issue, not the next adjacent edge of the one you just touched. If you couldn't have predicted the reviewer's next comment, you didn't self-review hard enough.
