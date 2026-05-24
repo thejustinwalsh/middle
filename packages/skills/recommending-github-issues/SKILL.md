@@ -71,6 +71,17 @@ Then resolve the **dispatch-unit structure** from GitHub's native sub-issue grap
   its Epic; never classify or rank it on its own.
 - An issue with neither is a **standalone issue** — a dispatch unit (a one-phase Epic).
 
+**Exclude the state issue itself.** The issue you are rewriting (and any issue carrying the
+`agent-queue:state` label) is the dispatcher's surface, never a dispatch unit. Never classify
+or rank it.
+
+**Cross-reference open PRs to detect in-flight / awaiting-review units.** The dispatcher's
+`in_flight` is authoritative when present, but it can be empty or stale (e.g. the dispatcher
+restarted). So also match each open PR to its Epic by branch (`headRefName` ≈ the Epic's
+workstream branch) or a `Closes #<epic>` in the PR body. An Epic with an open PR is **not**
+`ready` — it is in-flight or awaiting review (see Phase 3). Treating it as `ready` would
+double-dispatch a workstream that is already underway.
+
 You may also `git log --oneline -50 main` to gauge recent merge cadence.
 
 ### Phase 3 — Classify each dispatch unit
@@ -78,6 +89,13 @@ You may also `git log --oneline -50 main` to gauge recent merge cadence.
 For every **Epic and standalone issue** NOT currently In-flight (skip sub-issues entirely):
 
 classify(unit) → { category, adapter, subIssueCount, reason }
+
+**An open PR settles the unit's status before any other rule** (see Phase 2's PR cross-reference):
+- A **draft** PR → the workstream is still underway → treat as **In-flight**: don't rank it,
+  don't surface it (it's not waiting on a human, the agent is still working).
+- A **ready** (non-draft) PR → **`needs-human`** (awaiting human review).
+
+Only units with no open PR proceed to the `ready`/`blocked`/`excluded` classification below.
 
 **Category** is one of: `ready`, `needs-human`, `blocked`, `excluded`.
 
@@ -96,7 +114,7 @@ surfaces it as `needs-human`. You do not estimate or gate on it here.
 
 `needs-human` means a human resolves the blocker:
 - Ambiguous acceptance criteria on the Epic or one of its sub-issues
-- The Epic's PR is awaiting human review
+- The Epic's PR is **ready (non-draft) and awaiting human review** (a *draft* PR is in-flight, not needs-human)
 - Fork PRs both open with tie declared
 - An agent paused a sub-issue on a `complexity pause` (decision exceeded the ceiling)
 

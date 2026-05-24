@@ -42,7 +42,7 @@ export type DispatchEpicResult = {
  * this is the recoverable failsafe beyond it. */
 const SETTLE_DEADLINE_MS = 5 * 60 * 60 * 1000;
 
-async function waitForSettle(
+export async function waitForSettle(
   engine: Engine,
   executionId: string,
   deadlineAt: number = Date.now() + SETTLE_DEADLINE_MS,
@@ -66,7 +66,7 @@ async function waitForSettle(
  */
 const BUNQUEUE_LOCK_TOKEN_RE = /Invalid or expired lock token for job/;
 
-function installBunqueueRaceSwallower(): () => void {
+export function installBunqueueRaceSwallower(): () => void {
   const listener = (reason: unknown): void => {
     const message = reason instanceof Error ? reason.message : String(reason);
     if (BUNQUEUE_LOCK_TOKEN_RE.test(message)) {

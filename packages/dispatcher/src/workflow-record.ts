@@ -286,6 +286,86 @@ type WorkflowRow = {
   controlled_by: string;
 };
 
+/** Live implementation-slot usage: total + per-adapter counts. */
+export type SlotUsageCounts = {
+  total: number;
+  perAdapter: Record<string, number>;
+};
+
+/**
+ * Count the non-terminal `kind = "implementation"` workflows that are occupying
+ * a dispatch slot, total and grouped by adapter. The recommender's own row
+ * (`kind = "recommender"`) is deliberately excluded — it runs on its own
+ * dedicated slot and is never counted against `maxConcurrent` (build spec →
+ * "recommender workflow": "not counted against maxConcurrent"). This is the
+ * `slots.used` the recommender's build-prompt injects verbatim.
+ *
+ * `repo` scopes the count to one repo's slots (per-repo `slots.used` / `total`);
+ * omit it for the cross-repo `global_used`. The dispatcher's db is shared across
+ * repos (one `db_path`), so the repo filter matters — without it, repo A's
+ * recommender would count repo B's agents against repo A's per-repo `max`.
+ */
+export function countActiveImplementationSlots(db: Database, repo?: string): SlotUsageCounts {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const repoClause = repo === undefined ? "" : " AND repo = ?";
+  const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
+  const rows = db
+    .query(
+      `SELECT adapter, count(*) AS n FROM workflows
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})${repoClause}
+        GROUP BY adapter`,
+    )
+    .all(...params) as { adapter: string; n: number }[];
+  const perAdapter: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows) {
+    perAdapter[row.adapter] = row.n;
+    total += row.n;
+  }
+  return { total, perAdapter };
+}
+
+/** A live implementation workflow, as the recommender's `in_flight` reports it. */
+export type ActiveImplementationWorkflow = {
+  epicNumber: number | null;
+  adapter: string;
+  sessionName: string | null;
+  state: WorkflowState;
+};
+
+/**
+ * The non-terminal `kind = "implementation"` workflows — the dispatcher's
+ * authoritative in-flight set the recommender consumes verbatim (it never
+ * recomputes them). The recommender's own row is excluded by the `kind` filter.
+ * `repo` scopes the list to one repo (the shared db spans repos); omit it for all.
+ */
+export function listActiveImplementationWorkflows(
+  db: Database,
+  repo?: string,
+): ActiveImplementationWorkflow[] {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const repoClause = repo === undefined ? "" : " AND repo = ?";
+  const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
+  const rows = db
+    .query(
+      `SELECT epic_number, adapter, session_name, state FROM workflows
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})${repoClause}
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(...params) as {
+    epic_number: number | null;
+    adapter: string;
+    session_name: string | null;
+    state: string;
+  }[];
+  return rows.map((r) => ({
+    epicNumber: r.epic_number,
+    adapter: r.adapter,
+    sessionName: r.session_name,
+    state: r.state as WorkflowState,
+  }));
+}
+
 /** Fetch a workflow row by id, or null if it does not exist. */
 export function getWorkflow(db: Database, id: string): WorkflowRecord | null {
   const row = db.query("SELECT * FROM workflows WHERE id = ?").get(id) as WorkflowRow | null;

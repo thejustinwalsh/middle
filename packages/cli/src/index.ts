@@ -4,6 +4,7 @@ import { Command } from "commander";
 import { runDispatch } from "./commands/dispatch.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { runInit } from "./commands/init.ts";
+import { runRecommender } from "./commands/run-recommender.ts";
 import { runStart } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
@@ -61,6 +62,12 @@ program
   .argument("<repo>", "path to the local repo checkout")
   .argument("<epic>", "Epic or standalone issue number")
   .action(async (repo: string, epic: string) => process.exit(await runDispatch(repo, epic)));
+
+program
+  .command("run-recommender")
+  .description("Trigger a recommender run for a repo (rewrites its state issue; read-only — dispatches nothing)")
+  .argument("<repo>", "path to the local repo checkout")
+  .action(async (repo: string) => process.exit(await runRecommender(repo)));
 
 program
   .command("version")

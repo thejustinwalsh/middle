@@ -191,3 +191,115 @@ describe("HookServer — lifecycle", () => {
     await expect(pending).rejects.toThrow();
   });
 });
+
+describe("HookServer — recommender trigger endpoint", () => {
+  test("404s when no trigger is wired (gate-only mode)", async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/trigger/recommender`, { method: "POST" });
+    expect(res.status).toBe(404);
+  });
+
+  test("wired trigger receives the posted repo and returns its status/body verbatim", async () => {
+    const calls: Array<{ repoSlug?: string; repoPath?: string }> = [];
+    const wired = new HookServer(undefined, undefined, async (req) => {
+      calls.push(req);
+      return { status: 202, body: "recommender run started" };
+    });
+    wired.start(0);
+    try {
+      const res = await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoPath: "/work/middle", repoSlug: "thejustinwalsh/middle" }),
+      });
+      expect(res.status).toBe(202);
+      expect(await res.text()).toBe("recommender run started");
+      expect(calls).toEqual([{ repoPath: "/work/middle", repoSlug: "thejustinwalsh/middle" }]);
+    } finally {
+      wired.stop();
+    }
+  });
+
+  test("tolerates a garbled body — the trigger validates its own inputs", async () => {
+    const wired = new HookServer(undefined, undefined, async (req) =>
+      req.repoPath ? { status: 202, body: "ok" } : { status: 400, body: "repoPath required" },
+    );
+    wired.start(0);
+    try {
+      const res = await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+        method: "POST",
+        body: "not json",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toBe("repoPath required");
+    } finally {
+      wired.stop();
+    }
+  });
+
+  test("coerces non-string repoSlug/repoPath to undefined before forwarding", async () => {
+    const calls: Array<{ repoSlug?: string; repoPath?: string }> = [];
+    const wired = new HookServer(undefined, undefined, async (req) => {
+      calls.push(req);
+      return { status: 202, body: "ok" };
+    });
+    wired.start(0);
+    try {
+      const res = await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Hostile types: a number, an object, and null must not pass through as strings.
+        body: JSON.stringify({ repoSlug: 123, repoPath: { evil: true } }),
+      });
+      expect(res.status).toBe(202);
+      // Neither field is a string, so both arrive as undefined (not 123 / [object Object]).
+      expect(calls).toEqual([{ repoSlug: undefined, repoPath: undefined }]);
+    } finally {
+      wired.stop();
+    }
+  });
+
+  test("a non-object JSON body (null, primitive, array) is treated as empty, not a 500", async () => {
+    const calls: Array<{ repoSlug?: string; repoPath?: string }> = [];
+    const wired = new HookServer(undefined, undefined, async (req) => {
+      calls.push(req);
+      // Mirror the real trigger: missing repoPath → 400, never a 500.
+      return req.repoPath ? { status: 202, body: "ok" } : { status: 400, body: "repoPath required" };
+    });
+    wired.start(0);
+    try {
+      // `req.json()` parses each of these successfully, so the try/catch never
+      // fires; the handler must still not dereference them.
+      for (const raw of ["null", "123", '"a string"', "[1,2,3]", "true"]) {
+        const res = await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: raw,
+        });
+        expect(res.status).toBe(400); // 400 from the trigger, never a 500 from the handler
+      }
+      // Every call saw an empty field bag, none threw.
+      expect(calls).toEqual(Array(5).fill({ repoSlug: undefined, repoPath: undefined }));
+    } finally {
+      wired.stop();
+    }
+  });
+
+  test("passes a string field through while dropping a non-string sibling", async () => {
+    const calls: Array<{ repoSlug?: string; repoPath?: string }> = [];
+    const wired = new HookServer(undefined, undefined, async (req) => {
+      calls.push(req);
+      return { status: 202, body: "ok" };
+    });
+    wired.start(0);
+    try {
+      await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoPath: "/work/middle", repoSlug: 42 }),
+      });
+      expect(calls).toEqual([{ repoPath: "/work/middle", repoSlug: undefined }]);
+    } finally {
+      wired.stop();
+    }
+  });
+});

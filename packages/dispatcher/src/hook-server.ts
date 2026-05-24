@@ -7,6 +7,18 @@ import type { HookStore } from "./hook-store.ts";
 type BunServer = ReturnType<typeof Bun.serve>;
 
 /**
+ * The dashboard-facing "run the recommender now" trigger. Given the requested
+ * repo, it kicks off a recommender run and returns an HTTP status + body. Wired
+ * by the dispatcher; absent in gate-only mode (the route then 404s). The
+ * dashboard UI itself lands in Phase 9 — this is the dispatcher endpoint it
+ * will POST to (build spec → Phase 7: "Run-recommender CLI + dashboard button").
+ */
+export type RecommenderTrigger = (req: {
+  repoSlug?: string;
+  repoPath?: string;
+}) => Promise<{ status: number; body: string }>;
+
+/**
  * Constant-time string compare. Length is leaked (unavoidable, and tokens are
  * fixed-length UUIDs), but the per-byte comparison is not short-circuited, so a
  * caller can't time their way to the correct token.
@@ -56,10 +68,16 @@ export class HookServer implements SessionGate {
   readonly #stashed = new Map<string, HookPayload>();
   readonly #store: HookStore | undefined;
   readonly #prReadyGate: PrReadyGateHandler | undefined;
+  readonly #recommenderTrigger: RecommenderTrigger | undefined;
 
-  constructor(store?: HookStore, prReadyGate?: PrReadyGateHandler) {
+  constructor(
+    store?: HookStore,
+    prReadyGate?: PrReadyGateHandler,
+    recommenderTrigger?: RecommenderTrigger,
+  ) {
     this.#store = store;
     this.#prReadyGate = prReadyGate;
+    this.#recommenderTrigger = recommenderTrigger;
   }
 
   start(port: number): void {
@@ -94,6 +112,9 @@ export class HookServer implements SessionGate {
     const pathname = new URL(req.url).pathname;
     if (req.method === "POST" && pathname === "/gates/pr-ready") {
       return this.#handleGate(req);
+    }
+    if (req.method === "POST" && pathname === "/trigger/recommender") {
+      return this.#handleRecommenderTrigger(req);
     }
     const match = /^\/hooks\/(.+)$/.exec(pathname);
     if (!match || req.method !== "POST") {
@@ -189,6 +210,35 @@ export class HookServer implements SessionGate {
     if (decision.decision === "allow") return new Response("allow");
     console.error(`[hook-server] pr-ready gate DENY for ${sessionName}: ${decision.reason}`);
     return new Response(decision.reason, { status: 403 });
+  }
+
+  /**
+   * The dashboard's "run the recommender now" endpoint. 404 when no trigger is
+   * wired (gate-only mode). Read-only at this phase: the run rewrites the state
+   * issue but dispatches nothing. Returns the trigger's status/body verbatim.
+   */
+  async #handleRecommenderTrigger(req: Request): Promise<Response> {
+    if (!this.#recommenderTrigger) return new Response("not found", { status: 404 });
+    let parsed: unknown;
+    try {
+      parsed = await req.json();
+    } catch {
+      // tolerate an empty/garbled body — the trigger validates its own inputs
+    }
+    // The body is untrusted JSON. First narrow the *container*: a bare primitive,
+    // array, or the literal `null` (all of which `req.json()` parses successfully)
+    // is not a field bag — treat it as empty rather than dereferencing it. Then
+    // pass a field through only when it is actually a string; anything else
+    // becomes `undefined` so it can't masquerade as a `repoSlug`/`repoPath` and
+    // fail deeper as a 500.
+    const body: Record<string, unknown> =
+      typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+    const result = await this.#recommenderTrigger({
+      repoSlug: str(body.repoSlug),
+      repoPath: str(body.repoPath),
+    });
+    return new Response(result.body, { status: result.status });
   }
 
   #deliver(key: string, payload: HookPayload): void {

@@ -23,13 +23,10 @@ export interface AgentAdapter {
    * The literal text to send-keys into the session to start or continue the
    * agent. `initial` invokes the implementing skill directly (a slash command);
    * the skill reads the on-disk dispatch brief. `resume`/`answer` carry the
-   * `@`-reference to the brief for the fuller multi-turn workflow.
+   * `@`-reference to the brief for the fuller multi-turn workflow. `recommender`
+   * invokes the recommender skill with the assembled context file `@`-referenced.
    */
-  buildPromptText(opts: {
-    promptFile: string; // path, relative to the worktree
-    kind: "initial" | "resume" | "answer";
-    epicNumber: number; // the dispatched Epic/issue number
-  }): string;
+  buildPromptText(opts: BuildPromptOpts): string;
 
   /** Put the ready session into auto mode — a launch flag or post-ready keystrokes. */
   enterAutoMode(opts: { sessionName: string }): Promise<void>;
@@ -62,6 +59,26 @@ export interface AgentAdapter {
     transcriptPath: string;
   }): RateLimitDetection | null;
 }
+
+/**
+ * Args for {@link AgentAdapter.buildPromptText}. A discriminated union on
+ * `kind` so the `kind`/`epicNumber` coupling is enforced at compile time: every
+ * dispatched-issue kind (`initial`/`resume`/`answer`) carries an `epicNumber`,
+ * and only `recommender` — which has no Epic — may omit it. A bare
+ * `epicNumber?: number` across the whole union let `kind: "initial"` compile
+ * without an Epic and produce a malformed launch prompt (`implement #undefined`).
+ */
+export type BuildPromptOpts =
+  | {
+      promptFile: string; // path, relative to the worktree
+      kind: "initial" | "resume" | "answer";
+      epicNumber: number; // the dispatched Epic/issue number
+    }
+  | {
+      promptFile: string; // path, relative to the worktree
+      kind: "recommender";
+      epicNumber?: never; // the recommender runs against no Epic
+    };
 
 export type InstallHookOpts = {
   worktree: string;
