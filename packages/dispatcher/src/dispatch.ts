@@ -168,6 +168,11 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
         resolveRepoPath: () => opts.repoPath,
         worktreeRoot: opts.worktreeRoot,
         dispatcherUrl: `http://127.0.0.1:${hookServer.port}`,
+        // Resume hand-off: a continuation round re-enters the same workflow on
+        // this engine (Phase 8 hosts parked executions on a long-lived engine).
+        enqueueContinuation: async (input) => {
+          await engine.start("implementation", input);
+        },
         planCommentReader: ghGitHub,
         agentLogin,
         // Positive done-signal (#80): a bare-stop only completes if the Epic

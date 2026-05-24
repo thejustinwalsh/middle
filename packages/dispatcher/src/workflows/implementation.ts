@@ -6,20 +6,72 @@ import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import { type PlanCommentReader, verifyPlanComment } from "../gates/plan-comment.ts";
 import type { SessionGate } from "../hook-server.ts";
+import type { ResumeSignalPayload } from "../poller.ts";
 import { markAvailableOnSuccess, parseResetAt, setRateLimited } from "../rate-limits.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
 import {
+  armWaitForSignal,
+  consumeWaitForSignal,
   createWorkflowRecord,
   updateWorkflow,
   type WorkflowState,
 } from "../workflow-record.ts";
+
+/**
+ * The handoff carried by a continuation execution. A park can only happen once
+ * per bunqueue execution (no loop-back; loop bodies can't hold a `waitFor`), so
+ * every resume is a *fresh* execution re-primed from this — reusing the prior
+ * round's worktree (no new branch / PR) and re-driving from the resume brief.
+ */
+export type ResumeInput = {
+  reason: ResumeReason;
+  /** Review-pass counter; one round = one whole `CHANGES_REQUESTED` pass. */
+  round: number;
+  /** The worktree handle from the prior round — reused verbatim. */
+  worktree: WorktreeHandle;
+  /** What the poller fired: the human's reply, or the review verdict. */
+  payload: ResumeSignalPayload;
+};
 
 /** A dispatch unit: an Epic (or standalone issue) pointed at one adapter. */
 export type ImplementationInput = {
   repo: string;
   epicNumber: number;
   adapter: string;
+  /**
+   * Present only on a continuation execution (a resume). Absent on the initial
+   * dispatch. When set, `prepare-worktree` reuses `resume.worktree` instead of
+   * creating one, and writes the reason-specific resume brief to
+   * `.middle/prompt.md` before the drive.
+   */
+  resume?: ResumeInput;
 };
+
+/**
+ * Which pause kind the workflow parked on. The two pause kinds share one
+ * park → external-signal → resume spine; the reason is what the resume step
+ * uses to pick its re-priming framing (`answer` vs `resume`/review-changes).
+ */
+export type ResumeReason = "answered-question" | "review-changes";
+
+/**
+ * The single bunqueue signal event the workflow's top-level `waitFor` listens
+ * on. bunqueue's `waitFor(event)` takes a *static* string and `engine.signal`
+ * targets a specific execution by id, so one constant event name suffices —
+ * the epic-scoped, reason-scoped name lives in the durable `waitfor_signals`
+ * row (see `signalNameFor`), which is what the poller and dashboard read.
+ */
+export const RESUME_EVENT = "resume";
+
+/** The durable, poller-facing signal name for a workflow's armed wait. */
+export function signalNameFor(epicNumber: number, reason: ResumeReason): string {
+  return reason === "review-changes"
+    ? `epic-${epicNumber}-review-resolved`
+    : `epic-${epicNumber}-answered`;
+}
+
+/** The `waitFor` timeout — a parked workflow waits up to a week for its signal. */
+const WAITFOR_TIMEOUT_MS = 7 * 24 * 3600 * 1000;
 
 /** The tmux surface the workflow drives — structural so tests can stub it. */
 export type TmuxOps = {
@@ -53,11 +105,36 @@ export type ImplementationDeps = {
   launchTimeoutMs?: number;
   stopTimeoutMs?: number;
   /**
+   * Post the agent's open question on the Epic for human visibility when it
+   * parks on `asked-question`. Receives the sentinel contents `classifyStop`
+   * surfaced (`question` + optional `context`). Optional + injectable so tests
+   * need no `gh`; the default (wired by the dispatcher) comments on the issue.
+   */
+  postQuestion?: (opts: {
+    repo: string;
+    epicNumber: number;
+    question: string;
+    context?: string;
+  }) => Promise<void>;
+  /**
+   * Enqueue a continuation execution for the next round (a resume). Injected so
+   * the workflow stays free of the engine: in prod the dispatcher wires this to
+   * `engine.start("implementation", input)` on the long-lived engine that hosts
+   * parked executions; tests wire it to their embedded engine. The continuation
+   * reuses the prior round's worktree via `input.resume.worktree`.
+   */
+  enqueueContinuation: (input: ImplementationInput) => Promise<void>;
+  /**
+   * The review-round ceiling: after this many `CHANGES_REQUESTED` passes without
+   * an `APPROVED`, the workflow parks in `waiting-human` and stops auto-resuming
+   * (a never-satisfied loop must not run forever). Defaults to 5.
+   */
+  reviewRoundCap?: number;
+  /**
    * Positive done-signal (skill enforcement #80): the only thing that turns a
-   * `bare-stop` into completion is a ready, non-draft Epic PR. When this seam is
-   * wired, a `bare-stop` without that signal nudges the agent (bounded) instead
-   * of finalizing as `completed`. Left optional so callers that haven't opted in
-   * keep the legacy "bare-stop → completed" behavior.
+   * `bare-stop` into completion is a ready, non-draft Epic PR. When wired, a
+   * `bare-stop` without that signal nudges the agent (bounded) instead of
+   * finalizing; without it, the legacy "bare-stop → completed" mapping holds.
    */
   epicPrReadiness?: (repo: string, epicNumber: number) => Promise<{ exists: boolean; isDraft: boolean }>;
   /** Max "continue" nudges on a bare-stop before parking in waiting-human. */
@@ -66,9 +143,8 @@ export type ImplementationDeps = {
   nudgeStopTimeoutMs?: number;
   /**
    * Plan-comment guard (skill enforcement #1): when wired, a `done` dispatch only
-   * truly completes if a comment on the Epic carries the plan body. Left optional
-   * so the gate-free unit tests (and any caller that hasn't opted in) keep their
-   * unguarded completion behavior.
+   * truly completes if a comment on the Epic carries the plan body. Optional so
+   * gate-free unit tests keep their unguarded completion behavior.
    */
   planCommentReader?: PlanCommentReader;
   /** The agent's gh account — restricts the plan-comment match to its comments. */
@@ -77,6 +153,7 @@ export type ImplementationDeps = {
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_REVIEW_ROUND_CAP = 5;
 const DEFAULT_MAX_NUDGES = 3;
 const DEFAULT_NUDGE_STOP_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -126,11 +203,108 @@ time. Operating rules for this dispatch:
 }
 
 /**
- * Read the workstream's committed plan from the worktree. The implementer skill
- * writes it to `planning/issues/<epic>/plan.md` and posts the same body as the
- * Epic comment the plan-comment guard checks for. A missing file yields "" — the
- * guard treats that as "no plan", which is the correct outcome.
+ * Overwrite `.middle/prompt.md` with the reason-specific resume brief for a
+ * continuation execution. The agent re-reads this on its `@`-referenced resume
+ * drive (`buildPromptText` kind `answer` / `resume`):
+ *
+ * - `answered-question` — inlines the human's reply so the agent reads the
+ *   answer and continues the workstream.
+ * - `review-changes` — an "address review" brief. The agent pulls the PR's
+ *   review threads itself (`gh`) and follows the `implementing-github-issues`
+ *   skill's "Addressing review feedback" procedure (batch → internal review
+ *   loop → push once → reply in-thread → re-request review → re-park). Carries
+ *   the round and cap so a bounded loop is visible to the agent.
+ *
+ * This unconditionally overwrites (unlike `ensurePromptFile`, which preserves an
+ * operator brief on the *initial* dispatch) — a resume's brief is the live one.
  */
+function writeResumeBrief(
+  worktreePath: string,
+  epicNumber: number,
+  resume: ResumeInput,
+  reviewRoundCap: number,
+): void {
+  const middleDir = join(worktreePath, ".middle");
+  mkdirSync(middleDir, { recursive: true });
+  const promptPath = join(middleDir, "prompt.md");
+  const operatingRules = `## Operating rules for this dispatch
+
+- You are running autonomously under middle. There is no human watching in real
+  time. Continue the workstream — do not restart it. The branch, draft PR,
+  \`plan.md\`, and \`decisions.md\` are all intact.
+- Work continuously; pause only if you are genuinely blocked (write
+  \`.middle/blocked.json\` and exit). The terminal state is the PR marked ready.
+`;
+
+  if (resume.reason === "answered-question") {
+    const reply = resume.payload.reason === "answered-question" ? resume.payload.reply : undefined;
+    const answer = reply
+      ? `> ${reply.body.replace(/\n/g, "\n> ")}\n\n— @${reply.authorLogin}`
+      : "(the human's reply text was unavailable — check the Epic thread on GitHub)";
+    writeFileSync(
+      promptPath,
+      `# middle dispatch brief — Epic #${epicNumber} (resumed: a human answered)
+
+A human answered the open question you parked on. Their reply:
+
+${answer}
+
+Read this answer, fold it into your plan / decisions log, and continue the
+workstream from where you left off.
+
+${operatingRules}`,
+    );
+    return;
+  }
+
+  // review-changes
+  const decision = resume.payload.reason === "review-changes" ? resume.payload.decision : null;
+  writeFileSync(
+    promptPath,
+    `# middle dispatch brief — Epic #${epicNumber} (resumed: address review — round ${resume.round} of ${reviewRoundCap})
+
+A reviewer requested changes on the PR${decision ? ` (decision: ${decision})` : ""}. Address this
+review pass now, following the \`implementing-github-issues\` skill's
+**"Addressing review feedback"** procedure:
+
+1. Pull **every** open review thread on the PR yourself via \`gh\` (the review
+   comments and the review bodies). Read the whole pass before changing anything.
+2. **Batch** the findings and resolve each **class-wide** — a fix plus a test per
+   fix, not one comment at a time.
+3. Run the **internal clean-eyes review loop** over the batched diff (a review
+   subagent), looping until it surfaces nothing new, to catch adjacent edges
+   before re-review.
+4. **Push once** — one push for the whole pass, not per fix.
+5. Reply in-thread to each addressed comment, **re-request review**, then stop.
+   The workflow re-parks for the next verdict.
+
+This is review round ${resume.round} of ${reviewRoundCap}. After ${reviewRoundCap} rounds without an
+\`APPROVED\` the workflow parks for a human and stops auto-resuming.
+
+${operatingRules}`,
+  );
+}
+
+/**
+ * The drive loop's resolved outcome: a `StopClassification` plus one
+ * dispatcher-only terminal `nudge-exhausted` (#80) — a `bare-stop` that never
+ * produced a positive done-signal within the nudge budget. Kept out of the core
+ * `StopClassification` union: a single Stop is never "nudge-exhausted"; only the
+ * loop is.
+ */
+type DriveOutcome = StopClassification | { kind: "nudge-exhausted" };
+
+/** A park-worthy stop ends the session and waits for a human/reviewer signal. */
+function isParkKind(kind: DriveOutcome["kind"]): boolean {
+  return kind === "asked-question" || kind === "done";
+}
+
+/** The resume reason a park-worthy outcome maps to. */
+function reasonFor(kind: DriveOutcome["kind"]): ResumeReason {
+  return kind === "done" ? "review-changes" : "answered-question";
+}
+
+/** Read the workstream's committed plan from the worktree (for the plan-comment guard). */
 function readPlanBody(worktreePath: string, epicNumber: number): string {
   try {
     return readFileSync(join(worktreePath, "planning", "issues", String(epicNumber), "plan.md"), "utf8");
@@ -139,16 +313,8 @@ function readPlanBody(worktreePath: string, epicNumber: number): string {
   }
 }
 
-/**
- * The drive loop's resolved outcome. It is a `StopClassification` plus one
- * dispatcher-only terminal: `nudge-exhausted`, when a `bare-stop` never produced
- * a positive done-signal within the nudge budget. Keeping this out of the core
- * `StopClassification` union keeps the adapter's per-Stop classifier honest — a
- * single Stop is never "nudge-exhausted"; only the loop is.
- */
-type DriveOutcome = StopClassification | { kind: "nudge-exhausted" };
-
-function finalStateForOutcome(outcome: DriveOutcome): WorkflowState {
+/** The terminal `workflows.state` a settled outcome resolves to. */
+function finalStateFor(outcome: DriveOutcome): WorkflowState {
   switch (outcome.kind) {
     case "done":
       return "completed";
@@ -157,12 +323,14 @@ function finalStateForOutcome(outcome: DriveOutcome): WorkflowState {
     case "rate-limited":
       return "rate-limited";
     case "asked-question":
+      // Defensive only: park kinds (`asked-question`, `done`) route to
+      // `parkForResume`, not here — a resume re-enqueues a continuation.
       return "waiting-human";
     case "nudge-exhausted":
-      // bounded nudges produced no positive done-signal — park for a human
+      // #80: bounded nudges produced no positive done-signal — park for a human.
       return "waiting-human";
     case "bare-stop":
-      // legacy path: no positive-done-signal seam wired, so a clean stop completes
+      // legacy: no positive-done-signal seam wired, so a clean stop completes.
       return "completed";
   }
 }
@@ -171,11 +339,25 @@ type PrepareResult = { handle: WorktreeHandle };
 type DriveResult = { outcome: DriveOutcome; sessionName: string };
 
 /**
- * The Phase 1 `implementation` workflow — deliberately just three steps:
- * prepare-worktree → launch-and-drive → cleanup. No skill enforcement, no
- * sub-issue plan resolution, no hook-driven heartbeats; those land in Phases
- * 2 and 4. `launch-and-drive` runs the launch → drive → observe loop and reacts
- * to the `Stop` boundary via the adapter's `classifyStop`.
+ * The `implementation` workflow with the Phase 5 park → external-signal →
+ * resume spine:
+ *
+ *   prepare-worktree → launch-and-drive → branch(park | terminal)
+ *     → waitFor(RESUME_EVENT) → resume-or-finalize
+ *
+ * `launch-and-drive` runs the launch → drive → observe loop and ends the
+ * session at the `Stop` boundary (every classify outcome frees the slot). The
+ * branch arms a durable `waitfor_signals` row and parks the workflow in
+ * `waiting-human` for park-worthy stops (`asked-question`, `done`), or — for
+ * terminal stops — pre-seeds the signal so the single top-level `waitFor` falls
+ * through without parking. `resume-or-finalize` consumes the signal and
+ * re-drives a fresh session on resume, then finalizes (worktree teardown +
+ * terminal state).
+ *
+ * bunqueue's branch `.path()` bodies and loop bodies are *steps only* — a
+ * `waitFor` nested inside is silently dropped — and `engine.signal(id, event)`
+ * targets one execution, so the `waitFor` is a single top-level node and the
+ * loop-back for additional review rounds is re-enqueue (sub-issue #36).
  *
  * Built as a factory so the dispatcher injects real collaborators and tests
  * inject stubs. The workflow's `executionId` doubles as the `workflows.id`.
@@ -185,45 +367,15 @@ export function createImplementationWorkflow(
 ): Workflow<ImplementationInput> {
   const launchTimeout = deps.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
   const stopTimeout = deps.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
-
-  async function prepareWorktree(ctx: StepContext<ImplementationInput>): Promise<PrepareResult> {
-    createWorkflowRecord(deps.db, {
-      id: ctx.executionId,
-      kind: "implementation",
-      repo: ctx.input.repo,
-      epicNumber: ctx.input.epicNumber,
-      adapter: ctx.input.adapter,
-    });
-    const handle = await deps.worktree.createWorktree({
-      repoPath: deps.resolveRepoPath(ctx.input.repo),
-      repo: ctx.input.repo,
-      issueNumber: ctx.input.epicNumber,
-      worktreeRoot: deps.worktreeRoot,
-    });
-    updateWorkflow(deps.db, ctx.executionId, { worktreePath: handle.path });
-    return { handle };
-  }
-
-  /** Compensation for prepare-worktree: roll the worktree back, free the session. */
-  async function cleanupWorktree(ctx: StepContext<ImplementationInput>): Promise<void> {
-    const prepared = ctx.steps["prepare-worktree"] as PrepareResult | undefined;
-    if (prepared?.handle) {
-      await deps.tmux.killSession(sessionNameFor(ctx.input));
-      await deps.worktree.destroyWorktree(prepared.handle);
-    }
-    updateWorkflow(deps.db, ctx.executionId, { state: "compensated" });
-  }
-
+  const reviewRoundCap = deps.reviewRoundCap ?? DEFAULT_REVIEW_ROUND_CAP;
   const maxNudges = deps.maxNudges ?? DEFAULT_MAX_NUDGES;
   const nudgeStopTimeout = deps.nudgeStopTimeoutMs ?? DEFAULT_NUDGE_STOP_TIMEOUT_MS;
 
   /**
-   * Resolve a `bare-stop` into a terminal outcome. Completion requires a
-   * positive done-signal — a ready, non-draft Epic PR. Without it, send a cheap
-   * same-session "continue" nudge and re-await the Stop, up to `maxNudges`; a
-   * nudge that produces a definitive classification (done, question, failure,
-   * rate-limit) short-circuits. Exhausting the budget parks in waiting-human
-   * rather than silently completing.
+   * Resolve a `bare-stop` into a terminal outcome (#80). Completion requires a
+   * ready, non-draft Epic PR; without it, send a same-session "continue" nudge
+   * and re-await the Stop, up to `maxNudges`. A nudge that yields a definitive
+   * classification short-circuits; exhausting the budget parks for a human.
    */
   async function resolveBareStop(args: {
     tag: string;
@@ -252,8 +404,54 @@ export function createImplementationWorkflow(
     }
   }
 
-  async function launchAndDrive(ctx: StepContext<ImplementationInput>): Promise<DriveResult> {
-    const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
+  async function prepareWorktree(ctx: StepContext<ImplementationInput>): Promise<PrepareResult> {
+    createWorkflowRecord(deps.db, {
+      id: ctx.executionId,
+      kind: "implementation",
+      repo: ctx.input.repo,
+      epicNumber: ctx.input.epicNumber,
+      adapter: ctx.input.adapter,
+    });
+    const resume = ctx.input.resume;
+    if (resume) {
+      // Continuation: reuse the prior round's worktree (same branch, same PR —
+      // no new branch, no new PR) and re-prime the brief for this resume reason.
+      const handle = resume.worktree;
+      updateWorkflow(deps.db, ctx.executionId, { worktreePath: handle.path });
+      writeResumeBrief(handle.path, ctx.input.epicNumber, resume, reviewRoundCap);
+      return { handle };
+    }
+    const handle = await deps.worktree.createWorktree({
+      repoPath: deps.resolveRepoPath(ctx.input.repo),
+      repo: ctx.input.repo,
+      issueNumber: ctx.input.epicNumber,
+      worktreeRoot: deps.worktreeRoot,
+    });
+    updateWorkflow(deps.db, ctx.executionId, { worktreePath: handle.path });
+    return { handle };
+  }
+
+  /** Compensation for prepare-worktree: roll the worktree back, free the session. */
+  async function cleanupWorktree(ctx: StepContext<ImplementationInput>): Promise<void> {
+    const prepared = ctx.steps["prepare-worktree"] as PrepareResult | undefined;
+    if (prepared?.handle) {
+      await deps.tmux.killSession(sessionNameFor(ctx.input));
+      await deps.worktree.destroyWorktree(prepared.handle);
+    }
+    updateWorkflow(deps.db, ctx.executionId, { state: "compensated" });
+  }
+
+  /**
+   * Launch (or resume) one interactive session in the worktree, drive one turn,
+   * and classify the `Stop`. Ends the session before returning — at `Stop` the
+   * turn is over and the slot frees regardless of outcome ("END SESSION" in the
+   * dispatch lifecycle). Shared by the initial drive and the resume drive.
+   */
+  async function driveOnce(
+    ctx: StepContext<ImplementationInput>,
+    handle: WorktreeHandle,
+    promptKind: "initial" | "resume" | "answer",
+  ): Promise<DriveResult> {
     const adapter = deps.getAdapter(ctx.input.adapter);
     const sessionName = sessionNameFor(ctx.input);
     const sessionToken = crypto.randomUUID();
@@ -285,9 +483,9 @@ export function createImplementationWorkflow(
         },
       });
       // Clear any orphaned session of the same name left by a prior dispatch
-      // that was interrupted (Ctrl-C / crash) before its cleanup ran —
-      // otherwise newSession fails with "duplicate session". killSession is a
-      // no-op when nothing's there.
+      // (or this workflow's own prior drive) before its cleanup ran — otherwise
+      // newSession fails with "duplicate session". killSession is a no-op when
+      // nothing's there.
       await deps.tmux.killSession(sessionName);
       console.error(`${tag} launching tmux session: ${argv.join(" ")} (cwd=${handle.path})`);
       await deps.tmux.newSession({ sessionName, command: argv, cwd: handle.path, env });
@@ -308,8 +506,6 @@ export function createImplementationWorkflow(
       console.error(
         `${tag} SessionStart received — session_id=${startPayload.session_id ?? "<missing>"}`,
       );
-      // dismissPromise will resolve on its own (answered the prompt, or never
-      // saw it within the polling window). No further enterAutoMode call.
       void dismissPromise;
 
       const transcriptPath = adapter.resolveTranscriptPath(startPayload);
@@ -322,10 +518,10 @@ export function createImplementationWorkflow(
 
       const promptText = adapter.buildPromptText({
         promptFile: ".middle/prompt.md",
-        kind: "initial",
+        kind: promptKind,
         epicNumber: ctx.input.epicNumber,
       });
-      console.error(`${tag} sending prompt: "${promptText}"`);
+      console.error(`${tag} sending prompt (${promptKind}): "${promptText}"`);
       await deps.tmux.sendText(sessionName, promptText);
       await deps.tmux.sendEnter(sessionName);
 
@@ -341,96 +537,241 @@ export function createImplementationWorkflow(
         });
       const classification = classifyAt(stopPayload);
       console.error(`${tag} Stop received — classification=${classification.kind}`);
-
-      // Positive done-signal (#80): a bare-stop is NOT completion on its own.
-      // Only a ready, non-draft Epic PR completes it; otherwise nudge (bounded),
-      // then park. When no readiness seam is wired, fall through to the legacy
-      // "bare-stop → completed" mapping.
+      // Positive done-signal (#80): a bare-stop is NOT completion on its own —
+      // only a ready, non-draft Epic PR is. Otherwise nudge (session still
+      // alive) up to maxNudges, then park. No readiness seam → legacy mapping.
+      let outcome: DriveOutcome = classification;
       if (classification.kind === "bare-stop" && deps.epicPrReadiness) {
-        const outcome = await resolveBareStop({
+        outcome = await resolveBareStop({
           tag,
           sessionName,
           repo: ctx.input.repo,
           epicNumber: ctx.input.epicNumber,
           classifyAt,
         });
-        return { outcome, sessionName };
       }
-      return { outcome: classification, sessionName };
+      // Plan-comment guard (skill enforcement #1): a `done` only truly completes
+      // if the agent posted its plan as an Epic comment. Demote an unposted
+      // `done` to `failed` here so it never enters the review-resolve park.
+      if (outcome.kind === "done" && deps.planCommentReader) {
+        const planBody = readPlanBody(handle.path, ctx.input.epicNumber);
+        const guard = await verifyPlanComment({
+          gh: deps.planCommentReader,
+          repo: ctx.input.repo,
+          epicNumber: ctx.input.epicNumber,
+          planBody,
+          agentLogin: deps.agentLogin,
+        });
+        if (!guard.ok) {
+          console.error(`${tag} plan-comment guard: ${guard.reason}`);
+          outcome = { kind: "failed", reason: guard.reason };
+        }
+      }
+      // END SESSION — the turn is over; free the slot before parking/finalizing.
+      await deps.tmux.killSession(sessionName);
+      return { outcome, sessionName };
     } catch (error) {
       // never leak a tmux session on the failure path; the compensation rolls
       // back the worktree
-      console.error(`${tag} step failed: ${(error as Error).message}`);
+      console.error(`${tag} drive failed: ${(error as Error).message}`);
       await deps.tmux.killSession(sessionName);
       throw error;
     }
   }
 
-  async function cleanup(ctx: StepContext<ImplementationInput>): Promise<void> {
+  async function launchAndDrive(ctx: StepContext<ImplementationInput>): Promise<DriveResult> {
     const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
-    const { outcome, sessionName } = ctx.steps["launch-and-drive"] as DriveResult;
-    await deps.tmux.killSession(sessionName);
+    const resume = ctx.input.resume;
+    const promptKind = !resume
+      ? "initial"
+      : resume.reason === "answered-question"
+        ? "answer"
+        : "resume";
+    return driveOnce(ctx, handle, promptKind);
+  }
 
-    let finalState = finalStateForOutcome(outcome);
-
-    // Plan-comment guard: a dispatch only truly completes if the agent posted
-    // its plan as a comment on the Epic. Run it BEFORE destroying the worktree —
-    // the plan body is read from the worktree's committed plan.md.
-    if (finalState === "completed" && deps.planCommentReader) {
-      const planBody = readPlanBody(handle.path, ctx.input.epicNumber);
-      const guard = await verifyPlanComment({
-        gh: deps.planCommentReader,
-        repo: ctx.input.repo,
-        epicNumber: ctx.input.epicNumber,
-        planBody,
-        agentLogin: deps.agentLogin,
-      });
-      if (!guard.ok) {
-        console.error(`[workflow:${sessionName}] ${guard.reason}`);
-        finalState = "failed";
+  /**
+   * Park-worthy stop: arm the durable `waitfor_signals` row under the
+   * epic-scoped, reason-scoped name the poller watches, set `waiting-human`,
+   * and (for `asked-question`) post the question for human visibility. The
+   * session already ended in `driveOnce`. The top-level `waitFor` that follows
+   * then parks the execution because RESUME_EVENT is unset.
+   */
+  async function parkForResume(ctx: StepContext<ImplementationInput>): Promise<void> {
+    const { outcome } = ctx.steps["launch-and-drive"] as DriveResult;
+    const reason = reasonFor(outcome.kind);
+    armWaitForSignal(
+      deps.db,
+      signalNameFor(ctx.input.epicNumber, reason),
+      ctx.executionId,
+      JSON.stringify({ reason }),
+    );
+    updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
+    if (outcome.kind === "asked-question" && deps.postQuestion) {
+      try {
+        await deps.postQuestion({
+          repo: ctx.input.repo,
+          epicNumber: ctx.input.epicNumber,
+          question: outcome.sentinel?.question ?? "(question text unavailable)",
+          context: outcome.sentinel?.context,
+        });
+      } catch (error) {
+        // Visibility is best-effort — the wait is already armed and durable, so
+        // a failed comment must not abort the park.
+        console.error(`[workflow] postQuestion failed: ${(error as Error).message}`);
       }
     }
+  }
 
-    await deps.worktree.destroyWorktree(handle);
+  /**
+   * Terminal stop: pre-seed RESUME_EVENT so the single top-level `waitFor`
+   * falls through without parking. Rate-limit bookkeeping and the final
+   * `workflows.state` are set in `resume-or-finalize` (alongside worktree
+   * teardown), so all terminal handling lives in one place. `ctx.signals` is
+   * the live `exec.signals` (passed by reference), which is exactly what the
+   * downstream `waitFor` reads.
+   */
+  async function recordTerminal(ctx: StepContext<ImplementationInput>): Promise<void> {
+    // Rate-limit bookkeeping lives solely in `finalize` (the authoritative terminal
+    // handler), which always runs after this pre-seed falls the `waitFor` through.
+    (ctx.signals as Record<string, unknown>)[RESUME_EVENT] = { terminal: true };
+  }
 
-    if (outcome.kind === "rate-limited") {
-      // Reactive rate-limit: record the durable signal the auto-dispatch loop
-      // (Phase 8) reads to delay re-enqueue until reset_at. resetAt is the raw
-      // text the transcript carried after "Resets at "; parse it to unix ms,
-      // null when unrecognized (RATE_LIMITED with an unknown reset).
+  /**
+   * Tear the worktree down and resolve the terminal `workflows.state` for a
+   * settled classification. Called for genuinely-terminal stops and for a
+   * review-resolved (`APPROVED` / clean re-review) `done`. middle never merges —
+   * the human merges; this just records the terminal state and frees the worktree.
+   */
+  async function finalize(
+    ctx: StepContext<ImplementationInput>,
+    handle: WorktreeHandle,
+    settled: DriveOutcome,
+  ): Promise<void> {
+    const finalState = finalStateFor(settled);
+    // A `waiting-human` handoff (round cap exhausted, or nudge-exhausted mid-work)
+    // keeps the worktree so the human can inspect / resume the in-progress state.
+    // Every other terminal state frees it — the work is in the PR or abandoned.
+    if (finalState !== "waiting-human") {
+      await deps.worktree.destroyWorktree(handle);
+    }
+    if (settled.kind === "rate-limited") {
       setRateLimited(deps.db, {
         adapter: ctx.input.adapter,
-        resetAt: parseResetAt(outcome.resetAt),
+        resetAt: parseResetAt(settled.resetAt),
         source: "transcript",
-        detail: outcome.resetAt,
+        detail: settled.resetAt,
       });
     } else if (finalState === "completed") {
       // Probe-via-real-work: a completed dispatch proves the adapter is serving
       // again, so a previously RATE_LIMITED adapter reverts to AVAILABLE.
       markAvailableOnSuccess(deps.db, ctx.input.adapter);
     }
-
     updateWorkflow(deps.db, ctx.executionId, { state: finalState });
   }
 
-  return new Workflow<ImplementationInput>("implementation")
-    .step("prepare-worktree", prepareWorktree, { compensate: cleanupWorktree })
-    // timeout: must exceed the step's OWN internal waits (launchTimeout for
-    // SessionStart + stopTimeout for Stop), or bunqueue's default 30s step
-    // timeout fires mid-work and kills the live session. The internal
-    // awaitSessionStart/awaitStop timeouts stay the controlling ones (they give
-    // specific errors); this is a backstop just above them.
-    // retry: 1 — bunqueue's `retry` is `maxAttempts` (loop runs `attempt = 1
-    // … <= retry`), not "retries after the first attempt". `1` means exactly
-    // one attempt, no retries. Phase 1 fails fast and compensates: retrying a
-    // launch piles up tmux/branch state and aggravates bunqueue's
-    // job-lifecycle race on the failure path. The full workflow's retry
-    // budgets (spec) live on `plan` / `implement-loop`.
-    .step("launch-and-drive", launchAndDrive, {
-      retry: 1,
-      // backstop above the step's own internal waits: SessionStart + the first
-      // Stop + up to maxNudges further Stop-awaits (the bare-stop nudge loop).
-      timeout: launchTimeout + stopTimeout + maxNudges * nudgeStopTimeout + 60_000,
-    })
-    .step("cleanup", cleanup);
+  /**
+   * Reached after the `waitFor` resolves. Three outcomes:
+   *
+   *  - **Terminal stop** — `record-terminal` pre-seeded `{ terminal: true }`, so
+   *    this drive's own classification is final; `finalize` ends it.
+   *  - **Review resolved** — the poller fired `outcome: "resolved"` (`APPROVED`
+   *    or a clean re-review). The loop ends (terminal); the human merges.
+   *  - **A continuing resume** — an answered question, or a `CHANGES_REQUESTED`
+   *    pass under the round cap. Hand off to a fresh continuation execution that
+   *    reuses this worktree (re-primed per reason); this round ends `completed`
+   *    and the continuation becomes the Epic's live (latest non-terminal) row.
+   *
+   * The review-round counter increments **per pass**. Once a `CHANGES_REQUESTED`
+   * verdict would exceed `reviewRoundCap`, the workflow parks in `waiting-human`
+   * with no re-arm and no continuation — a never-satisfied loop is bounded.
+   */
+  async function resumeOrFinalize(ctx: StepContext<ImplementationInput>): Promise<void> {
+    const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
+    const initial = ctx.steps["launch-and-drive"] as DriveResult;
+    const signal = (ctx.signals as Record<string, unknown>)[RESUME_EVENT] as
+      | { terminal?: boolean }
+      | ResumeSignalPayload
+      | undefined;
+
+    // Terminal stop: the branch pre-seeded the signal; this drive is final.
+    if (signal && (signal as { terminal?: boolean }).terminal) {
+      await finalize(ctx, handle, initial.outcome);
+      return;
+    }
+
+    // We genuinely parked, and the poller fired a resume verdict. Consume the
+    // durable wait record so the workflow no longer reads as parked.
+    const payload = signal as ResumeSignalPayload;
+    consumeWaitForSignal(deps.db, ctx.executionId);
+
+    // A resolved review (APPROVED, or a 0-actionable re-review) ends the loop.
+    if (payload.reason === "review-changes" && payload.outcome === "resolved") {
+      await finalize(ctx, handle, { kind: "done" });
+      return;
+    }
+
+    // A continuing resume. Only a `CHANGES_REQUESTED` pass advances the review
+    // counter; an answered question carries the round through unchanged.
+    const currentRound = ctx.input.resume?.round ?? 0;
+    let nextRound = currentRound;
+    if (payload.reason === "review-changes") {
+      nextRound = currentRound + 1;
+      if (nextRound > reviewRoundCap) {
+        // Bounded: stop auto-resuming and park for a human. Keep the worktree;
+        // do not re-arm a wait (the poller stops watching) and do not re-enqueue.
+        // Everything the agent has pushed stays on the branch / PR.
+        updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
+        return;
+      }
+    }
+
+    // Hand control to a fresh continuation that reuses this worktree. Enqueue
+    // FIRST: if it throws, neither the rate-limit state nor the row state has
+    // changed, so the poller retries cleanly on its next pass.
+    await deps.enqueueContinuation({
+      repo: ctx.input.repo,
+      epicNumber: ctx.input.epicNumber,
+      adapter: ctx.input.adapter,
+      resume: { reason: payload.reason, round: nextRound, worktree: handle, payload },
+    });
+    // The drive that just parked ran a working adapter; revert any stale
+    // RATE_LIMITED now that the hand-off is committed.
+    markAvailableOnSuccess(deps.db, ctx.input.adapter);
+    // This round handed off — terminal in the bunqueue sense. The worktree is
+    // NOT torn down; the continuation reuses it.
+    updateWorkflow(deps.db, ctx.executionId, { state: "completed" });
+  }
+
+  return (
+    new Workflow<ImplementationInput>("implementation")
+      .step("prepare-worktree", prepareWorktree, { compensate: cleanupWorktree })
+      // timeout: must exceed the step's OWN internal waits (launchTimeout for
+      // SessionStart + stopTimeout for Stop), or bunqueue's default 30s step
+      // timeout fires mid-work and kills the live session. The internal
+      // awaitSessionStart/awaitStop timeouts stay the controlling ones (they
+      // give specific errors); this is a backstop just above them. retry: 1 —
+      // bunqueue's `retry` is `maxAttempts`; `1` means one attempt, no retries.
+      .step("launch-and-drive", launchAndDrive, {
+        retry: 1,
+        // Backstop above the internal waits, widened for the bare-stop nudge loop
+        // (up to maxNudges further Stop-awaits) so it can't fire mid-nudge.
+        timeout: launchTimeout + stopTimeout + maxNudges * nudgeStopTimeout + 60_000,
+      })
+      .branch((ctx) =>
+        isParkKind((ctx.steps["launch-and-drive"] as DriveResult).outcome.kind)
+          ? "park"
+          : "terminal",
+      )
+      .path("park", (w) => w.step("park-for-resume", parkForResume))
+      .path("terminal", (w) => w.step("record-terminal", recordTerminal))
+      // Single top-level `waitFor`: parks park-worthy stops until the poller
+      // fires RESUME_EVENT; terminal stops pre-seeded the signal and fall
+      // through. Same timeout budget as the drive step.
+      .waitFor(RESUME_EVENT, { timeout: WAITFOR_TIMEOUT_MS })
+      .step("resume-or-finalize", resumeOrFinalize, {
+        retry: 1,
+        timeout: launchTimeout + stopTimeout + 60_000,
+      })
+  );
 }

@@ -86,9 +86,21 @@ export type TranscriptState = {
   lastToolUse: string | null;
 };
 
+/**
+ * The contents of a `.middle/blocked.json` question sentinel: the question the
+ * agent needs answered to proceed, plus optional supporting context the human
+ * needs to answer it. The skill writes this when it parks on `asked-question`.
+ * Parsed tolerantly — a sentinel that is missing or malformed yields `null` on
+ * the classification rather than failing the Stop.
+ */
+export type BlockedSentinel = {
+  question: string;
+  context?: string;
+};
+
 export type StopClassification =
   | { kind: "done" } // agent marked the PR ready
-  | { kind: "asked-question"; sentinelPath: string }
+  | { kind: "asked-question"; sentinelPath: string; sentinel: BlockedSentinel | null }
   | { kind: "rate-limited"; resetAt: string /* ISO */ }
   | { kind: "bare-stop" } // stopped, no sentinel, not done
   | { kind: "failed"; reason: string };

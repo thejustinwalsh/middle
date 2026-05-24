@@ -13,8 +13,11 @@ import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "./db.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
+import { ghPollGateway } from "./poller-gateway.ts";
+import { startPoller } from "./poller-cron.ts";
 import { killSession, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
+import { RESUME_EVENT } from "./workflows/implementation.ts";
 
 /** Phase 2 adapter registry — only `claude` is implemented. */
 function getAdapter(name: string): AgentAdapter {
@@ -44,6 +47,18 @@ async function main(): Promise<void> {
     getAdapter,
   });
 
+  // GitHub poller: every 60s, for each parked workflow with an armed wait, fire
+  // its resume signal when the unblocking event appears (a human reply, or a PR
+  // review verdict). `fireSignal` delivers it to the engine that hosts the
+  // parked execution. NOTE: routing dispatches through this long-lived engine
+  // (so parked executions live here to be resumed) is the Phase 8 auto-dispatch
+  // integration; the poller + signal seam are in place ahead of it.
+  const stopPoller = await startPoller({
+    db,
+    github: ghPollGateway,
+    fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
+  });
+
   console.log(
     `middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`,
   );
@@ -58,6 +73,11 @@ async function main(): Promise<void> {
       await stopWatchdog();
     } catch (error) {
       console.error(`shutdown: stopWatchdog failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopPoller();
+    } catch (error) {
+      console.error(`shutdown: stopPoller failed — ${(error as Error).message}`);
     }
     try {
       hookServer.stop();

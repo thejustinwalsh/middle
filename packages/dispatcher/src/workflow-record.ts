@@ -188,6 +188,86 @@ export function armWaitForSignal(
   );
 }
 
+export type ArmedSignal = { signalName: string; payloadJson: string | null };
+
+/** A parked workflow the poller is watching: its armed wait joined to repo/epic. */
+export type PollableWait = {
+  workflowId: string;
+  repo: string;
+  epicNumber: number | null;
+  signalName: string;
+  createdAt: number;
+  firedAt: number | null;
+};
+
+/**
+ * Every armed wait on a parked (`waiting-human`) workflow, joined to its
+ * repo/epic — the poller's working set. Already-fired waits are included so the
+ * poller can decide idempotently; the poller filters on `firedAt`.
+ */
+export function loadPollableWaits(db: Database): PollableWait[] {
+  return db
+    .query(
+      `SELECT s.workflow_id, s.signal_name, s.created_at, s.fired_at,
+              w.repo, w.epic_number
+         FROM waitfor_signals s
+         JOIN workflows w ON w.id = s.workflow_id
+        WHERE w.state = 'waiting-human'`,
+    )
+    .all()
+    .map((r) => {
+      const row = r as {
+        workflow_id: string;
+        signal_name: string;
+        created_at: number;
+        fired_at: number | null;
+        repo: string;
+        epic_number: number | null;
+      };
+      return {
+        workflowId: row.workflow_id,
+        repo: row.repo,
+        epicNumber: row.epic_number,
+        signalName: row.signal_name,
+        createdAt: row.created_at,
+        firedAt: row.fired_at,
+      };
+    });
+}
+
+/** Mark a workflow's armed wait as fired so the poller won't re-fire it. */
+export function markSignalFired(db: Database, workflowId: string, ts: number = Date.now()): void {
+  db.run("UPDATE waitfor_signals SET fired_at = ? WHERE workflow_id = ?", [ts, workflowId]);
+}
+
+/**
+ * The signal armed for this workflow, or null. The poller reads this to learn
+ * what an Epic is waiting on (the epic-scoped, reason-scoped `signal_name`)
+ * without consuming it; only a successful resume consumes the row.
+ */
+export function getWaitForSignal(db: Database, workflowId: string): ArmedSignal | null {
+  const row = db
+    .query(
+      "SELECT signal_name, payload_json FROM waitfor_signals WHERE workflow_id = ? LIMIT 1",
+    )
+    .get(workflowId) as { signal_name: string; payload_json: string | null } | null;
+  if (!row) return null;
+  return { signalName: row.signal_name, payloadJson: row.payload_json };
+}
+
+/**
+ * Consume (delete) the armed signal for a workflow on resume, returning what it
+ * was. The durable `waitfor_signals` row is middle's own record that the
+ * workflow is parked — distinct from bunqueue's in-memory `exec.signals`. It is
+ * armed when the workflow parks and consumed exactly once when it resumes, so a
+ * resumed workflow no longer reads as waiting and the poller stops watching it.
+ */
+export function consumeWaitForSignal(db: Database, workflowId: string): ArmedSignal | null {
+  const armed = getWaitForSignal(db, workflowId);
+  if (armed) db.run("DELETE FROM waitfor_signals WHERE workflow_id = ?", [workflowId]);
+  return armed;
+}
+
 type WorkflowRow = {
   id: string;
   kind: string;
