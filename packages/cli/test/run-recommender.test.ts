@@ -18,8 +18,12 @@ const GIT_ENV = {
 };
 
 async function git(cwd: string, args: string[]): Promise<void> {
-  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "ignore", env: GIT_ENV });
-  await proc.exited;
+  // Fail loud on a non-zero exit so a broken fixture surfaces here, not as a
+  // misleading assertion failure further down. stderr is captured for the message.
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe", env: GIT_ENV });
+  if ((await proc.exited) !== 0) {
+    throw new Error(`git ${args.join(" ")} (in ${cwd}): ${await new Response(proc.stderr).text()}`);
+  }
 }
 
 function silence(): () => void {
