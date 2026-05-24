@@ -519,6 +519,34 @@ Closes #<num>
 
 **Stop here.** The skill does not merge the PR. The human reviews and merges; that's the final gate.
 
+## Phase 11 — Addressing review feedback (when changes are requested)
+
+Marking the PR ready (Phase 10) is not always the end. A reviewer — a human, or an automated reviewer like CodeRabbit — may request changes. **This is a loop, not a one-shot:** you address the pass, re-request review, and wait for the next verdict. An `APPROVED` ends it (the human merges; the skill never does). Each `CHANGES_REQUESTED` pass is **one round**; a never-satisfied loop is bounded (see "Running under middle" for the round cap).
+
+When you pick up a review pass, run this procedure **in order** — it's the same whether you're a human-driven agent or resumed by middle, so the two behave identically:
+
+1. **Pull the whole pass first — batch, don't drip.** Fetch *every* open review thread before changing a line: the inline comments and the review bodies.
+   ```bash
+   gh api repos/{owner}/{repo}/pulls/<n>/comments    # inline thread comments
+   gh pr view <n> --json reviews --jq '.reviews[] | {author: .author.login, state, body}'
+   ```
+   Reading the whole pass first is what lets you fix by *class* instead of comment-by-comment.
+
+2. **Resolve each finding class-wide, with a test per fix.** If a comment flags one instance of a bug, grep for the rest and fix them all in one change. A fix without a regression test is not a fix — the test is the evidence the finding is closed and stays closed.
+
+3. **Run the internal clean-eyes review loop before re-requesting.** Dispatch a review subagent (`superpowers:requesting-code-review`) over the *batched* diff — the whole pass's changes, read fresh — and loop: address what it surfaces, re-run it, until a pass surfaces nothing new. This catches the adjacent edges the reviewer's spot-checks implied but didn't enumerate, so you don't burn a whole review round on something a clean-eyes pass would have caught.
+
+4. **Push once.** One push for the entire pass — not one per fix. The reviewer (and any re-review bot) reacts to a single new head commit, so batch-then-push keeps the review history legible and avoids re-triggering the bot mid-edit.
+
+5. **Reply in-thread, then re-request review.** Reply to each addressed comment on its own thread (what changed, where), then formally re-request review so the verdict re-fires:
+   ```bash
+   gh api repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies -f body="Fixed in <sha> — <what changed>"
+   gh pr edit <n> --add-reviewer <login>   # or the API re-request; a bot re-reviews on the new push
+   ```
+   Then **stop and wait for the next verdict.** Don't pre-emptively mark anything resolved you haven't addressed.
+
+**Do not** open a new PR, rebase away the review history, or merge. The branch and PR are the same long-lasting context they've always been; you're adding commits to them.
+
 ## Quick reference
 
 | Step | Command |
@@ -628,7 +656,12 @@ Completed sub-issues stay done on the branch; only the current one is paused. On
 
 ### You may be resumed mid-workstream
 
-When a human answers, middle re-spawns you with the answer injected into your prompt. Your branch, draft PR, `plan.md`, and `decisions.md` are all intact — **continue the workstream from where it is**, don't restart. Re-read the PR's Status section and `plan.md` to orient.
+When you parked — either because you asked a question (`blocked.json`) or because you marked the PR ready and a reviewer's verdict is pending — middle ends your session to free the slot and parks the workflow on a wait signal. When the unblocking event lands on GitHub, it **re-spawns you as a fresh session in the same worktree** (same branch, same PR — never a new one), re-primed via a rewritten `.middle/prompt.md`. Your branch, draft PR, `plan.md`, and `decisions.md` are all intact — **continue the workstream from where it is**, don't restart. Re-read the PR's Status section and `plan.md` to orient. Two resume reasons:
+
+- **A human answered your question.** The reply is injected into your brief. Fold it into your plan / decisions log and continue.
+- **A reviewer requested changes.** Your brief is an "address review" brief naming the round. Pull the PR's review threads yourself (`gh`) and follow **Phase 11 — Addressing review feedback** exactly (batch → resolve class-wide with a test per fix → internal clean-eyes review loop → push once → reply in-thread → re-request review → stop). Then the workflow re-parks for the next verdict.
+
+The review loop is bounded: after the repo's configured round cap (default **5**) of `CHANGES_REQUESTED` passes without an `APPROVED`, the workflow stops auto-resuming and parks for a human. An `APPROVED` (or a clean re-review with zero actionable comments) ends the loop — and, as ever, **you never merge**; the human does.
 
 ### The plan comment is mechanically gated (reinforces Phase 4)
 
