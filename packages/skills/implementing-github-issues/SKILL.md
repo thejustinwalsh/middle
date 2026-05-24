@@ -24,6 +24,8 @@ Before anything else, check for `.middle/prompt.md` in the working directory. If
 
 **Hard rule: the skill never merges the PR.** The PR is the long-lasting context for the workstream; merging is the human's final gate. The terminal state is "PR open, all phases verified, follow-ups filed, marked ready for review."
 
+**The PR must be cleanly mergeable.** A human (or middle) merges at the very end — a branch that conflicts with `main` stalls at that gate, after all the verification work is done. Keep the branch synced with `main` as you go and resolve any divergence *before* you mark ready; conflict resolution is your job, never a problem you hand to the merger. See **"Keeping the branch mergeable into main"** for the rebase-vs-merge rules.
+
 ## When to use
 
 - User pastes an issue number (`#123`), URL (`https://github.com/.../issues/123`), or says "implement #N"
@@ -485,6 +487,11 @@ The bar before you mark ready: an external reviewer should only be able to surfa
 # Acceptance evidence table: every criterion met or stakeholder-deferred (10a).
 gh pr edit <pr-num> --body-file <final-body>
 
+# Confirm the branch merges cleanly into main BEFORE marking ready. A conflicted
+# PR isn't ready — sync per "Keeping the branch mergeable into main", re-verify,
+# then re-check. `mergeable` should be MERGEABLE (not CONFLICTING).
+gh pr view <pr-num> --json mergeable,mergeStateStatus
+
 # Mark the PR ready for review (transitions out of draft)
 gh pr ready <pr-num>
 ```
@@ -560,11 +567,45 @@ Example of the trap: a comment "this heading match is too loose" is a *symptom* 
 
 This deliberately extends `superpowers:receiving-code-review` (which leans pure-literal — "one item at a time", YAGNI) for the autonomous-dispatch context, where round-trips are costly and capped.
 
+## Keeping the branch mergeable into main
+
+A PR that can't merge cleanly isn't ready. A human (or middle) merges at the end, and a conflicted branch stalls there with all the work already done. Keep the branch mergeable *as you go*, and resolve divergence *before* you mark ready — never leave it for the merger.
+
+**Turn on `git rerere` once, at the start of the workstream.** It records how you resolve each conflict hunk and **replays the identical resolution automatically** the next time that same conflict reappears — across a multi-commit rebase, a re-attempted rebase, or a later sync. It turns "resolve the same conflict five times during one rebase" into "resolve it once." When a merge resolution is hard-won, rerere is what stops you re-earning it.
+
+```bash
+git config rerere.enabled true   # repo/worktree-local; persists your resolutions
+```
+
+**Default: rebase onto latest `main`.** It keeps history atomic — the repo convention is "we rebase, we don't squash." Sync periodically so divergence stays small; small conflicts are cheap, a long-stale branch is not:
+
+```bash
+git fetch origin
+git rebase origin/main   # rerere replays known resolutions; resolve the rest, then `git rebase --continue`
+```
+
+**Escape hatch — a single merge commit — when a rebase fights you.** Reach for `git merge origin/main` instead when `main` has moved with changes that **interleave deeply with your branch's own re-architecture**: a per-commit replay produces misleading intermediate states, or the conflict markers stop mapping to logical changes (you find yourself resolving the "same" hunk differently at each step because the surrounding code keeps shifting underfoot). Rebase optimizes for clean history; when history-cleanliness and correctness conflict, correctness wins.
+
+```bash
+git fetch origin
+git merge origin/main    # one holistic resolution instead of N brittle per-commit replays
+```
+
+**Resolution heuristic (load-bearing): take the new work as the base, re-apply main's edits on top.** When both sides changed the same function, start from *your branch's* version — the new work is the reason the PR exists — and layer `main`'s incoming edits back onto it, rather than reconciling both halves symmetrically hunk-by-hunk. Symmetric reconciliation thrashes; a directed "new-work-as-base" merge converges.
+
+**Always re-verify after resolving — a clean merge is not a correct one.** Run the full test suite + typecheck (and any checked-in-asset sync gate, e.g. a skills mirror) before you commit the resolution. A merge that compiles can still have silently dropped a semantic change from either side.
+
+**Note the strategy in the PR.** One line in the description — "rebased onto main" or "merged main (deep interleave with X — single resolution)" — so the reviewer knows what they're about to merge and can spot a botched resolution.
+
 ## Quick reference
 
 | Step | Command |
 |---|---|
 | Fetch issue | `gh issue view <n> --json number,title,body,labels,comments,url` |
+| Enable conflict-resolution replay | `git config rerere.enabled true` (once, at workstream start) |
+| Sync branch (default) | `git fetch origin && git rebase origin/main` |
+| Sync branch (deep interleave) | `git fetch origin && git merge origin/main` (new-work-as-base; re-verify) |
+| Check mergeability before ready | `gh pr view <n> --json mergeable,mergeStateStatus` |
 | Comment plan | `gh issue comment <n> --body-file planning/issues/<n>/plan.md` |
 | Open draft PR up front | `gh pr create --draft --title "..." --body "..."` |
 | Update PR body | `gh pr edit <n> --body-file ...` (or `gh api PATCH ...` if blocked) |
@@ -591,6 +632,8 @@ These thoughts mean you're about to violate the workflow:
 | "Let me debate A vs B in the plan" | Have you checked CLAUDE.md / repo skills / project docs? If they don't decide, worktree both options. If both built artifacts come back tied, *then* escalate. |
 | "Once I pick a fork, I'll keep the loser branch around 'just in case'" | Delete it. Forks are disambiguation, not insurance. |
 | "I'll squash these atomic commits into one" | Don't. Rebase, keep history atomic. The repo convention is meaningful per-change commits. |
+| "There are conflicts with main, but the reviewer can sort them out at merge" | No. A cleanly-mergeable PR is your responsibility. Sync per "Keeping the branch mergeable into main" — rebase by default, merge for deep interleave — re-verify, then mark ready. |
+| "This rebase keeps re-conflicting on the same hunks" | Enable `git rerere` so resolutions replay. If the branch deeply re-architected what main also changed, stop rebasing and do a single `git merge origin/main` (new-work-as-base). |
 | "I'll merge the PR myself when verification passes" | Never. Human review is the final gate. The skill stops at "PR ready for review." |
 | "Build passed, the work must be correct" | Build success ≠ feature correctness. Especially for UI work — type checks and unit tests don't tell you if the new layout actually renders. Use `agent-browser` for visual verification on UI changes. |
 | "I'll skip the issue comment, the plan is obvious" | The plan-as-comment is the contract. Post it. |
@@ -690,6 +733,10 @@ Your worktree contains a `.middle/` directory (hooks, session state). Do not rea
 ### Don't sit idle
 
 Middle's watchdog tracks liveness from hook events on your tool calls. A long stall (default ~15 min with no tool activity) gets your session killed and the workflow marked failed. If you're stuck: make progress, fork to disambiguate, or write `blocked.json` and exit cleanly — never idle.
+
+### Keep the branch mergeable — no human is babysitting the rebase (reinforces Phase 10)
+
+The human's only action at the end is to *merge*. If your branch conflicts with `main`, that merge stalls and the whole headless run was for nothing. Nobody is watching to rebase it for you. Enable `git rerere` at the start of the run, sync against `origin/main` as you work, and confirm `gh pr view <n> --json mergeable` reads `MERGEABLE` before you `gh pr ready`. Resolve divergence per **"Keeping the branch mergeable into main"** — rebase by default, a single `git merge` (new-work-as-base) for deep interleave — and re-run the gates after resolving.
 
 ### Unchanged: you never merge
 
