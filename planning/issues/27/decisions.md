@@ -90,3 +90,19 @@ Phase 6 (explicitly out of scope for #30).
 agent legitimately holding a checked box. Diffing keeps the gate firing exactly on the transition
 the spec calls out. Injecting the runner keeps this task to "detection + revert + comment" as
 scoped.
+
+## Positive done-signal: bare-stop resolved by a bounded nudge loop, not by default
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`
+**Date:** 2026-05-23
+
+**Decision:** A `bare-stop` no longer maps straight to `completed`. When an `epicPrReadiness` seam
+is wired, the drive loop resolves a bare-stop by checking for a ready, non-draft Epic PR; absent
+that signal it sends a same-session "continue" nudge and re-awaits the Stop, bounded by
+`maxNudges` (default 3), then parks in `waiting-human` (a new dispatcher-only `nudge-exhausted`
+outcome). A nudge that yields a definitive classification (done/question/failure/rate-limit)
+short-circuits. Without the seam, the legacy "bare-stop → completed" mapping is preserved.
+**Why:** Completion must be a *positive* signal, not the absence of others — a main agent that
+ends a turn mid-work (a natural pause) was being mistaken for "finished" and torn down before a
+PR existed. `nudge-exhausted` is kept out of the core `StopClassification` union because a single
+Stop is never "exhausted" — only the loop is; the adapter's per-Stop classifier stays honest.
+Opt-in via the seam keeps the rate-limit/compensation unit tests (which don't wire it) unaffected.

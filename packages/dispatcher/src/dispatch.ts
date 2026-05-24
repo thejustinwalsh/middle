@@ -170,6 +170,12 @@ export async function dispatchEpic(opts: DispatchEpicOptions): Promise<DispatchE
         dispatcherUrl: `http://127.0.0.1:${hookServer.port}`,
         planCommentReader: ghGitHub,
         agentLogin,
+        // Positive done-signal (#80): a bare-stop only completes if the Epic
+        // already has a ready, non-draft PR.
+        epicPrReadiness: async (repo, epicNumber) => {
+          const pr = await ghGitHub.findEpicPr(repo, epicNumber);
+          return { exists: pr !== null, isDraft: pr?.isDraft ?? false };
+        },
       }),
     );
 
