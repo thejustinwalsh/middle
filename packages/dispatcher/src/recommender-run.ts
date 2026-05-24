@@ -3,8 +3,9 @@ import { basename, dirname, join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
+import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
-import { installBunqueueRaceSwallower, waitForSettle } from "./dispatch.ts";
+import { waitForSettle } from "./engine-settle.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import type { SessionGate } from "./hook-server.ts";
@@ -159,8 +160,10 @@ async function ghSurfaceProblem(opts: { repo: string; stateIssue: number; proble
 /**
  * Run one recommender pass end to end: stand up a hook receiver and engine,
  * spawn the recommender agent in its own dedicated slot, wait for the workflow
- * to settle, then tear everything down. Mirrors `dispatchEpic`'s stack-based
- * cleanup; the recommender is read-only in Phase 7 — `triggerAutoDispatch` is
+ * to settle, then tear everything down. Uses a stack-based cleanup (every
+ * acquired resource pushes its teardown as it's acquired); the recommender is
+ * an ephemeral, self-contained engine — distinct from the daemon-hosted
+ * implementation workflow. It is read-only in Phase 7 — `triggerAutoDispatch` is
  * deliberately left UNWIRED, so a clean run rewrites the state issue but
  * dispatches nothing.
  *

@@ -67,6 +67,21 @@ const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
   transcriptPath: "transcript_path",
 };
 
+/**
+ * An observer notified after every {@link updateWorkflow} write. The daemon
+ * registers one to broadcast middle's DB-only state transitions (`waiting-human`,
+ * handoff-`completed`) that bunqueue's engine never emits — see `main.ts`.
+ * Module-level (process-scoped) and reset to `null` on daemon shutdown.
+ */
+export type UpdateWorkflowObserver = (id: string, patch: WorkflowPatch) => void;
+
+let updateObserver: UpdateWorkflowObserver | null = null;
+
+/** Register (or clear, with `null`) the {@link UpdateWorkflowObserver}. */
+export function setUpdateWorkflowObserver(observer: UpdateWorkflowObserver | null): void {
+  updateObserver = observer;
+}
+
 /** Patch the given fields on a workflow row; always bumps `updated_at`. A no-op patch still touches `updated_at`. */
 export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): void {
   const sets: string[] = ["updated_at = ?"];
@@ -80,6 +95,14 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
   }
   values.push(id);
   db.run(`UPDATE workflows SET ${sets.join(", ")} WHERE id = ?`, values);
+  if (updateObserver) {
+    // The observer (a broadcast) must never break the durable write path.
+    try {
+      updateObserver(id, patch);
+    } catch (error) {
+      console.error(`[workflow-record] update observer threw: ${(error as Error).message}`);
+    }
+  }
 }
 
 /**
@@ -362,6 +385,61 @@ export function listActiveImplementationWorkflows(
     epicNumber: r.epic_number,
     adapter: r.adapter,
     sessionName: r.session_name,
+    state: r.state as WorkflowState,
+  }));
+}
+
+/**
+ * Whether an `implementation` Epic already has a non-terminal workflow row — the
+ * `/control/dispatch` 409 collision guard. A second concurrent run of the same
+ * Epic would clash on the deterministic tmux session + worktree path, so it's
+ * rejected. Scoped to `kind = 'implementation'`: the recommender's own row never
+ * claims a dispatch slot.
+ */
+export function hasNonTerminalEpicWorkflow(db: Database, repo: string, epicNumber: number): boolean {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const row = db
+    .query(
+      `SELECT 1 AS n FROM workflows
+        WHERE kind = 'implementation' AND repo = ? AND epic_number = ?
+          AND state NOT IN (${placeholders})
+        LIMIT 1`,
+    )
+    .get(repo, epicNumber, ...TERMINAL_STATES) as { n: number } | null;
+  return row !== null;
+}
+
+/** A non-terminal workflow as the control-plane init-replay reports it. */
+export type NonTerminalWorkflow = {
+  id: string;
+  repo: string;
+  epicNumber: number | null;
+  state: WorkflowState;
+};
+
+/**
+ * The non-terminal `kind = 'implementation'` workflows — the init-replay set a
+ * fresh `/control/events` subscriber receives so it catches up to current state
+ * (a still-running dispatch, a parked review). Excludes the recommender's row.
+ */
+export function listNonTerminalWorkflows(db: Database): NonTerminalWorkflow[] {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const rows = db
+    .query(
+      `SELECT id, repo, epic_number, state FROM workflows
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(...TERMINAL_STATES) as {
+    id: string;
+    repo: string;
+    epic_number: number | null;
+    state: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    repo: r.repo,
+    epicNumber: r.epic_number,
     state: r.state as WorkflowState,
   }));
 }

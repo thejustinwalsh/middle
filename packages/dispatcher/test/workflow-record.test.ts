@@ -8,6 +8,9 @@ import {
   countActiveImplementationSlots,
   createWorkflowRecord,
   getWorkflow,
+  hasNonTerminalEpicWorkflow,
+  listNonTerminalWorkflows,
+  setUpdateWorkflowObserver,
   updateWorkflow,
 } from "../src/workflow-record.ts";
 
@@ -128,5 +131,67 @@ describe("updateWorkflow", () => {
 describe("getWorkflow", () => {
   test("returns null for an unknown id", () => {
     expect(getWorkflow(db, "nope")).toBeNull();
+  });
+});
+
+describe("hasNonTerminalEpicWorkflow", () => {
+  test("true while an implementation Epic workflow is non-terminal, false once terminal", () => {
+    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 7, adapter: "claude" });
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", 7)).toBe(true);
+    updateWorkflow(db, "a", { state: "completed" });
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", 7)).toBe(false);
+  });
+
+  test("scopes by repo and epic; a recommender row never collides", () => {
+    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 7, adapter: "claude" });
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", 8)).toBe(false); // different epic
+    expect(hasNonTerminalEpicWorkflow(db, "x/y", 7)).toBe(false); // different repo
+    createWorkflowRecord(db, { id: "rec", kind: "recommender", repo: "o/r", epicNumber: 9, adapter: "claude" });
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", 9)).toBe(false); // recommender doesn't claim the slot
+  });
+});
+
+describe("listNonTerminalWorkflows", () => {
+  test("returns id/repo/epic/state for non-terminal implementation rows only", () => {
+    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 1, adapter: "claude" });
+    createWorkflowRecord(db, { id: "b", kind: "implementation", repo: "o/r", epicNumber: 2, adapter: "claude" });
+    createWorkflowRecord(db, { id: "rec", kind: "recommender", repo: "o/r", epicNumber: null, adapter: "claude" });
+    updateWorkflow(db, "a", { state: "waiting-human" });
+    updateWorkflow(db, "b", { state: "completed" }); // terminal → excluded
+    const rows = listNonTerminalWorkflows(db);
+    expect(rows).toEqual([{ id: "a", repo: "o/r", epicNumber: 1, state: "waiting-human" }]);
+  });
+});
+
+describe("setUpdateWorkflowObserver", () => {
+  test("notifies the observer of each patch, and stops after reset", () => {
+    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 1, adapter: "claude" });
+    const seen: Array<{ id: string; state?: string }> = [];
+    setUpdateWorkflowObserver((id, patch) => seen.push({ id, state: patch.state }));
+    try {
+      updateWorkflow(db, "a", { state: "waiting-human" });
+      updateWorkflow(db, "a", { worktreePath: "/wt" }); // no state → still observed
+      expect(seen).toEqual([
+        { id: "a", state: "waiting-human" },
+        { id: "a", state: undefined },
+      ]);
+    } finally {
+      setUpdateWorkflowObserver(null);
+    }
+    updateWorkflow(db, "a", { state: "completed" });
+    expect(seen).toHaveLength(2); // no further notifications after reset
+  });
+
+  test("a throwing observer does not break the DB write", () => {
+    createWorkflowRecord(db, { id: "a", kind: "implementation", repo: "o/r", epicNumber: 1, adapter: "claude" });
+    setUpdateWorkflowObserver(() => {
+      throw new Error("observer boom");
+    });
+    try {
+      updateWorkflow(db, "a", { state: "launching" });
+      expect(getWorkflow(db, "a")!.state).toBe("launching");
+    } finally {
+      setUpdateWorkflowObserver(null);
+    }
   });
 });
