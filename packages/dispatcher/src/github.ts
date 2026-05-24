@@ -67,6 +67,19 @@ function ownerRepo(repo: string): { owner: string; name: string } {
   return { owner: owner ?? "", name: name ?? "" };
 }
 
+/**
+ * The `owner/name` a comment lives in, taken from the comment URL itself (which
+ * encodes it: `https://github.com/{owner}/{name}/issues|pull/...`). The URL is
+ * authoritative — a single daemon serves many repos, so a comment's repo must
+ * come from the comment, not from an ambient slug. Falls back to `fallbackRepo`
+ * only when the URL doesn't carry it.
+ */
+function repoFromCommentUrl(url: string, fallbackRepo: string): { owner: string; name: string } {
+  const match = /github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\//.exec(url);
+  if (match) return { owner: match[1]!, name: match[2]! };
+  return ownerRepo(fallbackRepo);
+}
+
 /** The gh-authenticated account's login (the identity the agent posts as), or undefined. */
 export async function resolveAgentLogin(): Promise<string | undefined> {
   const result = await run(["gh", "api", "user", "--jq", ".login"]);
@@ -157,7 +170,7 @@ export const ghGitHub: GitHubGateway = {
   },
 
   async getCommentAuthor(repo, commentUrl) {
-    const { owner, name } = ownerRepo(repo);
+    const { owner, name } = repoFromCommentUrl(commentUrl, repo);
     // Comment URLs carry the comment id in their fragment:
     //   .../issues/27#issuecomment-123     → /repos/{o}/{r}/issues/comments/123
     //   .../pull/86#discussion_r456        → /repos/{o}/{r}/pulls/comments/456

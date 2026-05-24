@@ -47,3 +47,59 @@ post-`start()`, and stays engine-free (testable without bunqueue).
 resolveAgentLogin()"), resolves the login exactly once per build, and lets tests
 inject a stub so no `gh` shell-out happens in unit tests. #113's "main resolves
 once" is still satisfied — it's resolved once, inside the shared factory.
+
+## Daemon is multi-repo: a per-repo checkout registry feeds resolveRepoPath
+**File(s):** `packages/dispatcher/src/main.ts`
+**Date:** 2026-05-24
+
+**Decision:** The daemon keeps an in-memory `Map<repoSlug, repoPath>` populated by
+`/control/dispatch` (the body carries `repoPath`). `resolveRepoPath(repo)` reads
+it; a missing entry throws. The map is in-memory — parked execs don't survive a
+daemon restart anyway (deferred durability, #116).
+**Why:** `buildImplementationDeps` bakes a single `resolveRepoPath`, but the
+daemon hosts dispatches for any repo and learns each checkout's path only from
+its dispatch request. A registry keyed by the repo slug (what the workflow passes
+to `resolveRepoPath`) is the minimal correct seam.
+
+## The PR-ready gate's comment-author repo comes from the comment URL, not a baked slug
+**File(s):** `packages/dispatcher/src/github.ts`, `build-deps.ts`
+**Date:** 2026-05-24
+
+**Decision:** `getCommentAuthor` derives `owner/repo` from the comment URL itself
+(the URL already encodes it), falling back to the passed `repo` only when the URL
+lacks it. `buildImplementationDeps.repoSlug` becomes optional (the daemon passes
+none).
+**Why:** A single daemon serves many repos, so a baked `repoSlug` for the gate's
+deferral-author check is wrong for all but one. The comment URL is authoritative
+about which repo a comment lives in, so deriving from it is both correct and
+multi-repo-safe — and removes the need for the daemon to know a repo at startup.
+A wrong repo previously failed safe (404 → deny), but URL-derivation is simply
+correct.
+
+## installBunqueueRaceSwallower moves to its own module (survives #115)
+**File(s):** `packages/dispatcher/src/bunqueue-race.ts`
+**Date:** 2026-05-24
+
+**Decision:** Move `installBunqueueRaceSwallower` (+ its regex) out of `dispatch.ts`
+into `bunqueue-race.ts`; `dispatch.ts`, `recommender-run.ts`, and the daemon all
+import it from there. The daemon installs it at startup and removes it on shutdown.
+**Why:** #113 requires the swallower in the daemon's lifecycle path, and #115
+guts `dispatch.ts`'s engine path. A standalone home keeps the swallower (still
+used by `recommender-run.ts`'s ephemeral engine) from being lost when `dispatchEpic`
+is deleted. `waitForSettle` stays in `dispatch.ts` — `recommender-run.ts` shares it.
+
+## Hybrid SSE source: engine.onAny (bunqueue states) + an updateWorkflow observer (DB-only states)
+**File(s):** `packages/dispatcher/src/main.ts`, `workflow-record.ts`
+**Date:** 2026-05-24
+
+**Decision:** Broadcast `{type:"workflow", data:{id,repo,epic,state}}` from two
+sources: `engine.onAny` for bunqueue lifecycle states (running/waiting/completed/
+failed/compensating), and a module-level `setUpdateWorkflowObserver` hook on
+`updateWorkflow` for middle's DB-only states (waiting-human, handoff-completed)
+that bunqueue never emits. Both go through one `broadcastWorkflow(id, state)`
+that looks up repo/epic from the row.
+**Why:** Neither source alone is complete — bunqueue doesn't know middle's
+`waiting-human`, and the DB observer doesn't see bunqueue's own `running`/`waiting`
+transitions. The client (#114) needs the park signal (`waiting-human`) to exit 0,
+so the DB observer is load-bearing. Duplicate states across sources are harmless
+(the client exits on the first terminal/park it sees).

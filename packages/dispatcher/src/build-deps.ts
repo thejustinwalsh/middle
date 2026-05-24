@@ -29,8 +29,13 @@ export type BindServer = (prReadyGate: PrReadyGateHandler) => {
 /** Inputs for {@link buildImplementationDeps}. */
 export type BuildImplementationDepsArgs = {
   db: Database;
-  /** `owner/name` — used to resolve a deferral comment's author for the gate. */
-  repoSlug: string;
+  /**
+   * `owner/name` — a *fallback* for resolving a deferral comment's author. The
+   * comment's repo is taken from the comment URL itself (URL-authoritative), so
+   * the daemon, which serves many repos, can omit this; the single-repo
+   * standalone path passes its slug.
+   */
+  repoSlug?: string;
   getAdapter: (name: string) => AgentAdapter;
   resolveRepoPath: (repo: string) => string;
   worktreeRoot: string;
@@ -85,7 +90,7 @@ export async function buildImplementationDeps(
       return { repo: workflow.repo, epicNumber: workflow.epicNumber };
     },
     findEpicPr: (repo, epicNumber) => github.findEpicPr(repo, epicNumber),
-    resolveCommentAuthor: (url) => github.getCommentAuthor(args.repoSlug, url),
+    resolveCommentAuthor: (url) => github.getCommentAuthor(args.repoSlug ?? "", url),
   });
 
   // The agent posts to GitHub as the dispatcher's gh identity; resolve it once

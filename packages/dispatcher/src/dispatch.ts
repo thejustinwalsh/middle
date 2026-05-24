@@ -4,6 +4,7 @@ import type { AgentAdapter } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import type { Execution } from "bunqueue/workflow";
 import { buildImplementationDeps } from "./build-deps.ts";
+import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
@@ -51,33 +52,6 @@ export async function waitForSettle(
     if (Date.now() >= deadlineAt) return execution ?? null;
     await Bun.sleep(200);
   }
-}
-
-/**
- * bunqueue's worker can throw `Invalid or expired lock token …` from inside
- * `handleJobFailure` when the engine is shutting down concurrently with a
- * failing job — surfaces as a runtime-killing unhandledRejection. Swallow only
- * that specific message during a dispatch, and remove the listener again on
- * exit. Anything else falls through to the runtime's normal crash semantics.
- */
-const BUNQUEUE_LOCK_TOKEN_RE = /Invalid or expired lock token for job/;
-
-export function installBunqueueRaceSwallower(): () => void {
-  const listener = (reason: unknown): void => {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    if (BUNQUEUE_LOCK_TOKEN_RE.test(message)) {
-      console.error(`[dispatch] suppressed benign bunqueue lifecycle race: ${message}`);
-      return;
-    }
-    // not ours — re-raise so Bun crashes the way it would have without us
-    queueMicrotask(() => {
-      throw reason;
-    });
-  };
-  process.on("unhandledRejection", listener);
-  return () => {
-    process.off("unhandledRejection", listener);
-  };
 }
 
 /**
