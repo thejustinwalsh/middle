@@ -22,6 +22,7 @@ import {
   type RecommenderContext,
   type RecommenderDeps,
   type RecommenderInput,
+  sessionNameFor,
 } from "../src/workflows/recommender.ts";
 import { createWorktree, destroyWorktree, listWorktrees } from "../src/worktree.ts";
 
@@ -521,5 +522,27 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     // Global: both repos' agents count toward global_used (shared db).
     expect(ctx.slots.total.globalUsed).toBe(2);
     expect(ctx.slots.total.globalMax).toBe(4);
+  });
+});
+
+describe("recommender workflow — sessionNameFor collision-resistance", () => {
+  const name = (repo: string) => sessionNameFor({ repo, stateIssue: 1, adapter: "claude" });
+
+  test("is deterministic for a given repo", () => {
+    expect(name("thejustinwalsh/middle")).toBe(name("thejustinwalsh/middle"));
+  });
+
+  test("produces a tmux-safe session name (no separators survive)", () => {
+    // Only the chars tmux tolerates in a session name; the hash is lowercase hex
+    // (≤ 8 chars — a leading-zero value can be shorter, which is still unique).
+    expect(name("the.just/in walsh/middle")).toMatch(/^middle-rec-[A-Za-z0-9_-]+-[0-9a-f]{1,8}$/);
+  });
+
+  test("distinct repos that share a lossy slug do not collide", () => {
+    // Both slug to `a-b` once separators are replaced; the raw-repo hash splits them.
+    expect(name("a/b")).not.toBe(name("a-b"));
+    // A stripped character must not erase the distinction either.
+    expect(name("a/b")).not.toBe(name("a/b!"));
+    expect(name("owner/repo")).not.toBe(name("owner/rep o"));
   });
 });

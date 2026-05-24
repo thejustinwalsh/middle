@@ -111,10 +111,19 @@ export type RecommenderDeps = {
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60 * 1000; // the spec's 5-minute hard cap
 
-/** Deterministic, repo-namespaced session name for the recommender's dedicated slot. */
-function sessionNameFor(input: RecommenderInput): string {
+/**
+ * Deterministic, repo-namespaced session name for the recommender's dedicated
+ * slot. The readable slug is lossy — separator-replacement collapses distinct
+ * repos onto the same string (`a/b` and `a-b`, or two repos differing only in a
+ * stripped character) — so a short hash of the *raw* `repo` disambiguates. The
+ * session name is the key for `killSession`/`sendText`; a collision would let
+ * two repos' recommender runs corrupt each other's tmux lifecycle. Exported so
+ * the collision-resistance is unit-testable.
+ */
+export function sessionNameFor(input: RecommenderInput): string {
   const repoSlug = input.repo.replace(/[^A-Za-z0-9_-]/g, "-");
-  return `middle-rec-${repoSlug}`;
+  const hash = Bun.hash(input.repo).toString(16).slice(0, 8);
+  return `middle-rec-${repoSlug}-${hash}`;
 }
 
 /**
