@@ -286,6 +286,38 @@ type WorkflowRow = {
   controlled_by: string;
 };
 
+/** Live implementation-slot usage: total + per-adapter counts. */
+export type SlotUsageCounts = {
+  total: number;
+  perAdapter: Record<string, number>;
+};
+
+/**
+ * Count the non-terminal `kind = "implementation"` workflows that are occupying
+ * a dispatch slot, total and grouped by adapter. The recommender's own row
+ * (`kind = "recommender"`) is deliberately excluded — it runs on its own
+ * dedicated slot and is never counted against `maxConcurrent` (build spec →
+ * "recommender workflow": "not counted against maxConcurrent"). This is the
+ * `slots.used` the recommender's build-prompt injects verbatim.
+ */
+export function countActiveImplementationSlots(db: Database): SlotUsageCounts {
+  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const rows = db
+    .query(
+      `SELECT adapter, count(*) AS n FROM workflows
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})
+        GROUP BY adapter`,
+    )
+    .all(...TERMINAL_STATES) as { adapter: string; n: number }[];
+  const perAdapter: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows) {
+    perAdapter[row.adapter] = row.n;
+    total += row.n;
+  }
+  return { total, perAdapter };
+}
+
 /** Fetch a workflow row by id, or null if it does not exist. */
 export function getWorkflow(db: Database, id: string): WorkflowRecord | null {
   const row = db.query("SELECT * FROM workflows WHERE id = ?").get(id) as WorkflowRow | null;

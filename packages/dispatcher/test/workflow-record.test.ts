@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAndMigrate } from "../src/db.ts";
-import { createWorkflowRecord, getWorkflow, updateWorkflow } from "../src/workflow-record.ts";
+import {
+  countActiveImplementationSlots,
+  createWorkflowRecord,
+  getWorkflow,
+  updateWorkflow,
+} from "../src/workflow-record.ts";
 
 let dir: string;
 let db: Database;
@@ -35,6 +40,35 @@ describe("createWorkflowRecord", () => {
     expect(row!.repo).toBe("thejustinwalsh/middle");
     expect(row!.bunqueueExecutionId).toBe("exec-1");
     expect(row!.controlledBy).toBe("middle");
+  });
+});
+
+describe("countActiveImplementationSlots", () => {
+  const mk = (id: string, kind: "implementation" | "recommender", adapter: string, epic: number | null) =>
+    createWorkflowRecord(db, { id, kind, repo: "o/r", epicNumber: epic, adapter });
+
+  test("counts non-terminal implementation rows, grouped by adapter", () => {
+    mk("a", "implementation", "claude", 1);
+    mk("b", "implementation", "claude", 2);
+    mk("c", "implementation", "codex", 3);
+    expect(countActiveImplementationSlots(db)).toEqual({
+      total: 3,
+      perAdapter: { claude: 2, codex: 1 },
+    });
+  });
+
+  test("excludes terminal implementation rows", () => {
+    mk("a", "implementation", "claude", 1);
+    mk("b", "implementation", "claude", 2);
+    updateWorkflow(db, "b", { state: "completed" });
+    expect(countActiveImplementationSlots(db)).toEqual({ total: 1, perAdapter: { claude: 1 } });
+  });
+
+  test("excludes the recommender's own row — its dedicated slot is not a dispatch slot", () => {
+    mk("rec", "recommender", "claude", null);
+    expect(countActiveImplementationSlots(db)).toEqual({ total: 0, perAdapter: {} });
+    mk("a", "implementation", "claude", 1);
+    expect(countActiveImplementationSlots(db)).toEqual({ total: 1, perAdapter: { claude: 1 } });
   });
 });
 
