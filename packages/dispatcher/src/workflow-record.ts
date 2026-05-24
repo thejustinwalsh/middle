@@ -14,7 +14,7 @@ export type WorkflowState =
 
 export type WorkflowRecord = {
   id: string;
-  kind: "implementation" | "recommender";
+  kind: "implementation" | "recommender" | "documentation";
   repo: string;
   epicNumber: number | null;
   adapter: string;
@@ -32,7 +32,7 @@ export type WorkflowRecord = {
 
 export type CreateWorkflowRecordInput = {
   id: string;
-  kind: "implementation" | "recommender";
+  kind: "implementation" | "recommender" | "documentation";
   repo: string;
   epicNumber: number | null;
   adapter: string;
