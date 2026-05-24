@@ -78,3 +78,30 @@ schema is a clear pre-flight error.
 schema lives at the repo root. `mm init` does not yet stamp the schema into arbitrary target
 repos — bundling it there is out of scope for Phase 7 and noted as a follow-up rather than
 silently absorbed. Erroring clearly beats pointing the agent at a non-existent path.
+
+## `check-rate-limit` is `retry: 1` (it creates the row then may throw)
+**File(s):** `packages/dispatcher/src/workflows/recommender.ts` (workflow builder)
+**Date:** 2026-05-24
+
+**Decision:** The `check-rate-limit` step is registered `retry: 1` (one attempt, no retry).
+
+**Why:** It calls `createWorkflowRecord` (an `INSERT` on the `id` primary key) and *then* throws
+on the rate-limited path. bunqueue re-runs the whole handler on retry, so a retried attempt
+would re-run the INSERT and surface a `UNIQUE constraint failed` — masking the real
+rate-limit reason. The check is also deterministic (reads db state), so retrying is pointless.
+Found by the internal clean-eyes review; covered by a rate-limited-path test.
+
+## Slots/in-flight are repo-scoped; `global_used` spans all repos
+**File(s):** `packages/dispatcher/src/workflow-record.ts`, `packages/dispatcher/src/workflows/recommender.ts`
+**Date:** 2026-05-24
+
+**Decision:** `countActiveImplementationSlots` and `listActiveImplementationWorkflows` take an
+optional `repo` filter. `buildRecommenderContext` uses the **repo-scoped** count for
+`slots.perAdapter`/`slots.total` and `in_flight`, and the **unscoped** count for
+`slots.total.global_used`.
+
+**Why:** The dispatcher's db is shared across repos (one `db_path` default). Without the repo
+filter, repo A's recommender would count repo B's active agents against repo A's per-repo `max`
+(yielding `used > max`), and `global_used` would wrongly equal the repo total. The schema's
+`total: { used, max, global_used, global_max }` treats per-repo and global as distinct; this
+honors that. Found by the internal clean-eyes review; covered by a cross-repo scoping test.

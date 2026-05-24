@@ -299,16 +299,23 @@ export type SlotUsageCounts = {
  * dedicated slot and is never counted against `maxConcurrent` (build spec →
  * "recommender workflow": "not counted against maxConcurrent"). This is the
  * `slots.used` the recommender's build-prompt injects verbatim.
+ *
+ * `repo` scopes the count to one repo's slots (per-repo `slots.used` / `total`);
+ * omit it for the cross-repo `global_used`. The dispatcher's db is shared across
+ * repos (one `db_path`), so the repo filter matters — without it, repo A's
+ * recommender would count repo B's agents against repo A's per-repo `max`.
  */
-export function countActiveImplementationSlots(db: Database): SlotUsageCounts {
+export function countActiveImplementationSlots(db: Database, repo?: string): SlotUsageCounts {
   const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const repoClause = repo === undefined ? "" : " AND repo = ?";
+  const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
   const rows = db
     .query(
       `SELECT adapter, count(*) AS n FROM workflows
-        WHERE kind = 'implementation' AND state NOT IN (${placeholders})
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})${repoClause}
         GROUP BY adapter`,
     )
-    .all(...TERMINAL_STATES) as { adapter: string; n: number }[];
+    .all(...params) as { adapter: string; n: number }[];
   const perAdapter: Record<string, number> = {};
   let total = 0;
   for (const row of rows) {
@@ -330,16 +337,22 @@ export type ActiveImplementationWorkflow = {
  * The non-terminal `kind = "implementation"` workflows — the dispatcher's
  * authoritative in-flight set the recommender consumes verbatim (it never
  * recomputes them). The recommender's own row is excluded by the `kind` filter.
+ * `repo` scopes the list to one repo (the shared db spans repos); omit it for all.
  */
-export function listActiveImplementationWorkflows(db: Database): ActiveImplementationWorkflow[] {
+export function listActiveImplementationWorkflows(
+  db: Database,
+  repo?: string,
+): ActiveImplementationWorkflow[] {
   const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const repoClause = repo === undefined ? "" : " AND repo = ?";
+  const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
   const rows = db
     .query(
       `SELECT epic_number, adapter, session_name, state FROM workflows
-        WHERE kind = 'implementation' AND state NOT IN (${placeholders})
+        WHERE kind = 'implementation' AND state NOT IN (${placeholders})${repoClause}
         ORDER BY created_at ASC, rowid ASC`,
     )
-    .all(...TERMINAL_STATES) as {
+    .all(...params) as {
     epic_number: number | null;
     adapter: string;
     session_name: string | null;

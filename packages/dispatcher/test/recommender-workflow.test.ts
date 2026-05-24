@@ -279,6 +279,36 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
     expect(stepDef(makeHarness().deps, "prepare-shallow-worktree")!.compensate).toBeDefined();
   });
 
+  test("check-rate-limit does not retry — it creates the row then may throw, and a retry would re-INSERT", () => {
+    // retry: 1 means one attempt, no retries (see the factory comment). Guards
+    // against a retried step re-running createWorkflowRecord → UNIQUE violation
+    // that would mask the real rate-limit reason.
+    expect(stepDef(makeHarness().deps, "check-rate-limit")!.retry).toBe(1);
+  });
+
+  test("a rate-limited adapter fails the run with state 'rate-limited' (not a UNIQUE error)", async () => {
+    setRateLimited(db, {
+      adapter: "stub",
+      resetAt: Date.parse("2099-01-01T00:00:00Z"), // far future → still limited
+      source: "transcript",
+    });
+    const h = makeHarness();
+    engine.register(createRecommenderWorkflow(h.deps));
+    const handle = await engine.start("recommender", INPUT);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const s = engine.getExecution(handle.id)?.state;
+      if (s === "failed" || s === "completed") break;
+      await Bun.sleep(15);
+    }
+    expect(engine.getExecution(handle.id)?.state).toBe("failed");
+    // The row state was set to rate-limited before the throw; no second attempt
+    // re-ran the INSERT (retry: 1), so it isn't a masked UNIQUE failure.
+    expect(getWorkflow(db, handle.id)!.state).toBe("rate-limited");
+    // Never advanced past the first step — no worktree was created.
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+  });
+
   test("a launch failure compensates: worktree rolled back, session freed, state 'compensated'", async () => {
     const h = makeHarness({ failSession: true });
     const id = await runToEnd(h.deps);
@@ -434,6 +464,7 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
 
     const ctx = buildRecommenderContext({
       db,
+      repo: REPO,
       adapters: ["claude", "codex"],
       maxPerAdapter: { claude: 2, codex: 1 },
       repoMax: 3,
@@ -459,6 +490,7 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     updateWorkflow(db, "rec", { state: "running" });
     const ctx = buildRecommenderContext({
       db,
+      repo: REPO,
       adapters: ["claude"],
       maxPerAdapter: { claude: 2 },
       repoMax: 2,
@@ -467,5 +499,27 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     expect(ctx.inFlight).toEqual([]);
     expect(ctx.slots.total.used).toBe(0);
     expect(ctx.rateLimits.github).toBe("UNKNOWN");
+  });
+
+  test("scopes per-repo slots/in_flight to the repo, but global_used spans all repos", () => {
+    mk("a", "claude", 6, "middle-x-6"); // REPO
+    createWorkflowRecord(db, { id: "b", kind: "implementation", repo: "other/repo", epicNumber: 9, adapter: "claude" });
+    updateWorkflow(db, "b", { sessionName: "other-9", state: "running" as never });
+
+    const ctx = buildRecommenderContext({
+      db,
+      repo: REPO,
+      adapters: ["claude"],
+      maxPerAdapter: { claude: 2 },
+      repoMax: 2,
+      globalMax: 4,
+    });
+    // Per-repo: only REPO's one agent counts toward used / in_flight.
+    expect(ctx.slots.perAdapter.claude).toEqual({ used: 1, max: 2 });
+    expect(ctx.slots.total.used).toBe(1);
+    expect(ctx.inFlight.map((w) => w.issue)).toEqual([6]);
+    // Global: both repos' agents count toward global_used (shared db).
+    expect(ctx.slots.total.globalUsed).toBe(2);
+    expect(ctx.slots.total.globalMax).toBe(4);
   });
 });

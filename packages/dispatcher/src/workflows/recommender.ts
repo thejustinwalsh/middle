@@ -207,6 +207,8 @@ function rateLimitStatus(state: RateLimitState | null): string {
  */
 export function buildRecommenderContext(opts: {
   db: Database;
+  /** The repo whose state issue is being rewritten — scopes per-repo slots/in-flight. */
+  repo: string;
   /** Configured adapter names — drives the per-adapter slot rows. */
   adapters: string[];
   /** Per-adapter concurrency cap (repo `limits.max_concurrent_per_adapter`). */
@@ -218,7 +220,10 @@ export function buildRecommenderContext(opts: {
   /** The dispatcher's GitHub rate-limit read, if any (e.g. "4180/5000"). */
   githubStatus?: string;
 }): RecommenderContext {
-  const used = countActiveImplementationSlots(opts.db);
+  // Per-repo used (drives perAdapter + total); global used spans all repos on the
+  // shared db (drives global_used) — the two are distinct in the schema.
+  const used = countActiveImplementationSlots(opts.db, opts.repo);
+  const globalUsed = countActiveImplementationSlots(opts.db).total;
   const perAdapter: Record<string, { used: number; max: number }> = {};
   for (const adapter of opts.adapters) {
     perAdapter[adapter] = { used: used.perAdapter[adapter] ?? 0, max: opts.maxPerAdapter[adapter] ?? 0 };
@@ -229,7 +234,7 @@ export function buildRecommenderContext(opts: {
       codex: rateLimitStatus(getRateLimitState(opts.db, "codex")),
       github: opts.githubStatus ?? "UNKNOWN",
     },
-    inFlight: listActiveImplementationWorkflows(opts.db).map((w) => ({
+    inFlight: listActiveImplementationWorkflows(opts.db, opts.repo).map((w) => ({
       issue: w.epicNumber,
       adapter: w.adapter,
       progress: w.state === "running" ? "running" : w.state,
@@ -237,7 +242,7 @@ export function buildRecommenderContext(opts: {
     })),
     slots: {
       perAdapter,
-      total: { used: used.total, max: opts.repoMax, globalUsed: used.total, globalMax: opts.globalMax },
+      total: { used: used.total, max: opts.repoMax, globalUsed, globalMax: opts.globalMax },
     },
   };
 }
@@ -431,7 +436,11 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
   }
 
   return new Workflow<RecommenderInput>("recommender")
-    .step("check-rate-limit", checkRateLimit)
+    // retry: 1 — the check is deterministic (reads db state), so retrying is
+    // pointless; and it creates the workflows row then throws on the
+    // rate-limited path, so a retry would re-run the INSERT and surface a UNIQUE
+    // violation instead of the real rate-limit reason. One attempt, no retry.
+    .step("check-rate-limit", checkRateLimit, { retry: 1 })
     .step("prepare-shallow-worktree", prepareShallowWorktree, {
       compensate: cleanupWorktreeCompensation,
     })

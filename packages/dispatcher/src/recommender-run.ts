@@ -216,9 +216,10 @@ export async function dispatchRecommender(
 
     const gatherContext =
       ov.gatherContext ??
-      ((_repo: string): RecommenderContext =>
+      ((repo: string): RecommenderContext =>
         buildRecommenderContext({
           db,
+          repo,
           adapters: opts.slots.adapters,
           maxPerAdapter: opts.slots.maxPerAdapter,
           repoMax: opts.slots.repoMax,
