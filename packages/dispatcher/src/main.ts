@@ -5,14 +5,16 @@
 // dispatch loop, watchdog, and reconciler crons land in Phase 2+. `mm start`
 // spawns this; `mm stop` sends it SIGTERM.
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { claudeAdapter } from "@middle/adapter-claude";
 import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "./db.ts";
 import { HookServer } from "./hook-server.ts";
+import type { RecommenderTrigger } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
+import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { killSession, status } from "./tmux.ts";
@@ -31,7 +33,31 @@ async function main(): Promise<void> {
   mkdirSync(dirname(config.global.dbPath), { recursive: true });
   const db = openAndMigrate(config.global.dbPath);
 
-  const hookServer = new HookServer(new DbHookStore(db));
+  // Dashboard "run recommender now" trigger (build spec → Phase 7). Read-only:
+  // the run rewrites the state issue but `triggerAutoDispatch` stays unwired, so
+  // nothing auto-dispatches. The run uses an ephemeral port so it never collides
+  // with the live dispatcher's port. Phase 8 routes this through the long-lived
+  // engine; here it is a self-contained ephemeral run, like `mm run-recommender`.
+  const recommenderTrigger: RecommenderTrigger = async ({ repoPath }) => {
+    if (!repoPath) return { status: 400, body: "repoPath required" };
+    let repoConfig: ReturnType<typeof loadConfig>;
+    try {
+      repoConfig = loadConfig({
+        globalPath: process.env.MIDDLE_CONFIG,
+        repoPath: join(repoPath, ".middle", "config.toml"),
+      });
+    } catch (error) {
+      return { status: 500, body: `config load failed: ${(error as Error).message}` };
+    }
+    const resolved = await resolveRecommenderOptions(repoPath, repoConfig, getAdapter);
+    if (!resolved.ok) return { status: 400, body: resolved.error };
+    void dispatchRecommender({ ...resolved.options, dispatcherPort: 0 }).catch((error: unknown) => {
+      console.error(`[main] recommender trigger run failed: ${(error as Error).message}`);
+    });
+    return { status: 202, body: "recommender run started" };
+  };
+
+  const hookServer = new HookServer(new DbHookStore(db), undefined, recommenderTrigger);
   hookServer.start(config.global.dispatcherPort);
 
   // In-memory engine for Phase 1 — durable queue persistence + crash recovery

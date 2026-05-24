@@ -191,3 +191,48 @@ describe("HookServer — lifecycle", () => {
     await expect(pending).rejects.toThrow();
   });
 });
+
+describe("HookServer — recommender trigger endpoint", () => {
+  test("404s when no trigger is wired (gate-only mode)", async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/trigger/recommender`, { method: "POST" });
+    expect(res.status).toBe(404);
+  });
+
+  test("wired trigger receives the posted repo and returns its status/body verbatim", async () => {
+    const calls: Array<{ repoSlug?: string; repoPath?: string }> = [];
+    const wired = new HookServer(undefined, undefined, async (req) => {
+      calls.push(req);
+      return { status: 202, body: "recommender run started" };
+    });
+    wired.start(0);
+    try {
+      const res = await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoPath: "/work/middle", repoSlug: "thejustinwalsh/middle" }),
+      });
+      expect(res.status).toBe(202);
+      expect(await res.text()).toBe("recommender run started");
+      expect(calls).toEqual([{ repoPath: "/work/middle", repoSlug: "thejustinwalsh/middle" }]);
+    } finally {
+      wired.stop();
+    }
+  });
+
+  test("tolerates a garbled body — the trigger validates its own inputs", async () => {
+    const wired = new HookServer(undefined, undefined, async (req) =>
+      req.repoPath ? { status: 202, body: "ok" } : { status: 400, body: "repoPath required" },
+    );
+    wired.start(0);
+    try {
+      const res = await fetch(`http://127.0.0.1:${wired.port}/trigger/recommender`, {
+        method: "POST",
+        body: "not json",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toBe("repoPath required");
+    } finally {
+      wired.stop();
+    }
+  });
+});

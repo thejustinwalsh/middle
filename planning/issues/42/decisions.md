@@ -47,3 +47,34 @@ adapter name, `total` a sibling with snake_case `global_used`/`global_max`. `con
 the documented shape avoids a fidelity gap the agent (or a reviewer) would otherwise flag,
 while keeping the dispatcher's internal types idiomatic. Dispatcher-owned values pass through
 verbatim — only the key names/structure are mapped, never the values.
+
+## `mm run-recommender` + dashboard trigger share one resolver; both ephemeral
+**File(s):** `packages/dispatcher/src/recommender-run.ts`, `packages/dispatcher/src/hook-server.ts`,
+`packages/dispatcher/src/main.ts`, `packages/cli/src/commands/run-recommender.ts`
+**Date:** 2026-05-24
+
+**Decision:** `dispatchRecommender` mirrors `dispatchEpic` (ephemeral engine + hook server per
+run, stack-based teardown) and takes optional test `overrides`. A shared
+`resolveRecommenderOptions(repoPath, config, getAdapter)` validates the repo and builds the
+options; both the CLI (`mm run-recommender <repo>`) and the dispatcher's
+`POST /trigger/recommender` endpoint (a new optional `RecommenderTrigger` seam on `HookServer`,
+wired in `main.ts`) call it. The trigger runs the recommender on an **ephemeral port**
+(`dispatcherPort: 0`) so it never collides with the live dispatcher's bound port.
+
+**Why:** "Read-only at first" — `dispatchRecommender` never wires `triggerAutoDispatch`, so a
+clean run rewrites the state issue but dispatches nothing. The endpoint exists and is tested
+now; the dashboard UI that POSTs to it lands in Phase 9. Routing triggers through the
+long-lived engine (instead of an ephemeral one per run) is the Phase 8 auto-dispatch
+integration — deliberately deferred.
+
+## `schema_path` is resolved repo-relative (`<repo>/schemas/state-issue.v1.md`)
+**File(s):** `packages/dispatcher/src/recommender-run.ts` (`resolveRecommenderOptions`)
+**Date:** 2026-05-24
+
+**Decision:** The recommender is pointed at `<repoPath>/schemas/state-issue.v1.md`; a missing
+schema is a clear pre-flight error.
+
+**Why:** Phase 7 explicitly hand-eyeballs runs against **middle's own repo** (#47), where the
+schema lives at the repo root. `mm init` does not yet stamp the schema into arbitrary target
+repos — bundling it there is out of scope for Phase 7 and noted as a follow-up rather than
+silently absorbed. Erroring clearly beats pointing the agent at a non-existent path.
