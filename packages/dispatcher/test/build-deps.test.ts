@@ -9,10 +9,10 @@ import type { PrReadyGateHandler } from "../src/gates/pr-ready-handler.ts";
 import type { PullRequest } from "../src/github.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 
-// `buildImplementationDeps` extracts the deps + gate construction that lived
-// inline in `dispatchEpic`, so the daemon and the standalone path share one
-// wiring. These tests prove the returned deps are correctly bound — and that
-// the factory constructs no engine of its own (it never imports bunqueue).
+// `buildImplementationDeps` is the one canonical deps + gate construction the
+// daemon consumes to host the implementation workflow. These tests prove the
+// returned deps are correctly bound — and that the factory constructs no engine
+// of its own (it never imports bunqueue).
 
 let dir: string;
 let dbPath: string;

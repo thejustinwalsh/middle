@@ -64,9 +64,8 @@ export type BuildImplementationDepsArgs = {
 
 /**
  * Build the `ImplementationDeps` and the PR-ready gate handler the
- * `implementation` workflow needs, with the exact collaborator wiring that lived
- * inline in `dispatchEpic`. Both the daemon and the standalone path consume this
- * so the wiring exists in one place.
+ * `implementation` workflow needs, with one canonical collaborator wiring. The
+ * daemon (`main.ts`) consumes it to host the workflow on its long-lived engine.
  *
  * Returns `{ deps, prReadyGate }`: `deps` is passed to
  * `createImplementationWorkflow`, and `prReadyGate` is the handler the caller
