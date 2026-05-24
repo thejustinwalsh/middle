@@ -1,3 +1,5 @@
+import type { BuildPromptOpts } from "@middle/core";
+
 /**
  * The literal text `send-keys` carries into a tmux session to start or continue
  * the agent.
@@ -13,11 +15,7 @@
  *   dispatcher context (`.middle/prompt.md`) `@`-referenced, same file-pointer
  *   reason — the context is multi-line so it can't ride the slash command line.
  */
-export function buildPromptText(opts: {
-  promptFile: string;
-  kind: "initial" | "resume" | "answer" | "recommender";
-  epicNumber?: number;
-}): string {
+export function buildPromptText(opts: BuildPromptOpts): string {
   switch (opts.kind) {
     case "initial":
       return `/implementing-github-issues implement #${opts.epicNumber}`;

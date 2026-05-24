@@ -93,6 +93,22 @@ describe("buildPromptText", () => {
     });
     expect(text).toBe("/recommending-github-issues @.middle/prompt.md");
   });
+
+  // Compile-time contract (enforced by `bun run typecheck`): the `kind`/`epicNumber`
+  // coupling is a discriminated union, so a dispatched-issue kind cannot omit its
+  // Epic and `recommender` cannot carry one. If the union regresses to a bare
+  // optional `epicNumber`, these `@ts-expect-error`s go unused and typecheck fails.
+  test("type contract: dispatched-issue kinds require an epicNumber; recommender forbids one", () => {
+    // @ts-expect-error — 'initial' must carry an epicNumber
+    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial" });
+    // @ts-expect-error — 'resume' must carry an epicNumber
+    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "resume" });
+    // @ts-expect-error — 'answer' must carry an epicNumber
+    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "answer" });
+    // @ts-expect-error — 'recommender' runs against no Epic, so epicNumber is forbidden
+    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "recommender", epicNumber: 1 });
+    expect(true).toBe(true);
+  });
 });
 
 describe("resolveTranscriptPath", () => {

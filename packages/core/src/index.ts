@@ -21,6 +21,7 @@ export { HOOK_SH, PR_READY_GATE_SH } from "./hook-script.ts";
 
 export type {
   AgentAdapter,
+  BuildPromptOpts,
   InstallHookOpts,
   LaunchOpts,
   TranscriptState,
