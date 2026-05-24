@@ -537,6 +537,8 @@ Guardrails:
 
 Example of the trap: a comment "this heading match is too loose" is a *symptom* — the whole section matcher is suspect. Fixing only the one regex invites the reviewer to find the next adjacent edge (an alternate heading level, a lookalike heading, a fenced example) one round at a time. One pass asking "every way identifying this section can go wrong" resolves them together.
 
+**Self-review before you push — be your own CodeRabbit.** Don't wait for the reviewer to find edge N+1. Before pushing *any* non-trivial edit (a review fix or your own implementation), adversarially review your own diff the way a strict bot reviewer would. For the function/section you touched, enumerate concretely: *how else could this be wrong, bypassed, or miss a case?* — alternate inputs, boundary and format variants, the same class of bug one step over (e.g. you just handled `## Status`; what about `# Status`, `## Status notes`, a fenced `## Status`, mismatched fences?). Write a failing test for each **realistic** one and fix it in this pass; **draw the line** on the pedantic ones and note them (YAGNI — over-tightening is its own spiral). The bar: a reviewer should only be able to surface a *new class* of issue, not the next adjacent edge of the one you just touched. If you couldn't have predicted the reviewer's next comment, you didn't self-review hard enough.
+
 This deliberately extends `superpowers:receiving-code-review` (which leans pure-literal — "one item at a time", YAGNI) for the autonomous-dispatch context, where round-trips are costly and capped.
 
 ## Quick reference
