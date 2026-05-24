@@ -74,6 +74,62 @@ version = 1
 installed_at = "2026-05-13T15:00:00Z"
 `;
 
+const DOCS_TOML = `
+[docs]
+enabled = true
+interval_minutes = 30
+adapter = "claude"
+write = true
+tool = "starlight"
+path = "src/content/docs"
+`;
+
+describe("loadConfig — [docs] section", () => {
+  test("parses a full docs block", () => {
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("repo.toml", DOCS_TOML),
+    });
+    expect(config.docs!.enabled).toBe(true);
+    expect(config.docs!.intervalMinutes).toBe(30);
+    expect(config.docs!.adapter).toBe("claude");
+    expect(config.docs!.write).toBe(true);
+    expect(config.docs!.tool).toBe("starlight");
+    expect(config.docs!.path).toBe("src/content/docs");
+  });
+
+  test("a tool/path-only override block is valid; bot fields default", () => {
+    const override = `[docs]\ntool = "mkdocs"\npath = "site/docs"\n`;
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("repo.toml", override),
+    });
+    expect(config.docs!.tool).toBe("mkdocs");
+    expect(config.docs!.path).toBe("site/docs");
+    // bot fields fall back to documented defaults
+    expect(config.docs!.enabled).toBe(false);
+    expect(config.docs!.intervalMinutes).toBe(60);
+    expect(config.docs!.adapter).toBe("claude");
+    expect(config.docs!.write).toBe(false);
+  });
+
+  test("absent override fields stay undefined so the resolver auto-detects", () => {
+    const botOnly = `[docs]\nenabled = true\n`;
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("repo.toml", botOnly),
+    });
+    expect(config.docs!.tool).toBeUndefined();
+    expect(config.docs!.path).toBeUndefined();
+    expect(config.docs!.write).toBe(false);
+  });
+
+  test("no [docs] section leaves docs undefined", () => {
+    const config = loadConfig({ globalPath: write("global.toml", GLOBAL_TOML) });
+    expect(config.docs).toBeUndefined();
+  });
+});
+
 describe("loadConfig — global only", () => {
   test("parses the global sections and leaves per-repo sections undefined", () => {
     const config = loadConfig({ globalPath: write("global.toml", GLOBAL_TOML) });
