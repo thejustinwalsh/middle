@@ -56,6 +56,14 @@
 **Why:** Gate output (test logs, stack traces) can itself contain triple-backtick fences; a fixed ``` would terminate the block early and mangle the rendered evidence. Computing the fence length from the content is the same defense the state-issue renderer uses.
 **Evidence:** `gate-evidence.test.ts` "fences output that itself contains backticks".
 
+## Wiring fills the reconciler's existing `runGates` seam; the push-trigger is left out of scope
+**File(s):** `packages/dispatcher/src/gates/verify.ts`
+**Date:** 2026-05-24
+
+**Decision:** `makeRunPhaseGates` builds the `runGates(subIssue) => GateRunResult` function the Phase 4 `reconcileCheckboxes` already accepts as a dependency — composing config → runner → evidence → pass/fail. We do NOT add the production "after every push, call reconcileCheckboxes" trigger.
+**Why:** The Phase 4 checkbox-revert reconciler was merged with `runGates` as an explicit injected seam and is itself not yet wired to a production push event (it's test-only, awaiting that trigger — see `main.ts` "watchdog/reconciler … Phase 2+"). Phase 6's four sub-issues are the framework, runner, evidence, and *integration with checkbox-revert* — i.e. filling that seam — not building the dispatch-loop trigger, which is a separate, larger integration the build spec sequences elsewhere. The end-to-end test exercises the real reconciler + real runner + real evidence against a scratch worktree, proving the integration without the trigger.
+**Evidence:** `verify.test.ts` (failing phase reverted, passing phase kept, evidence posted, no-op on re-run); `checkbox-revert.ts` `CheckboxReconcileDeps.runGates`; `main.ts` reconciler-cron TODO.
+
 ## Unknown gate keys are rejected
 **File(s):** `packages/dispatcher/src/gates/verify-config.ts:validateGate`
 **Date:** 2026-05-24
