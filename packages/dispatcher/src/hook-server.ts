@@ -219,15 +219,24 @@ export class HookServer implements SessionGate {
    */
   async #handleRecommenderTrigger(req: Request): Promise<Response> {
     if (!this.#recommenderTrigger) return new Response("not found", { status: 404 });
-    let body: { repoSlug?: string; repoPath?: string } = {};
+    let parsed: unknown;
     try {
-      body = (await req.json()) as { repoSlug?: string; repoPath?: string };
+      parsed = await req.json();
     } catch {
       // tolerate an empty/garbled body — the trigger validates its own inputs
     }
+    // The body is untrusted JSON. First narrow the *container*: a bare primitive,
+    // array, or the literal `null` (all of which `req.json()` parses successfully)
+    // is not a field bag — treat it as empty rather than dereferencing it. Then
+    // pass a field through only when it is actually a string; anything else
+    // becomes `undefined` so it can't masquerade as a `repoSlug`/`repoPath` and
+    // fail deeper as a 500.
+    const body: Record<string, unknown> =
+      typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
     const result = await this.#recommenderTrigger({
-      repoSlug: body.repoSlug,
-      repoPath: body.repoPath,
+      repoSlug: str(body.repoSlug),
+      repoPath: str(body.repoPath),
     });
     return new Response(result.body, { status: result.status });
   }
