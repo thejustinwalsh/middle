@@ -34,6 +34,8 @@ export interface GitHubGateway {
   editPullRequestBody(repo: string, prNumber: number, body: string): Promise<void>;
   /** Post a comment on an issue or PR. */
   postComment(repo: string, issueNumber: number, body: string): Promise<void>;
+  /** Edit an existing issue/PR comment in place (used to upsert gate evidence). */
+  editComment(repo: string, commentId: number, body: string): Promise<void>;
   /** Resolve the author of a comment from its URL; null if unresolvable. */
   getCommentAuthor(repo: string, commentUrl: string): Promise<CommentAuthor | null>;
 }
@@ -137,6 +139,20 @@ export const ghGitHub: GitHubGateway = {
     );
     if (result.exitCode !== 0) {
       throw new Error(`gh issue comment #${issueNumber} failed: ${result.stderr.trim()}`);
+    }
+  },
+
+  async editComment(repo, commentId, body) {
+    const { owner, name } = ownerRepo(repo);
+    // PATCH the comment with a JSON request body piped on stdin (`--input -`).
+    // `-f body=...` is unsafe here: --raw-field takes the value literally (so
+    // `@-` wouldn't read stdin) and a long multiline body fights shell quoting.
+    const result = await run(
+      ["gh", "api", "--method", "PATCH", `/repos/${owner}/${name}/issues/comments/${commentId}`, "--input", "-"],
+      JSON.stringify({ body }),
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(`gh api PATCH comment ${commentId} failed: ${result.stderr.trim()}`);
     }
   },
 

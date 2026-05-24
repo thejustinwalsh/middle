@@ -32,6 +32,30 @@
 **Why:** The evidence comment (#40) is more useful to a reviewer when it shows the full picture (e.g. typecheck passed, test failed, acceptance passed) rather than stopping at the first red. The first-failure name is still captured for the terse checkbox-revert comment.
 **Evidence:** `gate-runner.test.ts` "later gates still run".
 
+## Evidence comments are upserted by a per-phase HTML marker
+**File(s):** `packages/dispatcher/src/gates/gate-evidence.ts`
+**Date:** 2026-05-24
+
+**Decision:** Each phase's evidence comment carries a hidden `<!-- middle:gate-evidence:phase-N -->` marker. `upsertEvidenceComment` finds the existing comment by that marker and edits it in place via `gh api PATCH`; otherwise it posts fresh. One comment per phase.
+**Why:** #40 requires "re-runs update or append cleanly rather than spamming duplicate comments." An invisible marker is a robust idempotency key that survives body edits and is invisible to readers. Per-phase (not one global comment) keeps each phase's evidence next to its checkbox transition and lets phases update independently.
+**Evidence:** `gate-evidence.test.ts` "re-runs update the same comment in place"; the `getCommentAuthor` URL-id parsing pattern already in `github.ts`.
+
+## editComment PATCHes via `--input -` JSON, not `-f`
+**File(s):** `packages/dispatcher/src/github.ts:editComment`
+**Date:** 2026-05-24
+
+**Decision:** `gh api --method PATCH … --input -` with a JSON `{body}` piped on stdin.
+**Why:** `-f body=…` (`--raw-field`) takes the value literally — `@-` would not read stdin — and a long multiline comment body fights shell quoting. The `--input -` JSON pattern mirrors the CLAUDE.md PR-body PATCH workaround and is quoting-safe.
+**Evidence:** CLAUDE.md "Updating a PR body" note; gh `--raw-field` semantics.
+
+## Output fenced with a backtick run longer than any in the content
+**File(s):** `packages/dispatcher/src/gates/gate-evidence.ts:fenceFor`
+**Date:** 2026-05-24
+
+**Decision:** Wrap each gate's captured output in a code fence whose backtick count exceeds the longest backtick run inside the output (min 3).
+**Why:** Gate output (test logs, stack traces) can itself contain triple-backtick fences; a fixed ``` would terminate the block early and mangle the rendered evidence. Computing the fence length from the content is the same defense the state-issue renderer uses.
+**Evidence:** `gate-evidence.test.ts` "fences output that itself contains backticks".
+
 ## Unknown gate keys are rejected
 **File(s):** `packages/dispatcher/src/gates/verify-config.ts:validateGate`
 **Date:** 2026-05-24
