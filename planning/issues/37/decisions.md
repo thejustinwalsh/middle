@@ -71,3 +71,17 @@
 **Decision:** A `[[gate]]` carrying a key outside {name, command, timeout_seconds, phases} is a hard error.
 **Why:** The schema is tiny; the common failure is a typo (`comand =`) that would otherwise silently drop a gate's command and run zero verification. "Fails loudly" (the #38 acceptance) is worth more than forward-compat leniency for a 4-key schema.
 
+
+## Review round 1 (CodeRabbit): empty `phases` is invalid; the seam never throws into the reconcile loop
+**File(s):** `packages/dispatcher/src/gates/verify-config.ts:validateGate`, `packages/dispatcher/src/gates/verify.ts:makeRunPhaseGates`
+**Date:** 2026-05-24
+
+**Decision:** Two hardenings from CodeRabbit's first review, each resolving its class within the blast radius:
+1. **`phases = []` is a `VerifyConfigError`.** A present-but-empty array matches no sub-issue, so the gate runs for *no* phase — silently disabling verification. This is the same "fail loudly, never a silent zero-gate run" class as the rejected-unknown-key and empty-command rules. To run a gate everywhere you omit `phases`; an empty list is always a mistake.
+2. **`makeRunPhaseGates` funnels *every* failure into a non-ok verdict — never a throw.** CodeRabbit flagged the evidence-upsert call: a GitHub failure there would bubble out of the `runGates` seam and abort `reconcileCheckboxes` mid-loop (skipping later phases' reverts and the state persist). The same class lives one line up: `runGateList` can also throw (e.g. `Bun.spawn` on a missing worktree `cwd`). Both paths are now wrapped — a runner failure returns `{ ok:false, failedGate:"gate-runner" }`, an evidence failure returns `{ ok:false, failedGate: report.failedGate ?? "evidence-comment" }` (a real gate failure still names its gate).
+
+**Why:**
+- *Reverting on evidence-post failure (vs. returning the true pass verdict):* Phase 6 exists to put verification *evidence* on the PR. A checked box with no evidence comment is exactly the hole the phase closes, and — because the transition is consumed once — it would never self-heal. Reverting + commenting flips the box back and prompts the agent to re-tick, which retries gates *and* evidence. Loud-and-retryable beats silent-and-permanent. (This matches CodeRabbit's proposed `report.failedGate ?? "evidence-comment"`.)
+- *No injected logger / bare `catch`:* these gate modules take no logger (neither does the Phase 4 `checkbox-revert.ts`); the revert comment on the PR is the surfacing mechanism — more visible in a headless run than a log line. Adding a logger to `PhaseGatesDeps` would widen the seam's interface beyond this fix's blast radius.
+
+**Evidence:** `verify-config.test.ts` "rejects: empty phases"; `verify.test.ts` "seam never throws into the reconcile loop" (evidence-throw preserves the real gate name, runner-throw → `gate-runner`, and `reconcileCheckboxes` still processes every transition + persists state when evidence fails).
