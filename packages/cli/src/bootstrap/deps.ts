@@ -46,6 +46,9 @@ const realGithub: GithubGateway = {
       "--repo", `${info.owner}/${info.name}`,
       "--label", STATE_LABEL,
       "--state", "open",
+      // `gh issue list` defaults to 30, newest-first — without a high limit the
+      // canonical *oldest* state issue can be truncated off, breaking reuse.
+      "--limit", "1000",
       "--json", "number,title,createdAt",
     ]);
     if (result.exitCode !== 0) {
