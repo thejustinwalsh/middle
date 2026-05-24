@@ -69,8 +69,14 @@ async function main(): Promise<void> {
   const engine = new Engine({ embedded: true });
 
   // One place that turns a state change into a `workflow` broadcast (repo/epic
-  // looked up from the row). Fed by two sources below.
+  // looked up from the row). Fed by two sources below. They overlap on the
+  // states the workflow writes to the row AND bunqueue emits (`completed`,
+  // around compensation), so collapse a consecutive identical (id, state) frame
+  // — otherwise a normal completion double-broadcasts.
+  const lastBroadcastState = new Map<string, string>();
   const broadcastWorkflow = (executionId: string, state: string): void => {
+    if (lastBroadcastState.get(executionId) === state) return;
+    lastBroadcastState.set(executionId, state);
     const row = getWorkflow(db, executionId);
     hub.broadcast({
       type: "workflow",

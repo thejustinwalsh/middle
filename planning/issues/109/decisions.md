@@ -103,3 +103,28 @@ that looks up repo/epic from the row.
 transitions. The client (#114) needs the park signal (`waiting-human`) to exit 0,
 so the DB observer is load-bearing. Duplicate states across sources are harmless
 (the client exits on the first terminal/park it sees).
+
+## Client subscribes to /control/events BEFORE POSTing /control/dispatch (review round 1)
+**File(s):** `packages/cli/src/commands/dispatch.ts`
+**Date:** 2026-05-24
+
+**Decision:** `runDispatch` opens the SSE stream first, then POSTs the dispatch,
+then follows the stream filtered to the returned `workflowId`.
+**Why:** An internal review caught a hang: a fast-failing workflow emits its
+terminal frame on the next tick, and `/control/events` init-replay omits terminal
+states (`listNonTerminalWorkflows`). A subscribe-after-POST races that frame —
+broadcast to zero subscribers, never replayed — and the client then blocks
+forever (the 15s heartbeat keeps the stream from ending). Subscribing first
+guarantees the terminal frame is delivered. A regression test pins the GET-before-POST
+order via the fake daemon.
+
+## broadcastWorkflow collapses consecutive identical (id, state) frames (review round 1)
+**File(s):** `packages/dispatcher/src/main.ts`, `packages/dispatcher/CLAUDE.md`
+**Date:** 2026-05-24
+
+**Decision:** Track the last broadcast state per execution id; skip a repeat.
+**Why:** The two SSE sources overlap on `completed` (the workflow writes it to
+the row → observer, AND bunqueue emits `workflow:completed` → onAny), so a normal
+completion double-broadcast. The client is idempotent, but the dashboard (#57)
+would see dupes. The CLAUDE.md "disjoint sources" claim was inaccurate and is now
+corrected to document the union vocabulary + the de-dup.

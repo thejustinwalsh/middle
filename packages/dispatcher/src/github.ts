@@ -171,6 +171,13 @@ export const ghGitHub: GitHubGateway = {
 
   async getCommentAuthor(repo, commentUrl) {
     const { owner, name } = repoFromCommentUrl(commentUrl, repo);
+    if (owner === "" || name === "") {
+      // Neither the URL nor the fallback yielded a repo — the API call would 404.
+      // Surface it: the caller (the PR-ready gate's deferral-author check) will
+      // treat an unresolved author as not-a-human and deny, so don't fail silently.
+      console.error(`[github] getCommentAuthor: no repo for comment url ${commentUrl}`);
+      return null;
+    }
     // Comment URLs carry the comment id in their fragment:
     //   .../issues/27#issuecomment-123     → /repos/{o}/{r}/issues/comments/123
     //   .../pull/86#discussion_r456        → /repos/{o}/{r}/pulls/comments/456

@@ -77,8 +77,13 @@ type FakeDaemonOpts = {
 };
 
 /** A fake daemon exposing /health, /control/dispatch, /control/events. */
-function fakeDaemon(opts: FakeDaemonOpts): { server: BunServer; dispatchBodies: unknown[] } {
+function fakeDaemon(opts: FakeDaemonOpts): {
+  server: BunServer;
+  dispatchBodies: unknown[];
+  requestOrder: string[];
+} {
   const dispatchBodies: unknown[] = [];
+  const requestOrder: string[] = [];
   const workflowId = opts.workflowId ?? "wf-1";
   let server: BunServer;
   server = Bun.serve({
@@ -90,10 +95,12 @@ function fakeDaemon(opts: FakeDaemonOpts): { server: BunServer; dispatchBodies: 
         return Response.json({ ok: true, port: server.port, version: "test" });
       }
       if (req.method === "POST" && pathname === "/control/dispatch") {
+        requestOrder.push("dispatch");
         dispatchBodies.push(await req.json());
         return Response.json({ workflowId });
       }
       if (req.method === "GET" && pathname === "/control/events") {
+        requestOrder.push("events");
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             const enc = new TextEncoder();
@@ -109,7 +116,7 @@ function fakeDaemon(opts: FakeDaemonOpts): { server: BunServer; dispatchBodies: 
       return new Response("not found", { status: 404 });
     },
   });
-  return { server, dispatchBodies };
+  return { server, dispatchBodies, requestOrder };
 }
 
 describe("runDispatch — input validation", () => {
@@ -161,6 +168,25 @@ describe("runDispatch — control client", () => {
       expect(dispatchBodies).toEqual([
         { repo: "repo", repoPath, epicNumber: 6, adapter: "claude" },
       ]);
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
+  test("subscribes to /control/events BEFORE POSTing /control/dispatch", async () => {
+    // Guards the race: a fast-failing workflow emits its terminal frame on the
+    // next tick and init-replay omits terminal states, so the client must be
+    // subscribed before it dispatches or it hangs forever.
+    const repoPath = makeRepo();
+    const { server, requestOrder } = fakeDaemon({ states: ["completed"] });
+    const configPath = writeConfig(server.port);
+    const restore = silenceLogs();
+    try {
+      expect(await runDispatch(repoPath, "6", { configPath, startDaemon: () => 0 })).toBe(0);
+      expect(requestOrder[0]).toBe("events");
+      expect(requestOrder).toContain("dispatch");
+      expect(requestOrder.indexOf("events")).toBeLessThan(requestOrder.indexOf("dispatch"));
     } finally {
       restore();
       server.stop(true);
