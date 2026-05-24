@@ -35,6 +35,13 @@ export type CreateWorktreeOpts = {
   repo: string;
   /** Issue/Epic number; omit for the recommender. */
   issueNumber?: number;
+  /**
+   * Override the worktree unit (the directory + default branch suffix). Takes
+   * precedence over `issueNumber`. Lets a non-issue workflow claim a distinct
+   * slot — e.g. the docs bot uses `"docs"` so it does not collide with the
+   * recommender's `"recommender"` worktree.
+   */
+  unit?: string;
   /** Root for all worktrees; defaults to `~/.middle/worktrees`. */
   worktreeRoot?: string;
   /** Branch name; defaults to `middle-<unit>`. */
@@ -114,7 +121,7 @@ function toHandle(repoPath: string, root: string, raw: RawWorktree): WorktreeHan
 export async function createWorktree(opts: CreateWorktreeOpts): Promise<WorktreeHandle> {
   const repoPath = realpathSync(opts.repoPath);
   const root = resolveRoot(opts.worktreeRoot);
-  const unit = unitName(opts.issueNumber);
+  const unit = opts.unit ?? unitName(opts.issueNumber);
   const path = join(root, opts.repo, unit);
   // Guard against a malicious/garbled `repo` (e.g. "../../x" from a crafted
   // git remote) escaping the worktree root — otherwise destroyWorktree's

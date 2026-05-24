@@ -7,6 +7,7 @@
   "dependencies": {
     "@middle/adapter-claude": "workspace:*",
     "@middle/core": "workspace:*",
+    "@middle/docs": "workspace:*",
     "@middle/state-issue": "workspace:*",
     "bunqueue": "^2.7.12",
     "smol-toml": "^1.6.1"
