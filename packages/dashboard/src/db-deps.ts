@@ -287,6 +287,10 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       if (rows.length === 0) return [];
       const parsed = await readParsedState(repo);
       const adapters = Object.keys(config.adapters ?? {});
+      // Drives the dispatch picker's per-adapter free-slot pills. Unlike the
+      // banner (which lists every adapter for *observability*), this lists only
+      // dispatchable adapters; with nothing configured that's `claude` alone —
+      // the only wired adapter today (codex is a later phase, would 400 on dispatch).
       const adapterNames = adapters.length > 0 ? adapters : ["claude"];
       const state = getSlotState(db, repo, slotLimits());
       const freeSlots = adapterNames.sort().map((adapter) => ({
