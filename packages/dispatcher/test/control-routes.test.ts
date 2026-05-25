@@ -240,14 +240,13 @@ describe("HookServer control routes", () => {
     totals: { all: 2, active: 2, waitingHuman: 0 },
   };
 
-  test("GET / serves the observability page (HTML, unconditional)", async () => {
+  test("GET / 404s in the bare server (the status page is gone; the SPA mounts via extraRoutes)", async () => {
     startWith(makeControl());
+    // The old status-page branch was removed from #handle; with no extraRoutes the
+    // daemon serves nothing at `/`. The dashboard SPA is mounted at `/` by the CLI
+    // composition root via start(port, extraRoutes), exercised in the CLI tests.
     const res = await fetch(`${base}/`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const body = await res.text();
-    expect(body).toContain("queue observability");
-    expect(body).toContain("/control/events"); // the page subscribes to the live feed
+    expect(res.status).toBe(404);
   });
 
   test("GET /metrics renders Prometheus text from the metrics seam", async () => {
@@ -267,11 +266,10 @@ describe("HookServer control routes", () => {
     expect(await res.json()).toEqual(SNAPSHOT);
   });
 
-  test("metric routes 404 without a metrics seam; the page still serves", async () => {
+  test("metric routes 404 without a metrics seam", async () => {
     startWith(makeControl()); // no `metrics` override
     expect((await fetch(`${base}/metrics`)).status).toBe(404);
     expect((await fetch(`${base}/control/metrics`)).status).toBe(404);
-    expect((await fetch(`${base}/`)).status).toBe(200); // static asset, no seam needed
   });
 
   test("control routes 404 in gate-only mode (no control plane wired)", async () => {
@@ -279,9 +277,8 @@ describe("HookServer control routes", () => {
     expect((await fetch(`${base}/control/events`)).status).toBe(404);
     const d = await fetch(`${base}/control/dispatch`, { method: "POST", body: "{}" });
     expect(d.status).toBe(404);
-    // The metric exports need the control plane's seam → 404; the static page serves.
+    // The metric exports need the control plane's seam → 404.
     expect((await fetch(`${base}/metrics`)).status).toBe(404);
-    expect((await fetch(`${base}/`)).status).toBe(200);
     // /health is unconditional liveness; version is empty without a control plane.
     const h = await fetch(`${base}/health`);
     expect(h.status).toBe(200);
