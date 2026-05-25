@@ -47,7 +47,7 @@ test("api.epics reads Epic cards from a live server", async () => {
     const server = await createDashboardServer({ deps, port: 0, serveSpa: false });
     try {
       const res = await fetch(
-        `http://localhost:${server.port}/api/epics/${encodeURIComponent("o/r")}`,
+        `http://127.0.0.1:${server.port}/api/epics/${encodeURIComponent("o/r")}`,
       );
       expect(res.status).toBe(200);
       const cards = (await res.json()) as { number: number; runner: { adapter: string } | null }[];

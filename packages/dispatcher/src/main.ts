@@ -370,7 +370,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       };
     }
     scheduleAutoDispatch(normalizedRepo);
-    void refreshEpics(db, normalizedRepo, ghGitHub).catch(() => {}); // best-effort cache refresh after dispatch
+    void refreshEpics(db, normalizedRepo, ghGitHub).catch((error: unknown) => {
+      console.error(
+        `[epics] post-dispatch refresh ${normalizedRepo} failed: ${(error as Error).message}`,
+      );
+    }); // best-effort cache refresh after dispatch
     return { status: 200, body: JSON.stringify({ workflowId }) };
   }
 

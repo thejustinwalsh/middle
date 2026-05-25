@@ -130,7 +130,7 @@ describe("createDbDeps.listEpics", () => {
     expect(c.decision).toEqual({
       label: "awaiting reply",
       oneLiner: "answer the window question",
-      link: "http://x",
+      link: "http://x/",
     });
     expect(c.dispatch.inFlight).toBe(false);
     expect(c.dispatch.recommendedAdapter).toBe("claude");

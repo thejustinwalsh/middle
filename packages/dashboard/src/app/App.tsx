@@ -8,7 +8,7 @@
  * in the `api` client; this component owns view state (which repos are expanded,
  * which session the Inspector shows) and orchestrates refreshes.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   EpicCard,
   GlobalBanner as BannerData,
@@ -230,8 +230,17 @@ export function App() {
     if (epicRepo === null && repos.length > 0) setEpicRepo(repos[0]!.repo);
   }, [repos, epicRepo]);
 
+  const epicRepoRef = useRef<string | null>(null);
+  useEffect(() => {
+    epicRepoRef.current = epicRepo;
+  }, [epicRepo]);
+
   const refreshEpics = useCallback(
-    (repo: string) => guard("epics", async () => setEpics(await api.epics(repo))),
+    (repo: string) =>
+      guard("epics", async () => {
+        const next = await api.epics(repo);
+        if (epicRepoRef.current === repo) setEpics(next);
+      }),
     [guard],
   );
 
@@ -343,7 +352,10 @@ export function App() {
                 className="epic-repo-filter"
                 aria-label="repo"
                 value={epicRepo ?? ""}
-                onChange={(e) => setEpicRepo(e.target.value)}
+                onChange={(e) => {
+                  setEpicRepo(e.target.value);
+                  setEpics([]);
+                }}
               >
                 {repos.map((r) => (
                   <option key={r.repo} value={r.repo}>

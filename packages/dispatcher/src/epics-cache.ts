@@ -55,6 +55,16 @@ export async function refreshEpics(
   tx();
 }
 
+/** Safe JSON parse for `labels_json` — returns an empty array on malformed input. */
+function safeLabels(json: string): string[] {
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? (v as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** The repo's open Epics, newest (highest number) first. */
 export function readEpics(db: Database, repo: string): EpicRow[] {
   const rows = db
@@ -69,7 +79,7 @@ export function readEpics(db: Database, repo: string): EpicRow[] {
     number: r.number,
     title: r.title,
     state: r.state,
-    labels: JSON.parse(r.labelsJson) as string[],
+    labels: safeLabels(r.labelsJson),
     subTotal: r.subTotal,
     subClosed: r.subClosed,
     lastRefreshed: r.lastRefreshed,
