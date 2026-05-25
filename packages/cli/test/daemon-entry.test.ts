@@ -41,6 +41,20 @@ test("dashboardHostExtras routes + the hook fetch fallback coexist on one port",
   expect(root.status).toBe(200);
   expect(root.headers.get("content-type")).toContain("text/html");
 
+  // The non-obvious property that makes the single-port mount work: Bun serves
+  // the HTMLBundle's hashed assets (at /_bun/*) WITHOUT the hook fetch fallback
+  // shadowing them. Pull the first bundled asset URL out of the HTML and fetch it.
+  const html = await root.text();
+  const assetMatch = html.match(/\/_bun\/[^"']+/);
+  if (assetMatch) {
+    const asset = await fetch(`${base}${assetMatch[0]}`);
+    expect(asset.status).toBe(200); // bundled asset served, not 404'd by the fallback
+  } else {
+    // The SPA bundles JS, so a parseable /_bun/ asset URL is expected; at minimum
+    // the HTML must reference one (otherwise the mount can't be serving the bundle).
+    expect(html).toContain("/_bun/");
+  }
+
   // The hook server's fetch fallback still answers — the SPA route is "/" (exact),
   // not "/*", so /health falls through to HookServer's #handle.
   const health = await fetch(`${base}/health`);

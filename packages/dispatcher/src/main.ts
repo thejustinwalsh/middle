@@ -22,7 +22,7 @@ import { type ControlPlane, HookServer } from "./hook-server.ts";
 import { collectMetrics } from "./metrics.ts";
 import type { RecommenderTrigger } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
-import { getRateLimitState, setRateLimitObserver } from "./rate-limits.ts";
+import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from "./rate-limits.ts";
 import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
@@ -315,9 +315,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // Trigger #3: any rate-limit state change re-runs auto-dispatch for every known
   // repo (rate-limit state is cross-repo, keyed by adapter — a reset can unblock
   // ready work anywhere).
-  setRateLimitObserver(() => {
+  const disposeRateLimitObserver = addRateLimitObserver(() => {
     for (const repo of repoPaths.keys()) scheduleAutoDispatch(repo);
   });
+  void disposeRateLimitObserver; // daemon clears all observers on shutdown
 
   // Dashboard "run recommender now" trigger (build spec → Phase 7). The run
   // rewrites the state issue on its own ephemeral engine; Trigger #1 (recommender
@@ -470,7 +471,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     shuttingDown = true;
     // Guard each teardown so a throw/rejection can't skip process.exit.
     setUpdateWorkflowObserver(null);
-    setRateLimitObserver(null);
+    clearRateLimitObservers();
     try {
       hostDispose?.();
     } catch (error) {

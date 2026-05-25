@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAndMigrate } from "../src/db.ts";
 import {
+  addRateLimitObserver,
+  clearRateLimitObservers,
   getRateLimitState,
   markAvailable,
   markAvailableOnSuccess,
@@ -21,6 +23,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearRateLimitObservers(); // never leak the process-global observers across tests
   db.close();
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -66,6 +69,37 @@ describe("rate_limit_state", () => {
     expect(markAvailableOnSuccess(db, "claude")).toBe(false); // never observed
     markAvailable(db, "claude");
     expect(markAvailableOnSuccess(db, "claude")).toBe(false); // already available
+  });
+});
+
+describe("rate-limit observer fan-out", () => {
+  test("addRateLimitObserver fans out to every observer; disposers are independent", () => {
+    const a: string[] = [];
+    const b: string[] = [];
+    const disposeA = addRateLimitObserver((adapter, status) => a.push(`${adapter}:${status}`));
+    addRateLimitObserver((adapter, status) => b.push(`${adapter}:${status}`));
+    setRateLimited(db, { adapter: "claude", resetAt: Date.now() + 1000, source: "test" });
+    expect(a).toEqual(["claude:RATE_LIMITED"]);
+    expect(b).toEqual(["claude:RATE_LIMITED"]); // BOTH fired — the regression guard
+    disposeA();
+    disposeA(); // idempotent — a second dispose is a safe no-op
+    markAvailable(db, "claude");
+    expect(a).toEqual(["claude:RATE_LIMITED"]); // A removed, no new entry
+    expect(b).toEqual(["claude:RATE_LIMITED", "claude:AVAILABLE"]); // B still fires
+  });
+
+  test("a throwing observer does not stop the others or the write path", () => {
+    const seen: string[] = [];
+    addRateLimitObserver(() => {
+      throw new Error("boom");
+    });
+    addRateLimitObserver((adapter) => seen.push(adapter));
+    expect(() =>
+      setRateLimited(db, { adapter: "claude", resetAt: Date.now() + 1000, source: "test" }),
+    ).not.toThrow();
+    expect(seen).toEqual(["claude"]);
+    // the write still landed despite the throwing observer
+    expect(getRateLimitState(db, "claude")!.status).toBe("RATE_LIMITED");
   });
 });
 

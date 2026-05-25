@@ -56,27 +56,47 @@ export type SetRateLimitedInput = {
 
 /**
  * An observer notified after a rate-limit state mutation (an adapter flips to
- * RATE_LIMITED or back to AVAILABLE). The daemon registers one to re-run
- * auto-dispatch — a reset can unblock ready work for any repo (build spec →
- * "Auto-dispatch loop": "every rate-limit state change" is a trigger).
- * Module-level (process-scoped) and reset to `null` on daemon shutdown.
+ * RATE_LIMITED or back to AVAILABLE). Multiple subscribers fan out from one
+ * mutation: the daemon registers one to re-run auto-dispatch — a reset can
+ * unblock ready work for any repo (build spec → "Auto-dispatch loop": "every
+ * rate-limit state change" is a trigger) — and the dashboard registers one to
+ * refresh its banner. Observers are module-level (process-scoped); each
+ * registration returns its own disposer, and the daemon clears all on shutdown.
  */
 export type RateLimitObserver = (adapter: string, status: RateLimitStatus) => void;
 
-let rateLimitObserver: RateLimitObserver | null = null;
+const rateLimitObservers = new Set<RateLimitObserver>();
 
-/** Register (or clear, with `null`) the {@link RateLimitObserver}. */
-export function setRateLimitObserver(observer: RateLimitObserver | null): void {
-  rateLimitObserver = observer;
+/**
+ * Register a {@link RateLimitObserver} and return a disposer that removes only
+ * THAT observer. Observers fan out — the daemon's auto-dispatch trigger and the
+ * dashboard's banner refresh coexist. The disposer is idempotent: calling it
+ * more than once is safe (removing an absent observer is a no-op).
+ */
+export function addRateLimitObserver(observer: RateLimitObserver): () => void {
+  rateLimitObservers.add(observer);
+  return () => {
+    rateLimitObservers.delete(observer);
+  };
 }
 
-/** Notify the observer of a state change, never letting it break the write path. */
+/** Remove every registered observer (daemon shutdown / test reset). */
+export function clearRateLimitObservers(): void {
+  rateLimitObservers.clear();
+}
+
+/**
+ * Notify every observer of a state change, never letting one break the write
+ * path or the others. Each observer runs inside its own try/catch — a throw
+ * from one is logged and the remaining observers still fire.
+ */
 function notifyRateLimitObserver(adapter: string, status: RateLimitStatus): void {
-  if (!rateLimitObserver) return;
-  try {
-    rateLimitObserver(adapter, status);
-  } catch (error) {
-    console.error(`[rate-limits] observer threw: ${(error as Error).message}`);
+  for (const observer of rateLimitObservers) {
+    try {
+      observer(adapter, status);
+    } catch (error) {
+      console.error(`[rate-limits] observer threw: ${(error as Error).message}`);
+    }
   }
 }
 
