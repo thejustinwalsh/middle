@@ -16,6 +16,7 @@ import type {
   RepoSummary,
   RunnerPanel,
   SessionEvent,
+  SettingsWire,
 } from "../wire.ts";
 import { api } from "./api-client.ts";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
@@ -23,6 +24,7 @@ import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
 import { NeedsYou } from "./components/NeedsYou.tsx";
 import { Repos } from "./components/Repos.tsx";
+import { Settings } from "./components/Settings.tsx";
 
 /** Poll cadence for the top-level read model until SSE replaces it (#57). */
 const POLL_MS = 4000;
@@ -36,7 +38,20 @@ export function App() {
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
   );
+  const [view, setView] = useState<"dashboard" | "settings">("dashboard");
+  const [settings, setSettings] = useState<SettingsWire | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const refreshSettings = useCallback(async () => {
+    setSettings(await api.settings());
+  }, []);
+
+  const saveGlobal = useCallback(
+    async (patch: { maxConcurrent?: number; defaultAdapter?: string }) => {
+      setSettings(await api.updateGlobalConfig(patch));
+    },
+    [],
+  );
 
   const refreshTop = useCallback(async () => {
     try {
@@ -54,6 +69,30 @@ export function App() {
     const detail = await api.repo(repo);
     setDetails((d) => ({ ...d, [repo]: detail }));
   }, []);
+
+  const pauseRepo = useCallback(
+    async (repo: string) => {
+      await api.pauseRepo(repo);
+      await Promise.all([refreshSettings(), refreshTop()]);
+    },
+    [refreshSettings, refreshTop],
+  );
+
+  const resumeRepo = useCallback(
+    async (repo: string) => {
+      await api.resumeRepo(repo);
+      await Promise.all([refreshSettings(), refreshTop()]);
+    },
+    [refreshSettings, refreshTop],
+  );
+
+  const clearRateLimit = useCallback(
+    async (adapter: string) => {
+      await api.clearRateLimit(adapter);
+      await Promise.all([refreshSettings(), refreshTop()]);
+    },
+    [refreshSettings, refreshTop],
+  );
 
   // Initial load + poll. (Phase #57 replaces the interval with SSE.)
   useEffect(() => {
@@ -110,6 +149,15 @@ export function App() {
     [inspector, openInspector, refreshTop],
   );
 
+  // Load settings on first switch to the Settings view (and keep them fresh
+  // while it's open — the poll tick re-fetches so a pause from elsewhere shows).
+  useEffect(() => {
+    if (view !== "settings") return;
+    void refreshSettings();
+    const id = setInterval(() => void refreshSettings(), POLL_MS);
+    return () => clearInterval(id);
+  }, [view, refreshSettings]);
+
   const inspectorSession = inspector?.panel.session ?? null;
 
   return (
@@ -143,25 +191,58 @@ export function App() {
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error}</div> : null}
-      <main>
-        <NeedsYou
-          items={needs}
-          onOpen={(item) => {
-            const repo = item.repo;
-            setExpanded((prev) => new Set(prev).add(repo));
-            void refreshDetail(repo);
-          }}
-        />
-        <Repos
-          repos={repos}
-          details={details}
-          expanded={expanded}
-          onToggle={toggleRepo}
-          onWatch={watch}
-          onTakeControl={takeControl}
-          onOpenInspector={openInspector}
-        />
-      </main>
+      <nav className="view-nav">
+        <button
+          type="button"
+          className={view === "dashboard" ? "active" : ""}
+          onClick={() => setView("dashboard")}
+        >
+          dashboard
+        </button>
+        <button
+          type="button"
+          className={view === "settings" ? "active" : ""}
+          onClick={() => setView("settings")}
+        >
+          settings
+        </button>
+      </nav>
+      {view === "settings" ? (
+        <main>
+          {settings ? (
+            <Settings
+              settings={settings}
+              banner={banner}
+              onSaveGlobal={saveGlobal}
+              onPauseRepo={pauseRepo}
+              onResumeRepo={resumeRepo}
+              onClearRateLimit={clearRateLimit}
+            />
+          ) : (
+            <p className="empty">Loading settings…</p>
+          )}
+        </main>
+      ) : (
+        <main>
+          <NeedsYou
+            items={needs}
+            onOpen={(item) => {
+              const repo = item.repo;
+              setExpanded((prev) => new Set(prev).add(repo));
+              void refreshDetail(repo);
+            }}
+          />
+          <Repos
+            repos={repos}
+            details={details}
+            expanded={expanded}
+            onToggle={toggleRepo}
+            onWatch={watch}
+            onTakeControl={takeControl}
+            onOpenInspector={openInspector}
+          />
+        </main>
+      )}
       {inspector ? (
         <Inspector
           panel={inspector.panel}
