@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig } from "@middle/core";
 import { defaultPidFile } from "../paths.ts";
 
 export type StartOptions = {
   /** Override the pid-file path (defaults to `~/.middle/dispatcher.pid`). */
   pidFile?: string;
-  /** Override the dispatcher entrypoint (defaults to `@middle/dispatcher`'s main). */
+  /** Override the dispatcher entrypoint (defaults to the CLI-owned `daemon-entry.ts`). */
   entrypoint?: string;
   /**
    * Open the dashboard in a `webview-bun` window once the dispatcher is up. The
@@ -40,7 +40,10 @@ function isAlive(pid: number): boolean {
 }
 
 function resolveDispatcherEntrypoint(): string {
-  return Bun.resolveSync("@middle/dispatcher", import.meta.dir);
+  // mm start now spawns the CLI-owned daemon entry (dispatcher + dashboard in one
+  // process), not @middle/dispatcher's bare main. import.meta.dir here is
+  // packages/cli/src/commands, so ../daemon-entry.ts → packages/cli/src/daemon-entry.ts.
+  return join(import.meta.dir, "..", "daemon-entry.ts");
 }
 
 /**
