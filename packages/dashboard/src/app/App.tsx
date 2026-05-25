@@ -235,6 +235,15 @@ export function App() {
     [guard],
   );
 
+  const forceRefreshEpics = useCallback(
+    (repo: string) =>
+      guard("epics", async () => {
+        await api.refreshEpics(repo);
+        await refreshEpics(repo);
+      }),
+    [guard, refreshEpics],
+  );
+
   // Load + poll the selected repo's Epics while the Epics view is open.
   useEffect(() => {
     if (view !== "epics" || epicRepo === null) return;
@@ -328,20 +337,31 @@ export function App() {
       </nav>
       {view === "epics" ? (
         <>
-          {repos.length > 1 ? (
-            <select
-              className="epic-repo-filter"
-              aria-label="repo"
-              value={epicRepo ?? ""}
-              onChange={(e) => setEpicRepo(e.target.value)}
-            >
-              {repos.map((r) => (
-                <option key={r.repo} value={r.repo}>
-                  {r.repo}
-                </option>
-              ))}
-            </select>
-          ) : null}
+          <div className="epics-toolbar">
+            {repos.length > 1 ? (
+              <select
+                className="epic-repo-filter"
+                aria-label="repo"
+                value={epicRepo ?? ""}
+                onChange={(e) => setEpicRepo(e.target.value)}
+              >
+                {repos.map((r) => (
+                  <option key={r.repo} value={r.repo}>
+                    {r.repo}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            {epicRepo ? (
+              <button
+                type="button"
+                className="epics-refresh"
+                onClick={() => forceRefreshEpics(epicRepo)}
+              >
+                refresh
+              </button>
+            ) : null}
+          </div>
           <Epics
             epics={epics}
             adapters={(banner?.adapters ?? []).map((a) => a.adapter)}

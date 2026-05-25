@@ -308,9 +308,23 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       return rows.map((row) => {
         const wf = workflowForEpic(repo, row.number);
         const need = parsed?.needsHumanInput.find((i) => i.issue === row.number) ?? null;
+        const blocked = parsed?.blocked.find((b) => b.issue === row.number) ?? null;
         const ready = parsed?.readyToDispatch.find(
           (r) => Number(r.epic.replace(/^#/, "").split(/\s/)[0]) === row.number,
         );
+        let decision: EpicCard["decision"] = null;
+        if (need) {
+          decision = {
+            label: need.label,
+            oneLiner: need.oneLiner,
+            ...(need.link ? { link: extractUrl(need.link) } : {}),
+          };
+        } else if (blocked) {
+          decision = {
+            label: "blocked",
+            oneLiner: `waiting on ${blocked.blocker} · ${blocked.context}`,
+          };
+        }
         return {
           repo,
           number: row.number,
@@ -325,13 +339,7 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
                 prNumber: wf.pr_number,
               }
             : null,
-          decision: need
-            ? {
-                label: need.label,
-                oneLiner: need.oneLiner,
-                ...(need.link ? { link: extractUrl(need.link) } : {}),
-              }
-            : null,
+          decision,
           dispatch: {
             inFlight: wf !== null,
             recommendedAdapter: ready?.adapter ?? null,

@@ -28,6 +28,7 @@ function seedEpic(
 }
 
 // A minimal valid state-issue body (all 7 sections, correct schema format).
+// Epic #247 is in Needs human input — used by the first test.
 const STATE_BODY = [
   "<!-- AGENT-QUEUE-STATE v1 -->",
   "<!-- generated: 2026-05-25T00:00:00Z · run: 0badf00d · interval: 30m -->",
@@ -44,6 +45,45 @@ const STATE_BODY = [
   "- **#247 awaiting reply** — answer the window question · [link](http://x)",
   "",
   "## Blocked",
+  "",
+  "## In-flight",
+  "",
+  "- _no agents in flight_",
+  "",
+  "## Excluded",
+  "",
+  "## Rate limits",
+  "",
+  "- claude: AVAILABLE",
+  "- codex: AVAILABLE",
+  "- github: AVAILABLE",
+  "",
+  "## Slot usage",
+  "",
+  "- claude: 0/2",
+  "- total: 0/3",
+  "- global: 0/3",
+  "",
+  "<!-- /AGENT-QUEUE-STATE -->",
+].join("\n");
+
+// A state-issue body where epic #300 is Blocked (no Needs human input entry for it).
+const BLOCKED_STATE_BODY = [
+  "<!-- AGENT-QUEUE-STATE v1 -->",
+  "<!-- generated: 2026-05-25T00:00:00Z · run: 0badf00d · interval: 30m -->",
+  "<!-- owners: recommender=full-body, dispatcher=in-flight,rate-limits,slot-usage -->",
+  "",
+  "## Ready to dispatch",
+  "",
+  "| Rank | Epic | Adapter | Sub-issues | Reason |",
+  "| --- | --- | --- | --- | --- |",
+  "| — | _no Epics ready_ | — | — | — |",
+  "",
+  "## Needs human input",
+  "",
+  "## Blocked",
+  "",
+  "- **#300** waiting on #42 · dependency not yet merged",
   "",
   "## In-flight",
   "",
@@ -117,6 +157,26 @@ describe("createDbDeps.listEpics", () => {
       session: "o-r-9",
     });
     expect(c.dispatch.inFlight).toBe(true);
+  });
+
+  test("a blocked Epic with no needs-human entry gets a blocked decision callout", async () => {
+    seedEpic("o/r", 300, "Infra", 3, 0, ["epic"]);
+    db.run(
+      "INSERT INTO repo_config (repo, config_json, state_issue_number, last_synced_at) VALUES (?, ?, ?, ?)",
+      ["o/r", "{}", 1, 0],
+    );
+    const deps = createDbDeps({
+      db,
+      config: makeConfig(),
+      stateGateway: { readBody: async () => BLOCKED_STATE_BODY },
+    });
+    const cards = await deps.listEpics("o/r");
+    expect(cards).toHaveLength(1);
+    const c = cards[0]!;
+    expect(c.decision).toEqual({
+      label: "blocked",
+      oneLiner: "waiting on #42 · dependency not yet merged",
+    });
   });
 
   test("dispatchEpic + refreshEpics delegate to the injected callbacks", async () => {
