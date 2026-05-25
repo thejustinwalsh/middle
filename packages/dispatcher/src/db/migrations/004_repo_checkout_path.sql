@@ -1,0 +1,14 @@
+-- 004_repo_checkout_path.sql
+-- The persistent managed-repo registry. `repo_config` already keys per-repo
+-- state by slug and carries `last_recommender_run`; it lacks the one thing the
+-- recommender cron (and a freshly-restarted daemon) needs to act without a prior
+-- in-lifetime dispatch: the repo's local checkout path. Add it as a nullable
+-- column — a row with a non-null `checkout_path` IS a "managed repo".
+--
+-- Populated by `mm init` (so a freshly-init'd repo is cron-eligible cold) and by
+-- the daemon whenever it learns a path (dispatch / recommender trigger); the
+-- daemon hydrates its in-memory repoPaths map from these rows on startup.
+--
+-- A plain ADD COLUMN (no table rebuild): existing rows get NULL, which reads as
+-- "not yet a managed repo" until the path is registered.
+ALTER TABLE repo_config ADD COLUMN checkout_path TEXT;

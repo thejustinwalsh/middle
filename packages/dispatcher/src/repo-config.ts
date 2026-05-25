@@ -62,3 +62,74 @@ export function isPaused(db: Database, repo: string, now: number = Date.now()): 
   const until = getPausedUntil(db, repo);
   return until !== null && until > now;
 }
+
+/** A repo middle manages: its slug + the local checkout the daemon/cron operate on. */
+export type ManagedRepo = { repo: string; checkoutPath: string };
+
+/**
+ * Record (or update) a repo's local checkout path — the act that makes a repo
+ * "managed": it becomes visible to the recommender cron and survives a daemon
+ * restart. Upserts the `repo_config` row (empty `config_json` placeholder if
+ * absent), touching only `checkout_path` + the sync timestamp on conflict so a
+ * pause / recommender bookkeeping isn't clobbered. Written by `mm init` and by
+ * the daemon whenever it learns a path (dispatch / recommender trigger).
+ */
+export function registerManagedRepo(
+  db: Database,
+  repo: string,
+  checkoutPath: string,
+  now: number = Date.now(),
+): void {
+  db.run(
+    `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
+       VALUES (?, '{}', ?, ?)
+     ON CONFLICT(repo) DO UPDATE SET checkout_path = excluded.checkout_path,
+       last_synced_at = excluded.last_synced_at`,
+    [repo, checkoutPath, now],
+  );
+}
+
+/** A repo's registered checkout path, or null if it has no row / no path yet. */
+export function getManagedRepoPath(db: Database, repo: string): string | null {
+  const row = db.query("SELECT checkout_path FROM repo_config WHERE repo = ?").get(repo) as {
+    checkout_path: string | null;
+  } | null;
+  return row?.checkout_path ?? null;
+}
+
+/**
+ * Every managed repo — the rows with a non-null `checkout_path`. The recommender
+ * cron iterates this; the daemon hydrates its in-memory path map from it on
+ * startup. Ordered by slug for stable iteration.
+ */
+export function listManagedRepos(db: Database): ManagedRepo[] {
+  const rows = db
+    .query(
+      "SELECT repo, checkout_path FROM repo_config WHERE checkout_path IS NOT NULL ORDER BY repo ASC",
+    )
+    .all() as { repo: string; checkout_path: string }[];
+  return rows.map((r) => ({ repo: r.repo, checkoutPath: r.checkout_path }));
+}
+
+/** When the recommender last ran for a repo (unix-ms), or null if never. */
+export function getLastRecommenderRun(db: Database, repo: string): number | null {
+  const row = db.query("SELECT last_recommender_run FROM repo_config WHERE repo = ?").get(repo) as {
+    last_recommender_run: number | null;
+  } | null;
+  return row?.last_recommender_run ?? null;
+}
+
+/**
+ * Stamp a repo's `last_recommender_run`. The cron sets it **before** firing a
+ * run so an overlapping tick can't double-dispatch the same repo (the due-check
+ * reads this). Upserts like {@link registerManagedRepo}.
+ */
+export function markRecommenderRun(db: Database, repo: string, now: number = Date.now()): void {
+  db.run(
+    `INSERT INTO repo_config (repo, config_json, last_recommender_run, last_synced_at)
+       VALUES (?, '{}', ?, ?)
+     ON CONFLICT(repo) DO UPDATE SET last_recommender_run = excluded.last_recommender_run,
+       last_synced_at = excluded.last_synced_at`,
+    [repo, now, now],
+  );
+}
