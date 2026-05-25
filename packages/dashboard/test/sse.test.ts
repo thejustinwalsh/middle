@@ -146,3 +146,23 @@ describe("dashboard SSE channels", () => {
     }
   });
 });
+
+describe("DashboardEventBus channel pruning", () => {
+  test("drained (zero-subscriber) channels are swept out on the next serve", () => {
+    const localBus = new DashboardEventBus();
+    const c1 = new AbortController();
+    localBus.serve("repo:o/alpha", new Request("http://x/", { signal: c1.signal }));
+    expect(localBus.channelCount()).toBe(1);
+    expect(localBus.subscriberCount()).toBe(1);
+
+    // The subscriber disconnects → the hub drains to zero subscribers.
+    c1.abort();
+    expect(localBus.subscriberCount()).toBe(0);
+
+    // Serving a different channel sweeps the now-empty hub out of the map.
+    const c2 = new AbortController();
+    localBus.serve("repo:o/beta", new Request("http://x/", { signal: c2.signal }));
+    expect(localBus.channelCount()).toBe(1); // only o/beta remains, o/alpha pruned
+    c2.abort();
+  });
+});
