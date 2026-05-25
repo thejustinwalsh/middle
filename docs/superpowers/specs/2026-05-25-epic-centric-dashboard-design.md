@@ -1,7 +1,24 @@
 # Design — Epic-centric dashboard (browse Epics, progress, agents, force-dispatch)
 
 **Date:** 2026-05-25
-**Status:** approved for planning
+**Status:** implemented (branch `epic-centric-dashboard`)
+
+## As-built deltas (strict improvements over the design below)
+
+- **One GitHub call, not 1+N.** `listOpenEpics` reads each issue's `sub_issues_summary`
+  from the single paginated issues call, so per-Epic `subIssueProgress` calls were
+  dropped — progress comes free with the list.
+- **Migration is `005_epics.sql`**, not `004` (`004_repo_checkout_path.sql` already
+  existed). `checkout_path` on `repo_config` is what the daemon uses to resolve a
+  force-dispatch's `repoPath` server-side.
+- **`epics.gh_updated_at` is reserved/unpopulated** (the issues summary carries no
+  updated_at the cache needs yet); noted inline in the migration.
+- **Refresh cadence is a constant** `EPICS_REFRESH_INTERVAL_MS = 60_000` in `main.ts`
+  (config-ification deferred), matching the existing `POLLER`/`WATCHDOG` interval style.
+- **Decision callout** surfaces `needsHumanInput` first, falling back to `blocked`.
+- The dashboard force-dispatch reuses the daemon's `startDispatchImpl` via a
+  `DaemonHostContext.dispatch` callback (not an internal HTTP hop), with byte-identical
+  400/429/409 gate parity to `/control/dispatch`.
 
 ## Problem
 
