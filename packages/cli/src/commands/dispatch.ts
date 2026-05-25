@@ -10,9 +10,20 @@ export type DispatchOptions = {
   startDaemon?: (opts: StartOptions) => number;
   /** Readiness-poll budget after a spawn before giving up (default 10000ms). */
   healthTimeoutMs?: number;
+  /** Backoff between `/control/events` reconnect attempts (default 1000ms). */
+  reconnectBackoffMs?: number;
 };
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 10_000;
+
+/**
+ * Bounded reconnect for a dropped `/control/events` stream. The daemon owns the
+ * workflow, so a severed client stream should re-attach — the EventHub's
+ * init-replay re-establishes the current in-flight state on reconnect — rather
+ * than give up. Capped so a genuinely-dead daemon doesn't loop forever.
+ */
+const MAX_RECONNECTS = 10;
+const DEFAULT_RECONNECT_BACKOFF_MS = 1_000;
 
 /** The minimal slice of a stream reader the follower uses (avoids the BYOB-overload type). */
 type FrameReader = {
@@ -91,27 +102,32 @@ function parseWorkflowFrame(frame: string): { id: string; state: string } | null
 }
 
 /**
- * Drain an already-open `/control/events` stream, filtered to `workflowId`,
- * printing each transition and returning the exit code once the workflow settles
- * or parks. `ac` is the shared abort controller — on SIGINT the caller aborts it,
- * which surfaces here as a clean detach (exit 0), leaving the daemon's work alone.
- *
- * The stream MUST already be subscribed before the dispatch was POSTed (see
- * `runDispatch`): a fast-failing workflow can emit its terminal frame on the
- * next tick, and init-replay omits terminal states, so a subscribe-after-POST
- * would miss it and block forever on the heartbeat-kept-alive stream.
+ * Open (or reopen) the `/control/events` SSE stream. Returns a frame reader, or
+ * null if it couldn't be opened (connection error, non-OK status, or abort).
+ * Used for the initial subscribe and for every reconnect.
  */
-async function followWorkflow(
-  reader: FrameReader,
-  workflowId: string,
-  ac: AbortController,
-): Promise<number> {
+async function openEventStream(base: string, ac: AbortController): Promise<FrameReader | null> {
   try {
-    const decoder = new TextDecoder();
-    let buffer = "";
+    const res = await fetch(`${base}/control/events`, { signal: ac.signal });
+    if (!res.ok || !res.body) return null;
+    return res.body.getReader();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drain one open stream, filtered to `workflowId`, printing each transition.
+ * Returns the exit code once the workflow settles/parks, or null when the stream
+ * ends or errors — the caller decides whether to reconnect or (if aborted) detach.
+ */
+async function drainReader(reader: FrameReader, workflowId: string): Promise<number | null> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) return null;
       buffer += decoder.decode(value, { stream: true });
       let idx: number;
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
@@ -124,16 +140,71 @@ async function followWorkflow(
         if (code !== undefined) return code;
       }
     }
-    console.error(`mm dispatch: event stream ended before workflow ${workflowId} settled`);
-    return 1;
-  } catch (error) {
-    if (ac.signal.aborted) {
-      // SIGINT: the daemon keeps the work; we just stop following it.
-      console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
-      return 0;
+  } catch {
+    // Connection error (or abort) — surfaces as a stream-ended; the caller
+    // reconnects, or detaches if it was a SIGINT abort.
+    return null;
+  }
+}
+
+/**
+ * Follow `workflowId` to its settle/park, **reconnecting if the stream drops**.
+ * `mm dispatch` only observes — the daemon owns the workflow — so a severed
+ * stream is a reconnect (the EventHub's init-replay re-establishes the current
+ * in-flight state on a fresh subscribe), not a failure. Bounded by
+ * {@link MAX_RECONNECTS}; a SIGINT abort detaches cleanly (exit 0), leaving the
+ * work running.
+ *
+ * The first stream MUST already be subscribed before the dispatch was POSTed
+ * (see `runDispatch`): a fast-failing workflow can emit its terminal frame on
+ * the next tick, and init-replay omits terminal states, so a subscribe-after-POST
+ * would miss it. That same omission is the one reconnect edge: if the workflow
+ * settles *during* a disconnect, the verdict isn't in init-replay — after the
+ * reconnect budget the client gives up with a "continues on the daemon" message
+ * rather than hang forever.
+ */
+async function followWorkflow(
+  base: string,
+  reader: FrameReader,
+  workflowId: string,
+  ac: AbortController,
+  backoffMs: number,
+): Promise<number> {
+  let reconnects = 0;
+  try {
+    for (;;) {
+      const code = await drainReader(reader, workflowId);
+      if (code !== null) return code;
+      if (ac.signal.aborted) {
+        console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
+        return 0;
+      }
+      if (reconnects >= MAX_RECONNECTS) {
+        console.error(
+          `mm dispatch: event stream unavailable after ${MAX_RECONNECTS} reconnects — ${workflowId} continues on the daemon (check 'mm status')`,
+        );
+        return 1;
+      }
+      reconnects += 1;
+      await Bun.sleep(backoffMs);
+      if (ac.signal.aborted) {
+        console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
+        return 0;
+      }
+      const reopened = await openEventStream(base, ac);
+      if (reopened) {
+        await reader.cancel().catch(() => {}); // free the dead stream before swapping
+        reader = reopened;
+        console.error(`mm dispatch: event stream reconnected (${reconnects}/${MAX_RECONNECTS})`);
+      } else {
+        console.error(`mm dispatch: reconnect ${reconnects}/${MAX_RECONNECTS} failed — retrying…`);
+      }
     }
-    console.error(`mm dispatch: lost the event stream — ${(error as Error).message}`);
-    return 1;
+  } finally {
+    // Cancel whichever reader we ended on — the initial OR a reconnected one.
+    // runDispatch's cleanup only knows about the initial reader, so without this
+    // a stream we reconnected to would be left open until process exit.
+    await reader.cancel().catch(() => {});
   }
 }
 
@@ -197,24 +268,17 @@ export async function runDispatch(
   const ac = new AbortController();
   const onSigint = (): void => ac.abort();
   process.on("SIGINT", onSigint);
-  let reader: FrameReader | undefined;
+  let reader: FrameReader | null = null;
   try {
     // Subscribe to the event stream BEFORE dispatching. A fast-failing workflow
     // can emit its terminal frame on the next tick, and init-replay omits
     // terminal states — subscribing after the POST would race and miss it.
-    let events: Response;
-    try {
-      events = await fetch(`${base}/control/events`, { signal: ac.signal });
-    } catch (error) {
+    reader = await openEventStream(base, ac);
+    if (!reader) {
       if (ac.signal.aborted) return 0;
-      console.error(`mm dispatch: could not reach dispatcher — ${(error as Error).message}`);
+      console.error(`mm dispatch: could not open the event stream on ${base}`);
       return 1;
     }
-    if (!events.ok || !events.body) {
-      console.error(`mm dispatch: could not open the event stream (status ${events.status})`);
-      return 1;
-    }
-    reader = events.body.getReader();
 
     // Dispatch on the daemon's engine.
     let workflowId: string;
@@ -250,7 +314,13 @@ export async function runDispatch(
     }
 
     console.log(`mm dispatch: ${repoSlug} epic #${epicNumber} → workflow ${workflowId}`);
-    return await followWorkflow(reader, workflowId, ac);
+    return await followWorkflow(
+      base,
+      reader,
+      workflowId,
+      ac,
+      opts.reconnectBackoffMs ?? DEFAULT_RECONNECT_BACKOFF_MS,
+    );
   } finally {
     process.off("SIGINT", onSigint);
     // Release the connection — we've decided; the daemon owns the work past here.

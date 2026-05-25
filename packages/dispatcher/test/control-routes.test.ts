@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { EventHub } from "../src/event-hub.ts";
-import { type ControlPlane, HookServer } from "../src/hook-server.ts";
+import { DEFAULT_HEARTBEAT_MS, EventHub } from "../src/event-hub.ts";
+import { type ControlPlane, HookServer, SSE_IDLE_TIMEOUT_SECONDS } from "../src/hook-server.ts";
 
 // The control surface (`/health`, `/control/events`, `/control/dispatch`) lives
 // on the existing localhost-only dispatcher server. These tests pin the route
@@ -52,6 +52,12 @@ describe("HookServer control routes", () => {
     const res = await fetch(`${base}/health`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, port: server.port, version: "1.2.3" });
+  });
+
+  test("the server idle-timeout exceeds the SSE heartbeat (else /control/events streams drop)", () => {
+    // Regression guard for "[Bun.serve]: request timed out after 10s": a heartbeat
+    // that fires after the socket idle-timeout can't keep the stream alive.
+    expect(SSE_IDLE_TIMEOUT_SECONDS * 1000).toBeGreaterThan(DEFAULT_HEARTBEAT_MS);
   });
 
   test("POST /control/dispatch starts the workflow and returns its id", async () => {

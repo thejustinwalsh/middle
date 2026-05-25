@@ -2,11 +2,21 @@ import { timingSafeEqual } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { HookPayload, NormalizedEvent } from "@middle/core";
 import { isNormalizedEvent } from "@middle/core";
-import type { Event, EventHub } from "./event-hub.ts";
+import { DEFAULT_HEARTBEAT_MS, type Event, type EventHub } from "./event-hub.ts";
 import type { PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { HookStore } from "./hook-store.ts";
 
 type BunServer = ReturnType<typeof Bun.serve>;
+
+/**
+ * Per-connection idle timeout (seconds) for the server. It MUST exceed the
+ * `/control/events` SSE heartbeat, or a stream goes idle between heartbeats and
+ * Bun closes it — Bun's default is 10s, below the 15s heartbeat, which surfaced
+ * as `[Bun.serve]: request timed out after 10 seconds` and a dropped event
+ * stream on the client. Derived as 2× the heartbeat (not a hardcoded number) so
+ * the two can never drift apart. Quick hook POSTs complete in ms, unaffected.
+ */
+export const SSE_IDLE_TIMEOUT_SECONDS = Math.ceil((DEFAULT_HEARTBEAT_MS / 1000) * 2);
 
 /** The validated `POST /control/dispatch` body — `repoPath` lets the daemon locate the checkout. */
 export type ControlDispatchInput = {
@@ -129,6 +139,9 @@ export class HookServer implements SessionGate {
     this.#server = Bun.serve({
       hostname: "127.0.0.1",
       port,
+      // Keep long-lived `/control/events` SSE streams alive between heartbeats;
+      // see SSE_IDLE_TIMEOUT_SECONDS. Without this, Bun's 10s default closes them.
+      idleTimeout: SSE_IDLE_TIMEOUT_SECONDS,
       fetch: (req) => this.#handle(req),
     });
   }
