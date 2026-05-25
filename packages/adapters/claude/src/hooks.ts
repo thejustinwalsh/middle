@@ -34,8 +34,18 @@ const CLAUDE_EVENT_MAP: ReadonlyArray<[claudeEvent: string, normalized: Normaliz
 /**
  * Write the full Claude hook configuration into the worktree: the universal
  * `hook.sh` (single-sourced from `@middle/core`), plus a `.claude/settings.json`
- * registering every event in the taxonomy. Each entry invokes
- * `"<abs>/hook.sh" <normalized-event>` and forwards the hook's stdin payload.
+ * registering every event in the taxonomy. Each entry invokes the script
+ * **through `sh`** — `sh "<abs>/hook.sh" <normalized-event>` — and forwards the
+ * hook's stdin payload.
+ *
+ * Going through `sh` (rather than invoking the script directly and relying on
+ * its execute bit) is load-bearing: a directly-invoked hook whose exec bit is
+ * missing fails with `not found`, and for the blocking `PreToolUse:Bash` gate
+ * that failure **vetoes every Bash call** — the agent can then run nothing,
+ * surfaces a Notification, and hangs waiting for a human to `chmod`. `sh` reads
+ * and runs the file regardless of its mode, so the exec bit can't wedge the
+ * agent. (We still `chmod 0o755` below as belt-and-suspenders, but nothing
+ * depends on it.)
  *
  * The settings reference an **absolute** hook path: Claude fires hooks from
  * whatever directory the agent has `cd`'d into, so a relative
@@ -64,7 +74,7 @@ export async function installHooks(opts: InstallHookOpts): Promise<void> {
   const hooks: Record<string, HookGroup[]> = {};
   for (const [claudeEvent, normalized] of CLAUDE_EVENT_MAP) {
     hooks[claudeEvent] = [
-      { hooks: [{ type: "command", command: `"${scriptPath}" ${normalized}` }] },
+      { hooks: [{ type: "command", command: `sh "${scriptPath}" ${normalized}` }] },
     ];
   }
   // Add the PR-ready gate as a SECOND PreToolUse hook, scoped to the Bash tool
@@ -72,7 +82,7 @@ export async function installHooks(opts: InstallHookOpts): Promise<void> {
   // so it must not replace the universal heartbeat entry, only sit alongside it.
   hooks.PreToolUse!.push({
     matcher: "Bash",
-    hooks: [{ type: "command", command: `"${gateScriptPath}"` }],
+    hooks: [{ type: "command", command: `sh "${gateScriptPath}"` }],
   });
 
   await Bun.write(join(claudeDir, "settings.json"), `${JSON.stringify({ hooks }, null, 2)}\n`);
