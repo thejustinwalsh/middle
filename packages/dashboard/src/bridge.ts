@@ -10,7 +10,7 @@
  * channel — no polling latency.
  */
 
-import { type RateLimitStatus, setRateLimitObserver } from "@middle/dispatcher/src/rate-limits.ts";
+import { addRateLimitObserver, type RateLimitStatus } from "@middle/dispatcher/src/rate-limits.ts";
 import type { DashboardEventBus } from "./events.ts";
 import type { GlobalBanner } from "./wire.ts";
 
@@ -20,8 +20,9 @@ export const BANNER_EVENT = "banner";
 /**
  * Register a rate-limit observer that broadcasts a fresh banner on the global
  * channel whenever an adapter's rate-limit state changes. Returns a disposer
- * that clears the observer (the daemon calls it on shutdown). Process-global —
- * only one observer exists, so the daemon owns this wiring.
+ * that removes only THIS banner observer (the daemon calls it on dispose),
+ * leaving the daemon's auto-dispatch observer intact. Observers fan out, so
+ * this coexists with the daemon's own registration.
  */
 export function bridgeRateLimitsToBus(
   bus: DashboardEventBus,
@@ -34,6 +35,5 @@ export function bridgeRateLimitsToBus(
         // A failed banner recompute must never break the rate-limit write path.
       });
   };
-  setRateLimitObserver(observer);
-  return () => setRateLimitObserver(null);
+  return addRateLimitObserver(observer);
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { setRateLimited, setRateLimitObserver } from "@middle/dispatcher/src/rate-limits.ts";
+import { clearRateLimitObservers, setRateLimited } from "@middle/dispatcher/src/rate-limits.ts";
 import { bridgeRateLimitsToBus } from "../src/bridge.ts";
 import { createDbDeps } from "../src/db-deps.ts";
 import { DashboardEventBus } from "../src/events.ts";
@@ -29,7 +29,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  setRateLimitObserver(null); // never leak the process-global observer across tests
+  clearRateLimitObservers(); // never leak the process-global observers across tests
   server.stop(true);
   cleanup();
 });
