@@ -38,17 +38,21 @@ exit 0
  * walks the Epic PR's acceptance criteria.
  *
  * Exit-code contract (Claude `PreToolUse`): exit 0 allows the tool; exit 2 blocks
- * it and feeds stderr back to the agent as the reason. The ONLY thing that blocks
- * is the dispatcher's explicit DENY verdict:
- *   - HTTP 403 → DENY → reason (response body) to stderr, exit 2 (blocks).
- *   - Everything else → allow → exit 0. That deliberately includes 200 (gate
- *     passed), **404 (no gate wired on this session's server** — the recommender
- *     and docs runs construct their hook server without the PR-ready gate, so the
- *     route 404s), 000 (unreachable dispatcher), and 5xx (dispatcher hiccup).
- * Treating only a reachable 403 as a deny is what stops the gate from wedging an
- * agent that has no gate to satisfy: a 404 here used to hit the catch-all deny
- * branch and block EVERY Bash call in a recommender session. The dispatcher does
- * the command matching, so a non-`gh pr ready` Bash call is allowed cheaply.
+ * it and feeds stderr back to the agent as the reason. The split:
+ *   - **allow (exit 0)**: `200` (gate passed), `404` (this session's hook server
+ *     has no gate wired — the recommender/docs runs build their server without
+ *     it, so the route 404s), and `000` (curl couldn't reach the dispatcher —
+ *     fail open on an infra hiccup, never wedge on a transient).
+ *   - **block + surface (exit 2)**: everything else — `403` (the explicit DENY
+ *     verdict) AND any other reachable error (`400`/`401` missing-session or
+ *     bad-token, `5xx` dispatcher fault). These are *reachable* failures of a
+ *     gate that should be working, so they surface (body → stderr) rather than
+ *     silently disabling the `gh pr ready` guard.
+ * The 404→allow split is the load-bearing fix: a 404 used to hit the catch-all
+ * deny branch and block EVERY Bash call in a recommender session (the "not found"
+ * the agent saw was the 404 body relayed as the deny reason). The dispatcher does
+ * the command matching, so a healthy non-`gh pr ready` Bash call is allowed
+ * cheaply (a 200 without touching GitHub).
  */
 export const PR_READY_GATE_SH = `#!/bin/sh
 # .middle/hooks/pr-ready-gate.sh — blocking PreToolUse gate for \`gh pr ready\`.
@@ -66,7 +70,7 @@ CODE=$(curl -sS -o "$OUT" -w '%{http_code}' \\
 # allows either way — only an explicit 403 below blocks).
 [ -n "$CODE" ] || CODE="000"
 case "$CODE" in
-  403) cat "$OUT" >&2; rm -f "$OUT"; exit 2 ;;
-  *) rm -f "$OUT"; exit 0 ;;
+  200|404|000) rm -f "$OUT"; exit 0 ;;
+  *) cat "$OUT" >&2; rm -f "$OUT"; exit 2 ;;
 esac
 `;

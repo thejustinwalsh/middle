@@ -60,7 +60,11 @@ describe("PR_READY_GATE_SH exit-code contract", () => {
     expect(await runGate("#!/bin/sh\nprintf 404\n")).toBe(0);
   });
 
-  test("HTTP 500 (dispatcher hiccup) → exit 0 (fails open, only 403 blocks)", async () => {
-    expect(await runGate("#!/bin/sh\nprintf 500\n")).toBe(0);
+  test("HTTP 401 (reachable bad-token/missing-session) → exit 2 (surface, don't silently disable the guard)", async () => {
+    expect(await runGate("#!/bin/sh\nprintf 401\n")).toBe(2);
+  });
+
+  test("HTTP 500 (reachable dispatcher fault) → exit 2 (surface, not a silent allow)", async () => {
+    expect(await runGate("#!/bin/sh\nprintf 500\n")).toBe(2);
   });
 });
