@@ -171,32 +171,40 @@ async function followWorkflow(
   backoffMs: number,
 ): Promise<number> {
   let reconnects = 0;
-  for (;;) {
-    const code = await drainReader(reader, workflowId);
-    if (code !== null) return code;
-    if (ac.signal.aborted) {
-      console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
-      return 0;
+  try {
+    for (;;) {
+      const code = await drainReader(reader, workflowId);
+      if (code !== null) return code;
+      if (ac.signal.aborted) {
+        console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
+        return 0;
+      }
+      if (reconnects >= MAX_RECONNECTS) {
+        console.error(
+          `mm dispatch: event stream unavailable after ${MAX_RECONNECTS} reconnects — ${workflowId} continues on the daemon (check 'mm status')`,
+        );
+        return 1;
+      }
+      reconnects += 1;
+      await Bun.sleep(backoffMs);
+      if (ac.signal.aborted) {
+        console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
+        return 0;
+      }
+      const reopened = await openEventStream(base, ac);
+      if (reopened) {
+        await reader.cancel().catch(() => {}); // free the dead stream before swapping
+        reader = reopened;
+        console.error(`mm dispatch: event stream reconnected (${reconnects}/${MAX_RECONNECTS})`);
+      } else {
+        console.error(`mm dispatch: reconnect ${reconnects}/${MAX_RECONNECTS} failed — retrying…`);
+      }
     }
-    if (reconnects >= MAX_RECONNECTS) {
-      console.error(
-        `mm dispatch: event stream unavailable after ${MAX_RECONNECTS} reconnects — ${workflowId} continues on the daemon (check 'mm status')`,
-      );
-      return 1;
-    }
-    reconnects += 1;
-    await Bun.sleep(backoffMs);
-    if (ac.signal.aborted) {
-      console.log(`mm dispatch: detached — ${workflowId} continues on the daemon`);
-      return 0;
-    }
-    const reopened = await openEventStream(base, ac);
-    if (reopened) {
-      reader = reopened;
-      console.error(`mm dispatch: event stream reconnected (${reconnects}/${MAX_RECONNECTS})`);
-    } else {
-      console.error(`mm dispatch: reconnect ${reconnects}/${MAX_RECONNECTS} failed — retrying…`);
-    }
+  } finally {
+    // Cancel whichever reader we ended on — the initial OR a reconnected one.
+    // runDispatch's cleanup only knows about the initial reader, so without this
+    // a stream we reconnected to would be left open until process exit.
+    await reader.cancel().catch(() => {});
   }
 }
 
