@@ -49,7 +49,7 @@ test("dashboardHostExtras routes + the hook fetch fallback coexist on one port",
   db.close();
 });
 
-test("dispose clears the process-global rate-limit observer (no broadcast after teardown)", () => {
+test("dispose clears the process-global rate-limit observer (no broadcast after teardown)", async () => {
   const db = openAndMigrate(":memory:");
   const bus = new DashboardEventBus();
   let broadcasts = 0;
@@ -60,24 +60,28 @@ test("dispose clears the process-global rate-limit observer (no broadcast after 
     return original(frame);
   };
 
+  // computeBanner resolves synchronously-ish so Bun.sleep(0) drains it reliably.
   const d = bridgeRateLimitsToBus(bus, async () => ({
     adapters: [],
-    github: { status: "UNKNOWN", remaining: null, limit: null },
+    github: { status: "UNKNOWN" as const, remaining: null, limit: null },
   }));
 
-  // While the observer is registered, a rate-limit flip schedules a broadcast.
+  // === Positive control: bridge must be live BEFORE dispose ===
+  // Trigger a flip and drain the microtask queue so the async computeBanner().then
+  // chain has a chance to run. This proves the test harness can observe a broadcast
+  // at all — without this, a vacuous test would pass even if dispose did nothing.
   setRateLimited(db, { adapter: "claude", resetAt: null, source: "test" });
+  await Bun.sleep(0);
+  expect(broadcasts).toBeGreaterThan(0); // bridge IS live — at least one broadcast fired
 
-  // After dispose, the observer is null — a further flip must not broadcast.
-  d();
-  d(); // disposing twice never throws
+  // === Invariant: no broadcast after dispose ===
+  const baseline = broadcasts;
+  d(); // dispose — clears the process-global observer
+  d(); // disposing twice must not throw
+
   setRateLimited(db, { adapter: "codex", resetAt: null, source: "test" });
-
-  // The first flip's broadcast is async (computeBanner().then(...)); the second
-  // must never fire. Capture the post-dispose count and confirm it doesn't grow.
-  const afterDispose = broadcasts;
-  setRateLimited(db, { adapter: "claude", resetAt: null, source: "test" });
-  expect(broadcasts).toBe(afterDispose);
+  await Bun.sleep(0); // drain microtasks — any queued .then() would fire here
+  expect(broadcasts).toBe(baseline); // no new broadcast after dispose
 
   db.close();
 });
