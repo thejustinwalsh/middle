@@ -24,6 +24,7 @@ import { getRateLimitState, setRateLimitObserver } from "./rate-limits.ts";
 import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
+import { isPaused } from "./repo-config.ts";
 import { getSlotState } from "./slots.ts";
 import { ghStateIssueGateway, readState } from "./state-issue.ts";
 import { killSession, status } from "./tmux.ts";
@@ -194,7 +195,9 @@ async function main(): Promise<void> {
     const adapters = Object.keys(repoConfig.adapters);
     const result = await autoDispatch({
       repo,
-      isAutoDispatchEnabled: () => repoConfig.recommender?.autoDispatch ?? false,
+      // Enabled = the per-repo toggle is on AND the repo isn't paused (#51).
+      isAutoDispatchEnabled: () =>
+        (repoConfig.recommender?.autoDispatch ?? false) && !isPaused(db, repo),
       readState: () => readState(ghStateIssueGateway, repo, stateIssueNumber),
       rateLimitedAdapters: () => rateLimitedAdapters(adapters),
       getSlotState: () => getSlotState(db, repo, limits),
