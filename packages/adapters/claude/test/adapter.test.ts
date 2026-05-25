@@ -396,14 +396,14 @@ describe("installHooks", () => {
     ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
     const abs = join(worktree, ".middle/hooks/hook.sh");
     const cmd = (event: string): string => settings.hooks[event]![0]!.hooks[0]!.command;
-    expect(cmd("SessionStart")).toBe(`"${abs}" session.started`);
-    expect(cmd("UserPromptSubmit")).toBe(`"${abs}" turn.started`);
-    expect(cmd("PreToolUse")).toBe(`"${abs}" tool.pre`);
-    expect(cmd("PostToolUse")).toBe(`"${abs}" tool.post`);
-    expect(cmd("Notification")).toBe(`"${abs}" agent.notification`);
-    expect(cmd("Stop")).toBe(`"${abs}" agent.stopped`);
-    expect(cmd("SubagentStop")).toBe(`"${abs}" agent.subagent-stopped`);
-    expect(cmd("SessionEnd")).toBe(`"${abs}" session.ended`);
+    expect(cmd("SessionStart")).toBe(`sh "${abs}" session.started`);
+    expect(cmd("UserPromptSubmit")).toBe(`sh "${abs}" turn.started`);
+    expect(cmd("PreToolUse")).toBe(`sh "${abs}" tool.pre`);
+    expect(cmd("PostToolUse")).toBe(`sh "${abs}" tool.post`);
+    expect(cmd("Notification")).toBe(`sh "${abs}" agent.notification`);
+    expect(cmd("Stop")).toBe(`sh "${abs}" agent.stopped`);
+    expect(cmd("SubagentStop")).toBe(`sh "${abs}" agent.subagent-stopped`);
+    expect(cmd("SessionEnd")).toBe(`sh "${abs}" session.ended`);
   });
 
   test("writes an executable hook.sh into the worktree at the configured path", async () => {
@@ -431,12 +431,12 @@ describe("installHooks", () => {
     const preToolUse = settings.hooks.PreToolUse!;
     // First entry stays the universal heartbeat (all tools); the gate is added second.
     expect(preToolUse[0]!.hooks[0]!.command).toBe(
-      `"${join(worktree, ".middle/hooks/hook.sh")}" tool.pre`,
+      `sh "${join(worktree, ".middle/hooks/hook.sh")}" tool.pre`,
     );
     const gateEntry = preToolUse[1]!;
     expect(gateEntry.matcher).toBe("Bash");
     expect(gateEntry.hooks[0]!.command).toBe(
-      `"${join(worktree, ".middle/hooks/pr-ready-gate.sh")}"`,
+      `sh "${join(worktree, ".middle/hooks/pr-ready-gate.sh")}"`,
     );
   });
 

@@ -23,9 +23,14 @@ const CLAUDE_EVENT_MAP: ReadonlyArray<[claudeEvent: string, normalized: string]>
 type HookGroup = { hooks: Array<{ type: "command"; command: string }> };
 type SettingsShape = { hooks?: Record<string, HookGroup[]>; [k: string]: unknown };
 
-/** The hook command string for one event — an absolute, double-quoted path. */
+/**
+ * The hook command for one event. Invoked **through `sh`** (not directly) so a
+ * missing execute bit on the script can't make it fail `not found` — which, for
+ * the blocking PreToolUse:Bash gate, would veto every Bash call and wedge the
+ * agent. Absolute, double-quoted path (cwd-independent; tolerates spaces).
+ */
 function hookCommand(scriptPath: string, normalized: string): string {
-  return `"${scriptPath}" ${normalized}`;
+  return `sh "${scriptPath}" ${normalized}`;
 }
 
 function readSettings(path: string): SettingsShape {
