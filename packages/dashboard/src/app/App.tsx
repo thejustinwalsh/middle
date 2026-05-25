@@ -32,6 +32,21 @@ import { Settings } from "./components/Settings.tsx";
 /** Poll cadence for the top-level read model until SSE replaces it (#57). */
 const POLL_MS = 4000;
 
+/** Lifecycle states that drop a workflow from the live queue (mirrors the old status page). */
+const TERMINAL_QUEUE_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
+
+/**
+ * Pure reducer for the live-queue state — upserts non-terminal frames most-recent-first
+ * and removes terminal frames. Extracted so the logic is unit-testable without a harness.
+ */
+export function applyWorkflowFrame(
+  prev: ControlWorkflowFrame[],
+  frame: ControlWorkflowFrame,
+): ControlWorkflowFrame[] {
+  const without = prev.filter((p) => p.id !== frame.id);
+  return TERMINAL_QUEUE_STATES.has(frame.state) ? without : [frame, ...without];
+}
+
 export function App() {
   const [banner, setBanner] = useState<BannerData | null>(null);
   const [repos, setRepos] = useState<RepoSummary[]>([]);
@@ -235,10 +250,8 @@ export function App() {
       <ChannelSubscriber
         url={view === "queue" ? "/control/events" : null}
         handlers={{
-          workflow: (d) => {
-            const frame = d as ControlWorkflowFrame;
-            setQueueLive((prev) => [frame, ...prev.filter((p) => p.id !== frame.id)]);
-          },
+          workflow: (d) =>
+            setQueueLive((prev) => applyWorkflowFrame(prev, d as ControlWorkflowFrame)),
         }}
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
