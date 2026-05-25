@@ -241,3 +241,76 @@ ol {
   align-items: center;
   padding: 0.2rem 0;
 }
+
+/* Queue tab — gauge tiles */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.9rem 1rem;
+}
+.tile .n {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+.tile .l {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Queue tab — in-flight table */
+table.active {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.active th,
+table.active td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+table.active th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+table.active td.state {
+  font-weight: 600;
+}
+
+/* Queue tab — state colors */
+.s-running { color: #36d399; }
+.s-launching,
+.s-pending { color: var(--accent); }
+.s-waiting-human { color: var(--warn); }
+.s-rate-limited { color: var(--bad); }
+.s-completed { color: var(--ok); }
+.s-failed,
+.s-cancelled,
+.s-compensated { color: var(--bad); }
+
+/* Queue tab — rate-limit chips */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.chips span {
+  display: inline-block;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+.c-available { color: var(--ok); border-color: var(--ok); }
+.c-rate_limited { color: var(--bad); border-color: var(--bad); }
+.c-unknown { color: var(--muted); }
