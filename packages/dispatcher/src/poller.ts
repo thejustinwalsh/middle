@@ -58,7 +58,10 @@ export type GitHubPollGateway = {
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   /** The Epic's one open PR, or null if it hasn't been opened yet. */
   findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null>;
-  /** Current REST budget — read from `gh api rate_limit`, which is itself free. */
+  /**
+   * Current REST budget. Read from `gh api rate_limit`, whose own request does
+   * not consume quota — so the poller can consult it every pass for free.
+   */
   getRateLimit(): Promise<RateLimitStatus>;
 };
 
@@ -83,9 +86,15 @@ export type PollerDeps = {
   /** Deliver the resume signal to the parked workflow (engine.signal in prod). */
   fireSignal: (workflowId: string, payload: ResumeSignalPayload) => Promise<void>;
   now?: () => number;
-  /** Skip the whole pass when GitHub's remaining budget is below this (default 100). */
+  /**
+   * Skip the whole pass when GitHub's remaining REST budget is below this.
+   * Defaults to {@link DEFAULT_RATE_LIMIT_BUFFER}.
+   */
   rateLimitBuffer?: number;
-  /** Cap on workflows polled in one pass — burst protection (default 25). */
+  /**
+   * Cap on the workflows polled in one pass — burst protection against tripping
+   * secondary limits. Defaults to {@link DEFAULT_MAX_POLLS_PER_PASS}.
+   */
   maxPollsPerPass?: number;
 };
 
