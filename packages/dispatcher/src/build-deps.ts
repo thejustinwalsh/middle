@@ -14,7 +14,33 @@ import type { ImplementationDeps, ImplementationInput } from "./workflows/implem
 import { createWorktree, destroyWorktree } from "./worktree.ts";
 
 /** The slice of {@link GitHubGateway} the deps factory reads. */
-type DepsGitHub = Pick<GitHubGateway, "findEpicPr" | "getCommentAuthor">;
+type DepsGitHub = Pick<GitHubGateway, "findEpicPr" | "getCommentAuthor" | "postComment">;
+
+/**
+ * Format the pause comment the dispatcher posts on the Epic when an agent parks.
+ * A `"complexity"` pause is framed with the literal **complexity pause** label so
+ * the recommender (reading the Epic) classifies it under the state issue's
+ * `complexity pause` needs-human label; a plain question reads as an agent
+ * question. The recommender owns "Needs human input", so this comment is the
+ * GitHub trace it keys off (the dispatcher never writes that section directly).
+ */
+export function formatPauseComment(opts: {
+  question: string;
+  context?: string;
+  kind: "question" | "complexity";
+}): string {
+  const body = opts.context ? `> ${opts.question}\n\n${opts.context}` : `> ${opts.question}`;
+  if (opts.kind === "complexity") {
+    return `🧩 **complexity pause** — the agent paused a sub-issue whose decision needs more candidate forks than this repo's \`complexity_ceiling\`.
+
+${body}
+
+A human resolves this by **scope reduction or clarification** — or applies the \`approved\` label to authorize a best-judgment call within the ceiling on resume.`;
+  }
+  return `🙋 **agent question** — the dispatched agent needs input to proceed.
+
+${body}`;
+}
 
 /**
  * What the caller binds for the HookServer-dependent part of the deps. The
@@ -57,8 +83,15 @@ export type BuildImplementationDepsArgs = {
   planCommentReader?: PlanCommentReader;
   /** Resolve the agent's `gh` login once — defaults to the real resolver. */
   resolveAgentLogin?: () => Promise<string | undefined>;
-  /** Post the agent's open question on the Epic when it parks (optional). */
+  /**
+   * Surface the agent's pause on the Epic when it parks. Defaults to a
+   * `gh`-backed comment poster ({@link formatPauseComment}); injectable for tests.
+   */
   postQuestion?: ImplementationDeps["postQuestion"];
+  /** Resolve a repo's `complexity_ceiling` for the dispatch brief; defaults to 3 when omitted. */
+  resolveComplexityCeiling?: ImplementationDeps["resolveComplexityCeiling"];
+  /** Whether an Epic carries the `approved` label (#53); defaults to not-approved when omitted. */
+  isEpicApproved?: ImplementationDeps["isEpicApproved"];
   launchTimeoutMs?: number;
   stopTimeoutMs?: number;
   reviewRoundCap?: number;
@@ -120,7 +153,15 @@ export async function buildImplementationDeps(
       const pr = await github.findEpicPr(repo, epicNumber);
       return { exists: pr !== null, isDraft: pr?.isDraft ?? false };
     },
-    postQuestion: args.postQuestion,
+    // Default surface: comment the pause on the Epic (framed by kind) via `gh`,
+    // so the recommender can classify a complexity pause under `complexity pause`.
+    postQuestion:
+      args.postQuestion ??
+      (async ({ repo, epicNumber, question, context, kind }) => {
+        await github.postComment(repo, epicNumber, formatPauseComment({ question, context, kind }));
+      }),
+    resolveComplexityCeiling: args.resolveComplexityCeiling,
+    isEpicApproved: args.isEpicApproved,
     launchTimeoutMs: args.launchTimeoutMs,
     stopTimeoutMs: args.stopTimeoutMs,
     reviewRoundCap: args.reviewRoundCap,

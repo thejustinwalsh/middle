@@ -294,6 +294,22 @@ async function main(): Promise<void> {
       return path;
     },
     worktreeRoot: config.global.worktreeRoot,
+    // The dispatch brief tells the agent its fork budget — the repo's
+    // `[limits] complexity_ceiling` (default 3), resolved per repo.
+    resolveComplexityCeiling: (repo) => {
+      const repoPath = repoPaths.get(repo);
+      if (repoPath === undefined) return 3;
+      try {
+        return (
+          loadConfig({
+            globalPath: process.env.MIDDLE_CONFIG,
+            repoPath: join(repoPath, ".middle", "config.toml"),
+          }).limits?.complexityCeiling ?? 3
+        );
+      } catch {
+        return 3;
+      }
+    },
     // Resume hand-off: a continuation round re-enters the workflow on THIS engine,
     // so a parked execution and its resume both live where the poller signals.
     enqueueContinuation: async (input) => {

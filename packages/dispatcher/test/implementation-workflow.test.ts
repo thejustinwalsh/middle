@@ -314,6 +314,89 @@ function readPromptBrief(workflowId: string): string {
   return readFileSync(join(path, ".middle", "prompt.md"), "utf8");
 }
 
+describe("implementation workflow — complexity pause (#52)", () => {
+  test("a complexity-kind pause routes to waiting-human and surfaces with kind 'complexity'", async () => {
+    const surfaced: Array<{ kind: string; question: string }> = [];
+    const deps = makeDeps({
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: {
+            question: "4 viable persistence designs, no clear winner",
+            context: "A/B/C/D all plausible",
+            kind: "complexity",
+          },
+        }),
+      postQuestion: async (opts) => {
+        surfaced.push({ kind: opts.kind, question: opts.question });
+      },
+    });
+    const id = await start(deps);
+    await awaitParked(id); // asserts the row reads waiting-human
+    expect(surfaced).toEqual([
+      { kind: "complexity", question: "4 viable persistence designs, no clear winner" },
+    ]);
+  });
+
+  test("a plain question pause surfaces with kind 'question' (the default)", async () => {
+    const surfaced: Array<{ kind: string }> = [];
+    const deps = makeDeps({
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "Which API base URL?" }, // no kind → question
+        }),
+      postQuestion: async (opts) => {
+        surfaced.push({ kind: opts.kind });
+      },
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+    expect(surfaced).toEqual([{ kind: "question" }]);
+  });
+
+  test("the dispatch brief carries the repo's complexity_ceiling as the agent's fork budget", async () => {
+    const deps = makeDeps({
+      resolveComplexityCeiling: () => 5,
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park to keep the worktree" },
+        }),
+      postQuestion: async () => {},
+    });
+    const id = await start(deps);
+    await awaitParked(id); // waiting-human keeps the worktree so the brief is readable
+    const brief = readPromptBrief(id);
+    expect(brief).toContain("more than 5 candidate forks");
+    // Not approved by default → the brief tells the agent to pause, not push past.
+    expect(brief).toContain('"kind": "complexity"');
+    expect(brief).not.toContain("approved");
+  });
+
+  test("an in-ceiling decision never surfaces a complexity pause", async () => {
+    // No complexity sentinel: the agent resolved its decisions within the ceiling.
+    // A `done` parks for *review* (waiting-human), which is NOT a complexity pause —
+    // the only thing that surfaces a pause is an asked-question stop, and this isn't
+    // one, so postQuestion is never called.
+    let surfaced = false;
+    const deps = makeDeps({
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      postQuestion: async () => {
+        surfaced = true;
+      },
+    });
+    const id = await start(deps);
+    await awaitRow(id, "waiting-human"); // the review park
+    // Give any stray surface call a chance to land before asserting it didn't.
+    await Bun.sleep(50);
+    expect(surfaced).toBe(false);
+  });
+});
+
 describe("implementation workflow — asked-question park → answer → resume (e2e)", () => {
   test("parks on asked-question, a human reply resumes a fresh continuation with the answer injected", async () => {
     const tmux = makeTmuxStub();

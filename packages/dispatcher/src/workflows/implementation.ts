@@ -105,17 +105,35 @@ export type ImplementationDeps = {
   launchTimeoutMs?: number;
   stopTimeoutMs?: number;
   /**
-   * Post the agent's open question on the Epic for human visibility when it
-   * parks on `asked-question`. Receives the sentinel contents `classifyStop`
-   * surfaced (`question` + optional `context`). Optional + injectable so tests
-   * need no `gh`; the default (wired by the dispatcher) comments on the issue.
+   * Surface the agent's pause on the Epic for human visibility when it parks on
+   * `asked-question`. Receives the sentinel contents `classifyStop` surfaced
+   * (`question` + optional `context`) plus the pause `kind`: a `"complexity"`
+   * pause is surfaced so the recommender classifies it under the `complexity
+   * pause` state-issue label, vs. a plain `"question"`. Optional + injectable so
+   * tests need no `gh`; the default (wired by the dispatcher) comments on the issue.
    */
   postQuestion?: (opts: {
     repo: string;
     epicNumber: number;
     question: string;
     context?: string;
+    kind: "question" | "complexity";
   }) => Promise<void>;
+  /**
+   * The repo's `complexity_ceiling` (`[limits] complexity_ceiling`, default 3) —
+   * the max fork branching factor the agent resolves itself before pausing the
+   * sub-issue (build spec → "Complexity and architectural forks"). Injected into
+   * the dispatch brief so the agent knows its fork budget. Resolved per repo
+   * (the deps are shared across repos); defaults to 3 when unwired.
+   */
+  resolveComplexityCeiling?: (repo: string) => number | Promise<number>;
+  /**
+   * Whether the Epic carries the `approved` label — a human has reviewed its
+   * scope and authorized the agent to proceed past a complexity overrun with a
+   * best-judgment call instead of pausing (#53). Reflected in the dispatch brief.
+   * Optional + injectable; defaults to `false` (not approved) when unwired.
+   */
+  isEpicApproved?: (repo: string, epicNumber: number) => boolean | Promise<boolean>;
   /**
    * Enqueue a continuation execution for the next round (a resume). Injected so
    * the workflow stays free of the engine: in prod the dispatcher wires this to
@@ -159,6 +177,8 @@ const DEFAULT_STOP_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_REVIEW_ROUND_CAP = 5;
 const DEFAULT_MAX_NUDGES = 3;
 const DEFAULT_NUDGE_STOP_TIMEOUT_MS = 30 * 60 * 1000;
+/** Spec default for `[limits] complexity_ceiling` when no per-repo resolver is wired. */
+const DEFAULT_COMPLEXITY_CEILING = 3;
 
 /**
  * Session names are deterministic so compensations can recompute them, and
@@ -179,30 +199,56 @@ function sessionNameFor(input: ImplementationInput): string {
  * did that). An operator-supplied brief (committed in the repo, or written by a
  * future `mm dispatch --note` / the recommender) is left untouched.
  */
-function ensurePromptFile(worktreePath: string, epicNumber: number): void {
+function ensurePromptFile(
+  worktreePath: string,
+  epicNumber: number,
+  complexityCeiling: number,
+  approved: boolean,
+): void {
   const middleDir = join(worktreePath, ".middle");
   const promptPath = join(middleDir, "prompt.md");
   if (existsSync(promptPath)) return;
   mkdirSync(middleDir, { recursive: true });
-  writeFileSync(
-    promptPath,
-    `# middle dispatch brief — Epic #${epicNumber}
+  writeFileSync(promptPath, defaultDispatchBrief(epicNumber, complexityCeiling, approved));
+}
+
+/**
+ * The default dispatch brief written to `.middle/prompt.md`. Carries the repo's
+ * `complexity_ceiling` so the agent knows its fork budget (the max candidate
+ * forks it may resolve itself before pausing the sub-issue). When the Epic
+ * carries the `approved` label, the brief authorizes the agent to proceed past a
+ * complexity overrun with a best-judgment call instead of pausing (build spec →
+ * "Complexity and architectural forks"; #53).
+ */
+function defaultDispatchBrief(
+  epicNumber: number,
+  complexityCeiling: number,
+  approved: boolean,
+): string {
+  const complexityRule = approved
+    ? `- This Epic carries the \`approved\` label: a human has reviewed its scope and
+  authorized you to proceed past a complexity overrun. If a sub-issue decision
+  would need more than ${complexityCeiling} candidate forks (the complexity ceiling),
+  do NOT pause — make a best-judgment call within the ceiling and keep going.`
+    : `- Pause only if you are genuinely blocked: ambiguous acceptance criteria, or a
+  decision needing more than ${complexityCeiling} candidate forks (the complexity
+  ceiling) to resolve. To pause, write \`.middle/blocked.json\` and exit; for a
+  complexity overrun include \`"kind": "complexity"\` in it.`;
+  return `# middle dispatch brief — Epic #${epicNumber}
 
 You are running autonomously under middle. There is no human watching in real
 time. Operating rules for this dispatch:
 
 - Work through every phase continuously. The mechanical verification gates are
   the gates between phases — do not pause for confirmation between them.
-- Do not stop to ask questions you can resolve yourself. Pause only if you are
-  genuinely blocked: ambiguous acceptance criteria, or a decision needing more
-  candidate forks than the complexity ceiling.
+- Do not stop to ask questions you can resolve yourself.
+${complexityRule}
 - The terminal state is: every phase verified, the PR marked ready for review,
   and the reviewer's brief posted on both the Epic and the PR. Then stop.
 
 ## Operator notes for this dispatch
 (none)
-`,
-  );
+`;
 }
 
 /**
@@ -466,8 +512,16 @@ export function createImplementationWorkflow(
     updateWorkflow(deps.db, ctx.executionId, { state: "launching", sessionName, sessionToken });
 
     try {
+      // The dispatch brief carries the repo's complexity_ceiling (the agent's
+      // fork budget) — resolved per repo since the deps are shared across repos.
+      const complexityCeiling = deps.resolveComplexityCeiling
+        ? await deps.resolveComplexityCeiling(ctx.input.repo)
+        : DEFAULT_COMPLEXITY_CEILING;
+      const approved = deps.isEpicApproved
+        ? await deps.isEpicApproved(ctx.input.repo, ctx.input.epicNumber)
+        : false;
       console.error(`${tag} ensuring .middle/prompt.md exists in worktree`);
-      ensurePromptFile(handle.path, ctx.input.epicNumber);
+      ensurePromptFile(handle.path, ctx.input.epicNumber, complexityCeiling, approved);
 
       console.error(`${tag} installing hooks in ${handle.path}`);
       await adapter.installHooks({
@@ -614,12 +668,16 @@ export function createImplementationWorkflow(
     );
     updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
     if (outcome.kind === "asked-question" && deps.postQuestion) {
+      // The sentinel's `kind` distinguishes a complexity pause (surfaced under the
+      // `complexity pause` state-issue label) from a plain question.
+      const kind = outcome.sentinel?.kind === "complexity" ? "complexity" : "question";
       try {
         await deps.postQuestion({
           repo: ctx.input.repo,
           epicNumber: ctx.input.epicNumber,
           question: outcome.sentinel?.question ?? "(question text unavailable)",
           context: outcome.sentinel?.context,
+          kind,
         });
       } catch (error) {
         // Visibility is best-effort — the wait is already armed and durable, so

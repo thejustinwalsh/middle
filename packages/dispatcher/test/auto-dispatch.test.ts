@@ -213,4 +213,21 @@ describe("autoDispatch", () => {
     expect(enqueued).toEqual([]);
     expect(result.reason).toBe("drained");
   });
+
+  test("no pre-dispatch complexity gate: a large-sub-issue Epic still dispatches (#52)", async () => {
+    // The loop's only gates are slots + rate limits — never sub-issue count or any
+    // complexity estimate. A ready Epic dispatches; a complexity overrun is a
+    // runtime pause on a sub-issue, not a pre-dispatch decision the loop makes.
+    const big: ReadyRow = {
+      rank: 1,
+      epic: "#401 huge epic",
+      adapter: "claude",
+      subIssues: 99,
+      reason: "many phases",
+    };
+    const { deps, enqueued } = makeDeps({ readState: async () => stateWith([big]) });
+    const result = await autoDispatch(deps);
+    expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 401, adapter: "claude" }]);
+    expect(result.reason).toBe("drained");
+  });
 });
