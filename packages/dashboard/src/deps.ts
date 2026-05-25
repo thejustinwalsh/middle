@@ -10,6 +10,7 @@
 import type { DashboardEventBus } from "./events.ts";
 import type {
   AttachResult,
+  EpicCard,
   GlobalBanner,
   NeedsYouItem,
   RepoDetail,
@@ -81,6 +82,18 @@ export type DashboardDeps = {
   updateGlobalConfig(
     patch: Partial<{ maxConcurrent: number; defaultAdapter: string }>,
   ): Promise<void>;
+
+  /** The repo's open Epics for the browse view (cache + workflows + state-issue join). */
+  listEpics(repo: string): Promise<EpicCard[]>;
+
+  /**
+   * Force-dispatch an Epic with a chosen adapter. `null` → no dispatch is wired
+   * (standalone/read-only mode → the route 404s). Returns the daemon's status/body.
+   */
+  dispatchEpic?(repo: string, epicNumber: number, adapter: string): Promise<{ status: number; body: string }>;
+
+  /** Refresh a repo's Epic cache. `null` → not wired (the route 404s). */
+  refreshEpics?(repo: string): Promise<{ status: number; body: string }>;
 
   /**
    * Trigger a recommender run for a repo. Returns the dispatcher's status/body.

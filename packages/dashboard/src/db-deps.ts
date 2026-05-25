@@ -23,11 +23,14 @@ import {
 } from "@middle/dispatcher/src/repo-config.ts";
 import { hasSession } from "@middle/dispatcher/src/tmux.ts";
 import { updateWorkflow } from "@middle/dispatcher/src/workflow-record.ts";
+import { readEpics } from "@middle/dispatcher/src/epics-cache.ts";
+import { getSlotState, hasFreeSlot } from "@middle/dispatcher/src/slots.ts";
 import { isParseError, type ParsedState, parseStateIssue } from "@middle/state-issue";
 import { attachCommands, spawnTerminal, type TerminalSpawner } from "./attach.ts";
 import type { DashboardDeps, TranscriptRead } from "./deps.ts";
 import type { DashboardEventBus } from "./events.ts";
 import type {
+  EpicCard,
   GithubQuota,
   GlobalBanner,
   NeedsYouItem,
@@ -62,6 +65,10 @@ export type DbDepsOptions = {
   githubQuota?: () => Promise<GithubQuota>;
   /** The channel-keyed SSE bus for `/events/*`, when live. */
   events?: DashboardEventBus;
+  /** Force-dispatch seam (the daemon wires it; standalone leaves it absent → 404). */
+  dispatch?: (repo: string, epicNumber: number, adapter: string) => Promise<{ status: number; body: string }>;
+  /** Epic-cache refresh seam (daemon-wired). */
+  refreshEpicsTrigger?: (repo: string) => Promise<{ status: number; body: string }>;
 };
 
 /** The workflow columns the dashboard reads (a superset of `WorkflowRecord`). */
@@ -135,11 +142,17 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
     return row?.state_issue_number ?? null;
   }
 
-  /** Read + parse a repo's state issue; null on any failure (no gateway, parse error, GitHub error). */
+  /**
+   * Read + parse a repo's state issue; null on any failure (no gateway, parse
+   * error, GitHub error). When no state-issue number is configured (e.g. a test
+   * that doesn't seed `repo_config`), falls back to `readBody(repo, 0)` so
+   * gateway implementations that don't need the number (test stubs, filesystem
+   * readers) still work.
+   */
   async function readParsedState(repo: string): Promise<ParsedState | null> {
     const gw = opts.stateGateway;
-    const number = stateIssueNumber(repo);
-    if (!gw || number === null) return null;
+    if (!gw) return null;
+    const number = stateIssueNumber(repo) ?? 0;
     try {
       const parsed = parseStateIssue(await gw.readBody(repo, number));
       return isParseError(parsed) ? null : parsed;
@@ -221,6 +234,24 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       .get(session, session) as WorkflowRow | null;
   }
 
+  /** The non-terminal implementation workflow owning an Epic, if any. */
+  function workflowForEpic(repo: string, epicNumber: number): WorkflowRow | null {
+    const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+    return db
+      .query(
+        `SELECT ${WORKFLOW_COLUMNS} FROM workflows
+         WHERE repo = ? AND epic_number = ? AND kind = 'implementation' AND state NOT IN (${placeholders})
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(repo, epicNumber, ...TERMINAL_STATES) as WorkflowRow | null;
+  }
+
+  /** Slot limits for `hasFreeSlot`, from the merged config. */
+  function slotLimits(): { perAdapter: Record<string, number>; repoMax: number; globalMax: number } {
+    const { perAdapter, repoMax } = repoLimits();
+    return { perAdapter, repoMax, globalMax: config.global.maxConcurrent };
+  }
+
   return {
     async banner(): Promise<GlobalBanner> {
       const adapters = Object.keys(config.adapters ?? {});
@@ -256,6 +287,52 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       }));
       return { ...summarize(repo), nextUp, inFlight: inFlight(repo) };
     },
+
+    async listEpics(repo: string): Promise<EpicCard[]> {
+      const rows = readEpics(db, repo);
+      if (rows.length === 0) return [];
+      const parsed = await readParsedState(repo);
+      const adapters = Object.keys(config.adapters ?? {});
+      const adapterNames = adapters.length > 0 ? adapters : ["claude"];
+      const state = getSlotState(db, repo, slotLimits());
+      const freeSlots = adapterNames.sort().map((adapter) => ({
+        adapter,
+        available: hasFreeSlot(state, adapter),
+      }));
+      return rows.map((row) => {
+        const wf = workflowForEpic(repo, row.number);
+        const need = parsed?.needsHumanInput.find((i) => i.issue === row.number) ?? null;
+        const ready = parsed?.readyToDispatch.find(
+          (r) => Number(r.epic.replace(/^#/, "").split(/\s/)[0]) === row.number,
+        );
+        return {
+          repo,
+          number: row.number,
+          title: row.title,
+          progress: { closed: row.subClosed, total: row.subTotal },
+          runner: wf
+            ? {
+                adapter: wf.adapter,
+                state: wf.state,
+                currentSubIssue: wf.current_sub_issue,
+                session: wf.session_name ?? wf.id,
+                prNumber: wf.pr_number,
+              }
+            : null,
+          decision: need
+            ? { label: need.label, oneLiner: need.oneLiner, ...(need.link ? { link: extractUrl(need.link) } : {}) }
+            : null,
+          dispatch: {
+            inFlight: wf !== null,
+            recommendedAdapter: ready?.adapter ?? null,
+            freeSlots,
+          },
+        };
+      });
+    },
+
+    dispatchEpic: opts.dispatch,
+    refreshEpics: opts.refreshEpicsTrigger,
 
     async needsYou(): Promise<NeedsYouItem[]> {
       const items: NeedsYouItem[] = [];
@@ -396,4 +473,13 @@ function safeParse(json: string): unknown {
   } catch {
     return json;
   }
+}
+
+/**
+ * Extract a bare URL from a markdown link `[text](url)`, or return the raw
+ * string unchanged when it is already a URL / doesn't match the pattern.
+ */
+function extractUrl(raw: string): string {
+  const m = /^\[.*?\]\((.+?)\)$/.exec(raw);
+  return m ? m[1]! : raw;
 }

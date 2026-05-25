@@ -141,6 +141,34 @@ export type AttachResult = {
   controlledBy: "middle" | "human";
 };
 
+/** One Epic card in the Epic-centric browse view — cache + workflows + state-issue join. */
+export type EpicCard = {
+  repo: string;
+  number: number;
+  title: string;
+  /** Sub-issue progress from the cache. */
+  progress: { closed: number; total: number };
+  /** The runner working this Epic, when one is in flight. */
+  runner: {
+    adapter: string;
+    state: string;
+    currentSubIssue: number | null;
+    session: string;
+    prNumber: number | null;
+  } | null;
+  /** A high-value decision callout from the state issue (needs-human / blocked). */
+  decision: { label: string; oneLiner: string; link?: string } | null;
+  /** Force-dispatch affordance state. */
+  dispatch: {
+    /** True when a non-terminal workflow already owns this Epic (the 409 guard). */
+    inFlight: boolean;
+    /** The recommender's adapter pick (state-issue Ready row), the picker default. */
+    recommendedAdapter: string | null;
+    /** Per-adapter free-slot availability right now. */
+    freeSlots: { adapter: string; available: boolean }[];
+  };
+};
+
 /** Per-repo config the Settings view edits. */
 export type RepoConfigWire = {
   repo: string;
