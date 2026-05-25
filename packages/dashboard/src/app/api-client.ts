@@ -7,6 +7,7 @@
 
 import type {
   AttachResult,
+  EpicCard,
   GlobalBanner,
   NeedsYouItem,
   RepoDetail,
@@ -98,4 +99,11 @@ export const api = {
   },
   updateGlobalConfig: (patch: { maxConcurrent?: number; defaultAdapter?: string }) =>
     postJson<SettingsWire>("/api/settings/global", patch),
+  epics: (repo: string) => getJson<EpicCard[]>(`/api/epics/${enc(repo)}`),
+  refreshEpics: async (repo: string): Promise<void> => {
+    const res = await fetch(`/api/epics/${enc(repo)}/refresh`, { method: "POST" });
+    if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
+  },
+  dispatchEpic: (repo: string, epicNumber: number, adapter: string) =>
+    postJson<{ workflowId: string }>(`/api/epics/${enc(repo)}/${epicNumber}/dispatch`, { adapter }),
 };
