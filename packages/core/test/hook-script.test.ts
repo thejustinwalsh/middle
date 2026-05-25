@@ -51,4 +51,16 @@ describe("PR_READY_GATE_SH exit-code contract", () => {
   test("HTTP 403 from a reachable dispatcher → exit 2 (blocks)", async () => {
     expect(await runGate("#!/bin/sh\nprintf 403\n")).toBe(2);
   });
+
+  test("HTTP 404 (no gate wired — e.g. a recommender/docs session) → exit 0 (allow, never wedge)", async () => {
+    // The recommender/docs hook servers have no /gates/pr-ready route, so the
+    // POST 404s. A 404 is NOT a deny — only an explicit 403 is. This is the bug
+    // that blocked every Bash call in a recommender session ("not found" was the
+    // 404 body relayed as the deny reason).
+    expect(await runGate("#!/bin/sh\nprintf 404\n")).toBe(0);
+  });
+
+  test("HTTP 500 (dispatcher hiccup) → exit 0 (fails open, only 403 blocks)", async () => {
+    expect(await runGate("#!/bin/sh\nprintf 500\n")).toBe(0);
+  });
 });
