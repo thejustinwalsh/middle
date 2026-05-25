@@ -3,7 +3,7 @@
  * @module @middle/dashboard
  *
  * The dashboard: a React 19 SPA plus `Bun.serve` handlers (JSON API + SSE) on
- * the configured `dispatcher_port` (8822). Read-only operator surface — Needs
+ * the configured `dispatcher_port` (4120). Read-only operator surface — Needs
  * You / Repos / Inspector / Settings — over the dispatcher's SQLite state and
  * the GitHub state issue.
  *

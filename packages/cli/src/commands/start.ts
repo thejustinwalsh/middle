@@ -24,7 +24,7 @@ export type StartOptions = {
 };
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 10_000;
-const DEFAULT_DISPATCHER_PORT = 8822;
+const DEFAULT_DISPATCHER_PORT = 4120;
 
 /** Whether a process with this pid is currently alive. */
 function isAlive(pid: number): boolean {

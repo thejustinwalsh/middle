@@ -110,7 +110,7 @@ describe("runStart / runStop lifecycle", () => {
 
 describe("runStartCommand --window", () => {
   // A config path that doesn't exist → resolveWindowConfig falls back to the
-  // default port (8822), so the opened URL is deterministic in the test.
+  // default port (4120), so the opened URL is deterministic in the test.
   let bogusConfig: string;
   beforeEach(() => {
     bogusConfig = join(dir, "no-such-config.toml");
@@ -129,7 +129,7 @@ describe("runStartCommand --window", () => {
         openWindow: (url) => opened.push(url),
       });
       expect(code).toBe(0);
-      expect(opened).toEqual(["http://127.0.0.1:8822/"]);
+      expect(opened).toEqual(["http://127.0.0.1:4120/"]);
     } finally {
       restore();
     }

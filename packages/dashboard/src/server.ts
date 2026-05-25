@@ -1,6 +1,6 @@
 /**
  * The dashboard HTTP server — `Bun.serve` wiring the JSON API, the SSE channels,
- * and the bundled React SPA, all on the configured `dispatcher_port` (8822).
+ * and the bundled React SPA, all on the configured `dispatcher_port` (4120).
  *
  * Routing precedence is Bun's most-specific-first: `/api/*` and `/events/*` are
  * handled by the dashboard, everything else falls through to the SPA (the HTML
@@ -31,7 +31,7 @@ export const DASHBOARD_IDLE_TIMEOUT_SECONDS = Math.ceil((DEFAULT_HEARTBEAT_MS / 
 export type DashboardServerOptions = {
   /** The data + action seam every route delegates to. */
   deps: DashboardDeps;
-  /** Bind port; `0` picks an ephemeral one (tests). Default 8822. */
+  /** Bind port; `0` picks an ephemeral one (tests). Default 4120. */
   port?: number;
   /**
    * Serve the bundled SPA on unmatched routes. Default true. Tests that only
@@ -52,7 +52,7 @@ function notFound(): Response {
  * `.stop()` to shut it down. Async because the SPA bundle is lazily imported.
  */
 export async function createDashboardServer(opts: DashboardServerOptions): Promise<BunServer> {
-  const { deps, port = 8822, serveSpa = true } = opts;
+  const { deps, port = 4120, serveSpa = true } = opts;
 
   const routes: Record<string, (req: Request) => Response | Promise<Response>> = {
     "/api/*": async (req) => (await handleApi(req, deps)) ?? notFound(),

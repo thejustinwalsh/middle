@@ -187,7 +187,7 @@ describe("loadConfig — per-repo merge", () => {
 describe("loadConfig — missing files", () => {
   test("missing global file falls back to documented defaults without throwing", () => {
     const config = loadConfig({ globalPath: join(dir, "does-not-exist.toml") });
-    expect(config.global.dispatcherPort).toBe(8822);
+    expect(config.global.dispatcherPort).toBe(4120);
     expect(config.global.maxConcurrent).toBe(4);
     expect(config.adapters.claude!.enabled).toBe(true);
     expect(config.repo).toBeUndefined();
