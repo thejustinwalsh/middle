@@ -66,7 +66,11 @@ export type DbDepsOptions = {
   /** The channel-keyed SSE bus for `/events/*`, when live. */
   events?: DashboardEventBus;
   /** Force-dispatch seam (the daemon wires it; standalone leaves it absent → 404). */
-  dispatch?: (repo: string, epicNumber: number, adapter: string) => Promise<{ status: number; body: string }>;
+  dispatch?: (
+    repo: string,
+    epicNumber: number,
+    adapter: string,
+  ) => Promise<{ status: number; body: string }>;
   /** Epic-cache refresh seam (daemon-wired). */
   refreshEpicsTrigger?: (repo: string) => Promise<{ status: number; body: string }>;
 };
@@ -241,7 +245,11 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
   }
 
   /** Slot limits for `hasFreeSlot`, from the merged config. */
-  function slotLimits(): { perAdapter: Record<string, number>; repoMax: number; globalMax: number } {
+  function slotLimits(): {
+    perAdapter: Record<string, number>;
+    repoMax: number;
+    globalMax: number;
+  } {
     const { perAdapter, repoMax } = repoLimits();
     return { perAdapter, repoMax, globalMax: config.global.maxConcurrent };
   }
@@ -318,7 +326,11 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
               }
             : null,
           decision: need
-            ? { label: need.label, oneLiner: need.oneLiner, ...(need.link ? { link: extractUrl(need.link) } : {}) }
+            ? {
+                label: need.label,
+                oneLiner: need.oneLiner,
+                ...(need.link ? { link: extractUrl(need.link) } : {}),
+              }
             : null,
           dispatch: {
             inFlight: wf !== null,

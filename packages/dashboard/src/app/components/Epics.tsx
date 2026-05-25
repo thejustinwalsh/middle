@@ -29,7 +29,9 @@ function DispatchControl({
   adapters: string[];
   onDispatch: (repo: string, epicNumber: number, adapter: string) => void;
 }) {
-  const [adapter, setAdapter] = useState(card.dispatch.recommendedAdapter ?? adapters[0] ?? "claude");
+  const [adapter, setAdapter] = useState(
+    card.dispatch.recommendedAdapter ?? adapters[0] ?? "claude",
+  );
   // An adapter absent from freeSlots has unknown availability — treat as no slot
   // (it isn't a configured/dispatchable adapter, so the server would reject it anyway).
   const slot = card.dispatch.freeSlots.find((s) => s.adapter === adapter);

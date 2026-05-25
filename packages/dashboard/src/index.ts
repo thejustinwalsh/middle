@@ -3,18 +3,22 @@
  * @module @middle/dashboard
  *
  * The dashboard: a React 19 SPA plus `Bun.serve` handlers (JSON API + SSE) on
- * the configured `dispatcher_port` (4120). Read-only operator surface — Needs
- * You / Repos / Inspector / Settings — over the dispatcher's SQLite state and
- * the GitHub state issue.
+ * the configured `dispatcher_port` (4120). Operator surface — Epics / Needs
+ * You / Repos / Inspector / Settings — over the dispatcher's SQLite state,
+ * the Epic browse cache, and the GitHub state issue.
  *
  * Public surface:
  * - `createDashboardServer` — start the HTTP server (API + SSE + bundled SPA)
  * - `createDashboardRoutes` — the /api/* + /events/* route table, for merging into another Bun.serve
- * - `DashboardDeps` — the data + action seam every route delegates to
+ * - `DashboardDeps` — the data + action seam every route delegates to; includes
+ *   `listEpics` / `dispatchEpic` / `refreshEpics` for the Epic view
  * - `createDbDeps` — the production seam, backed by the SQLite db + state issue
- * - `handleApi` — the JSON API router (`/api/*`), usable without a live server
+ * - `handleApi` — the JSON API router (`/api/*`), usable without a live server;
+ *   exposes `/api/epics/:repo`, `/api/epics/:repo/refresh`, and
+ *   `/api/epics/:repo/:n/dispatch`
  * - `attachCommands` / `spawnTerminal` — the tmux attach affordances
- * - the `wire.ts` types — the JSON contract shared with the SPA
+ * - the `wire.ts` types — the JSON contract shared with the SPA; includes
+ *   `EpicCard` (the Epic browse shape: progress, runner, decision, dispatch)
  *
  * Where things live:
  * - `server.ts` — the `Bun.serve` entry (the package `main`); lazy-bundles the SPA
@@ -23,7 +27,8 @@
  * - `deps.ts` — the `DashboardDeps` seam; `db-deps.ts` — its db/state-issue impl
  * - `attach.ts` — `tmux attach` command builders + terminal spawn
  * - `window.ts` — the optional `webview-bun` launcher (spawned by `mm start --window`)
- * - `index.html` + `app/` — the React 19 SPA, bundled by Bun's built-in bundler
+ * - `index.html` + `app/` — the React 19 SPA, bundled by Bun's built-in bundler;
+ *   `app/components/Epics.tsx` — the default Epic-centric browse view
  *
  * Gotchas:
  * - Repo (`owner/name`) and session path params are URL-encoded by callers so a

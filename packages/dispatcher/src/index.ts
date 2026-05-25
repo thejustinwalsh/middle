@@ -9,7 +9,8 @@
  *
  * Public surface:
  * - `runDaemon` (+ `RunDaemonOptions`, `DaemonHostContext`) — start the
- *   long-running daemon; `hostExtras` injects the dashboard's routes/disposer
+ *   long-running daemon; `hostExtras` injects the dashboard's routes/disposer;
+ *   `DaemonHostContext` carries `dispatch` + `refreshEpics` for the dashboard
  * - `buildImplementationDeps` — assemble the implementation workflow's deps +
  *   PR-ready gate (the daemon and any host share this wiring)
  * - `autoDispatch` (+ `AutoDispatchDeps`, `AutoDispatchResult`) — the
@@ -34,6 +35,10 @@
  *   the four auto-dispatch triggers
  * - `auto-dispatch.ts` — the auto-dispatch loop; `slots.ts` — slot accounting
  * - `build-deps.ts` — the shared implementation-workflow deps + gate factory
+ * - `epics-cache.ts` — the Epic browse cache (`refreshEpics` / `readEpics` /
+ *   `EpicRow`); upserts from GitHub, marks vanished Epics `closed`
+ * - `github.ts` — GitHub access seam; includes `listOpenEpics` / `parseEpicsList`
+ *   and the `EpicListItem` type (the poller's raw Epic discovery)
  * - `event-hub.ts` — the SSE broadcast hub the control plane serves
  * - `hook-server.ts`, `hook-store.ts` — receive + persist hooks; `/control` + `/health`
  * - `metrics.ts` — queue observability: the `/metrics` (Prometheus) +
