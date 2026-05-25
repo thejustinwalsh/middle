@@ -9,6 +9,7 @@
  *
  * Public surface:
  * - `createDashboardServer` — start the HTTP server (API + SSE + bundled SPA)
+ * - `createDashboardRoutes` — the /api/* + /events/* route table, for merging into another Bun.serve
  * - `DashboardDeps` — the data + action seam every route delegates to
  * - `createDbDeps` — the production seam, backed by the SQLite db + state issue
  * - `handleApi` — the JSON API router (`/api/*`), usable without a live server
@@ -38,6 +39,7 @@ export { createDashboardServer, DASHBOARD_IDLE_TIMEOUT_SECONDS } from "./server.
 export type { DashboardServerOptions } from "./server.ts";
 /** The dashboard's `/api/*` + `/events/*` route table, for merging into another `Bun.serve`. */
 export { createDashboardRoutes } from "./server.ts";
+/** The function-route table shape returned by {@link createDashboardRoutes}. */
 export type { DashboardRoutes } from "./server.ts";
 /** The `/api/*` JSON router — returns a `Response`, or `undefined` for a non-API path. Usable without a live server. */
 export { handleApi } from "./api.ts";
