@@ -519,16 +519,29 @@ export function createImplementationWorkflow(
     updateWorkflow(deps.db, ctx.executionId, { state: "launching", sessionName, sessionToken });
 
     try {
-      // The dispatch brief carries the repo's complexity_ceiling (the agent's
-      // fork budget) — resolved per repo since the deps are shared across repos.
-      const complexityCeiling = deps.resolveComplexityCeiling
-        ? await deps.resolveComplexityCeiling(ctx.input.repo)
-        : DEFAULT_COMPLEXITY_CEILING;
-      const approved = deps.isEpicApproved
-        ? await deps.isEpicApproved(ctx.input.repo, ctx.input.epicNumber)
-        : false;
+      // Build the default brief only when one isn't already present (a resume
+      // wrote its own brief in prepare-worktree; an operator brief is preserved).
+      // Resolving the per-repo ceiling / `approved` label touches `gh`, so it's
+      // gated on that and made failure-safe — a flaky label read must fall back to
+      // safe defaults, never fail the whole dispatch.
       console.error(`${tag} ensuring .middle/prompt.md exists in worktree`);
-      ensurePromptFile(handle.path, ctx.input.epicNumber, complexityCeiling, approved);
+      if (!existsSync(join(handle.path, ".middle", "prompt.md"))) {
+        let complexityCeiling = DEFAULT_COMPLEXITY_CEILING;
+        let approved = false;
+        try {
+          if (deps.resolveComplexityCeiling) {
+            complexityCeiling = await deps.resolveComplexityCeiling(ctx.input.repo);
+          }
+          if (deps.isEpicApproved) {
+            approved = await deps.isEpicApproved(ctx.input.repo, ctx.input.epicNumber);
+          }
+        } catch (error) {
+          console.error(
+            `${tag} brief-context resolution failed, using defaults (ceiling=${DEFAULT_COMPLEXITY_CEILING}, approved=false): ${(error as Error).message}`,
+          );
+        }
+        ensurePromptFile(handle.path, ctx.input.epicNumber, complexityCeiling, approved);
+      }
 
       console.error(`${tag} installing hooks in ${handle.path}`);
       await adapter.installHooks({

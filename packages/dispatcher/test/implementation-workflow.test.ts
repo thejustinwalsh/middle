@@ -416,6 +416,29 @@ describe("implementation workflow — complexity pause (#52)", () => {
     expect(brief).toContain("do NOT pause");
     expect(brief).toContain("best-judgment call");
   });
+
+  test("a flaky brief-context read falls back to safe defaults, never failing the dispatch", async () => {
+    const deps = makeDeps({
+      resolveComplexityCeiling: () => {
+        throw new Error("gh rate limited");
+      },
+      isEpicApproved: () => {
+        throw new Error("gh rate limited");
+      },
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park" },
+        }),
+      postQuestion: async () => {},
+    });
+    const id = await start(deps);
+    await awaitParked(id); // parked, not failed — the throw didn't abort the drive
+    const brief = readPromptBrief(id);
+    expect(brief).toContain("more than 3 candidate forks"); // default ceiling
+    expect(brief).not.toContain("`approved` label"); // default: not approved
+  });
 });
 
 describe("implementation workflow — dispatch source (#53)", () => {
