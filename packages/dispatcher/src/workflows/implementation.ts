@@ -442,6 +442,17 @@ export function createImplementationWorkflow(
   const nudgeStopTimeout = deps.nudgeStopTimeoutMs ?? DEFAULT_NUDGE_STOP_TIMEOUT_MS;
   const verifyRoundCap = deps.verifyRoundCap ?? DEFAULT_VERIFY_ROUND_CAP;
 
+  // Worst-case count of in-session `awaitStop(nudgeStopTimeout)` waits a single
+  // drive can spend, used to size the launch-and-drive step backstop so it can't
+  // fire mid-retry. Two nested bounded loops contribute:
+  //   • the initial bare-stop done-signal loop — up to `maxNudges` waits; and
+  //   • the verify-on-stop loop — up to `verifyRoundCap` rounds, and EACH round's
+  //     re-stop can itself be a bare-stop that re-enters `resolveBareStop` for up
+  //     to `maxNudges` further waits → `verifyRoundCap * (1 + maxNudges)`.
+  // (The initial stop is one or the other, but budgeting their sum is a safe
+  // superset.) With the defaults (3, 3): 3 + 3*4 = 15 nudge waits.
+  const maxNudgeStopWaits = maxNudges + verifyRoundCap * (1 + maxNudges);
+
   /**
    * Resolve a `bare-stop` into a terminal outcome (#80). Completion requires a
    * ready, non-draft Epic PR; without it, send a same-session "continue" nudge
@@ -933,12 +944,11 @@ export function createImplementationWorkflow(
       // bunqueue's `retry` is `maxAttempts`; `1` means one attempt, no retries.
       .step("launch-and-drive", launchAndDrive, {
         retry: 1,
-        // Backstop above the internal waits, widened for both bounded in-session
-        // nudge loops — bare-stop done-signal nudges (up to maxNudges) and
-        // verify-on-stop fix nudges (up to verifyRoundCap), each a further
-        // Stop-await — so it can't fire mid-nudge.
-        timeout:
-          launchTimeout + stopTimeout + (maxNudges + verifyRoundCap) * nudgeStopTimeout + 60_000,
+        // Backstop above the internal waits, widened for every in-session nudge
+        // wait both bounded loops can spend — including the verify loop's NESTED
+        // bare-stop resolution (see `maxNudgeStopWaits`) — so it can't fire
+        // mid-retry.
+        timeout: launchTimeout + stopTimeout + maxNudgeStopWaits * nudgeStopTimeout + 60_000,
       })
       .branch((ctx) =>
         isParkKind((ctx.steps["launch-and-drive"] as DriveResult).outcome.kind)
