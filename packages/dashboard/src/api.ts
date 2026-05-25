@@ -75,6 +75,10 @@ export async function handleApi(req: Request, deps: DashboardDeps): Promise<Resp
     return notFound(`no such rate-limits route: ${url.pathname}`);
   }
 
+  if (resource === "epics") {
+    return handleEpics(req, deps, tail, method);
+  }
+
   if (resource === "repos") {
     return handleRepos(req, deps, tail, method);
   }
@@ -114,6 +118,52 @@ async function handleSettings(
     return Response.json(await deps.getSettings());
   }
   return notFound("no such settings route");
+}
+
+/** `/api/epics/:repo` (GET), `/api/epics/:repo/refresh` (POST), `/api/epics/:repo/:n/dispatch` (POST). */
+async function handleEpics(
+  req: Request,
+  deps: DashboardDeps,
+  tail: string[],
+  method: string,
+): Promise<Response> {
+  const repo = tail[0];
+  if (repo === undefined || repo === "") return badRequest("repo path segment is required");
+
+  // GET /api/epics/:repo — the Epic browse list.
+  if (tail.length === 1 && method === "GET") {
+    return Response.json(await deps.listEpics(repo));
+  }
+
+  // POST /api/epics/:repo/refresh — refresh the Epic cache.
+  if (tail.length === 2 && tail[1] === "refresh" && method === "POST") {
+    if (!deps.refreshEpics) return notFound("epic refresh not wired");
+    const result = await deps.refreshEpics(repo);
+    return new Response(result.body, {
+      status: result.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  // POST /api/epics/:repo/:n/dispatch — force-dispatch an Epic with a chosen adapter.
+  if (tail.length === 3 && tail[2] === "dispatch" && method === "POST") {
+    const epicNumber = Number(tail[1]);
+    if (!Number.isSafeInteger(epicNumber) || epicNumber < 1) {
+      return badRequest("epic number must be a positive integer");
+    }
+    const body = await readJson(req);
+    if (typeof body.adapter !== "string" || body.adapter.trim() === "") {
+      return badRequest("adapter must be a non-empty string");
+    }
+    if (!deps.dispatchEpic) return notFound("manual dispatch not wired in this dashboard mode");
+    const result = await deps.dispatchEpic(repo, epicNumber, body.adapter);
+    return new Response(result.body, {
+      status: result.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  return notFound(`no such epics route: /${tail.join("/")}`);
 }
 
 /** `/api/repos`, `/api/repos/:repo`, and the per-repo action routes. */
