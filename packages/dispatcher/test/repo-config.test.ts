@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { openAndMigrate } from "../src/db.ts";
-import { clearPaused, getPausedUntil, isPaused, setPausedUntil } from "../src/repo-config.ts";
+import {
+  clearPaused,
+  getLastRecommenderRun,
+  getManagedRepoPath,
+  getPausedUntil,
+  isPaused,
+  listManagedRepos,
+  markRecommenderRun,
+  registerManagedRepo,
+  setPausedUntil,
+} from "../src/repo-config.ts";
 
 // Per-repo pause/resume state (#51): `mm pause` sets repo_config.paused_until,
 // `mm resume` clears it, and a paused-until-in-the-future repo reads as paused.
@@ -57,5 +67,51 @@ describe("repo pause/resume", () => {
   test("resume on a never-paused repo is a harmless no-op", () => {
     clearPaused(db, "o/r");
     expect(getPausedUntil(db, "o/r")).toBeNull();
+  });
+});
+
+describe("managed-repo registry (#135)", () => {
+  test("an unregistered repo has no path and isn't listed", () => {
+    expect(getManagedRepoPath(db, "o/r")).toBeNull();
+    expect(listManagedRepos(db)).toEqual([]);
+  });
+
+  test("registerManagedRepo records the checkout path and lists it", () => {
+    registerManagedRepo(db, "o/r", "/checkouts/r");
+    expect(getManagedRepoPath(db, "o/r")).toBe("/checkouts/r");
+    expect(listManagedRepos(db)).toEqual([{ repo: "o/r", checkoutPath: "/checkouts/r" }]);
+  });
+
+  test("registering is idempotent and updates the path in place (one row)", () => {
+    registerManagedRepo(db, "o/r", "/old");
+    registerManagedRepo(db, "o/r", "/new");
+    expect(getManagedRepoPath(db, "o/r")).toBe("/new");
+    const { n } = db.query("SELECT count(*) AS n FROM repo_config WHERE repo = ?").get("o/r") as {
+      n: number;
+    };
+    expect(n).toBe(1);
+  });
+
+  test("registering preserves an existing pause (doesn't clobber paused_until)", () => {
+    setPausedUntil(db, "o/r", 9999, 0);
+    registerManagedRepo(db, "o/r", "/checkouts/r");
+    expect(getPausedUntil(db, "o/r")).toBe(9999); // pause survived the registry write
+    expect(getManagedRepoPath(db, "o/r")).toBe("/checkouts/r");
+  });
+
+  test("listManagedRepos excludes rows with no checkout path (e.g. a pause-only row)", () => {
+    setPausedUntil(db, "paused/only"); // creates a row with null checkout_path
+    registerManagedRepo(db, "managed/repo", "/checkouts/m");
+    expect(listManagedRepos(db)).toEqual([{ repo: "managed/repo", checkoutPath: "/checkouts/m" }]);
+  });
+
+  test("markRecommenderRun stamps and reads back last_recommender_run", () => {
+    expect(getLastRecommenderRun(db, "o/r")).toBeNull();
+    markRecommenderRun(db, "o/r", 1_700_000);
+    expect(getLastRecommenderRun(db, "o/r")).toBe(1_700_000);
+    // It coexists with a registered path on the same row.
+    registerManagedRepo(db, "o/r", "/checkouts/r");
+    expect(getLastRecommenderRun(db, "o/r")).toBe(1_700_000);
+    expect(getManagedRepoPath(db, "o/r")).toBe("/checkouts/r");
   });
 });

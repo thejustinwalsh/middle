@@ -25,7 +25,8 @@ import { getRateLimitState, setRateLimitObserver } from "./rate-limits.ts";
 import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
-import { isPaused } from "./repo-config.ts";
+import { startRecommenderCron } from "./recommender-cron.ts";
+import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState } from "./state-issue.ts";
 import { killSession, status } from "./tmux.ts";
@@ -137,8 +138,18 @@ async function main(): Promise<void> {
 
   // Per-repo checkout registry: `/control/dispatch` carries `repoPath` (the daemon
   // has no inherent knowledge of where a repo lives); the workflow's
-  // resolveRepoPath reads it. In-memory — see the durability note on the engine.
+  // resolveRepoPath reads it. In-memory for the hot path, but **hydrated from the
+  // durable `repo_config` registry on startup** (and written back on every learn,
+  // below) so a restarted daemon — and the recommender cron — know every managed
+  // repo without waiting for a fresh dispatch (#135).
   const repoPaths = new Map<string, string>();
+  for (const managed of listManagedRepos(db)) repoPaths.set(managed.repo, managed.checkoutPath);
+
+  // Persist a learned checkout path to the durable registry + the in-memory map.
+  const rememberRepoPath = (repo: string, repoPath: string): void => {
+    repoPaths.set(repo, repoPath);
+    registerManagedRepo(db, repo, repoPath);
+  };
 
   // ── Auto-dispatch (build spec → "Auto-dispatch loop") ──────────────────────
   // The collision-guarded enqueue: the single source of truth for the 409 guard
@@ -157,7 +168,7 @@ async function main(): Promise<void> {
     }
     inFlightEpics.add(key);
     try {
-      repoPaths.set(input.repo, input.repoPath);
+      rememberRepoPath(input.repo, input.repoPath);
       const handle = await engine.start("implementation", {
         repo: input.repo,
         epicNumber: input.epicNumber,
@@ -291,13 +302,17 @@ async function main(): Promise<void> {
     for (const repo of repoPaths.keys()) scheduleAutoDispatch(repo);
   });
 
-  // Dashboard "run recommender now" trigger (build spec → Phase 7). The run
-  // rewrites the state issue on its own ephemeral engine; Trigger #1 (recommender
-  // run completes) then schedules an auto-dispatch pass on THIS daemon's engine.
-  // The repo's checkout is registered up front so that pass can locate it. The
-  // run uses an ephemeral port so it never collides with the live dispatcher's.
-  const recommenderTrigger: RecommenderTrigger = async ({ repoPath }) => {
-    if (!repoPath) return { status: 400, body: "repoPath required" };
+  // Run the recommender for a repo by checkout path: load its merged config,
+  // resolve the run options, register the repo (durable + in-memory), and fire
+  // the run on an ephemeral engine/port with the auto-dispatch trigger wired —
+  // Trigger #1: when the run completes (clean parse + auto_dispatch on), the
+  // recommender workflow fires `triggerAutoDispatch` back into THIS daemon's
+  // engine to run the loop. Shared by the `/trigger/recommender` route AND the
+  // periodic recommender cron (#135), so both behave identically. The run itself
+  // is fire-and-forget; this returns once it's launched.
+  async function runRecommenderForRepo(
+    repoPath: string,
+  ): Promise<{ status: number; body: string }> {
     let repoConfig: ReturnType<typeof loadConfig>;
     try {
       repoConfig = loadConfig({
@@ -309,18 +324,21 @@ async function main(): Promise<void> {
     }
     const resolved = await resolveRecommenderOptions(repoPath, repoConfig, getAdapter);
     if (!resolved.ok) return { status: 400, body: resolved.error };
-    const repoSlug = resolved.options.repoSlug;
-    repoPaths.set(repoSlug, repoPath);
+    rememberRepoPath(resolved.options.repoSlug, repoPath);
     void dispatchRecommender({
       ...resolved.options,
       dispatcherPort: 0,
-      // Trigger #1: when the run completes (clean parse + auto_dispatch on), the
-      // recommender workflow fires this back into the daemon to run the loop.
       triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
     }).catch((error: unknown) => {
-      console.error(`[main] recommender trigger run failed: ${(error as Error).message}`);
+      console.error(`[main] recommender run failed: ${(error as Error).message}`);
     });
     return { status: 202, body: "recommender run started" };
+  }
+
+  // Dashboard "run recommender now" trigger (build spec → Phase 7).
+  const recommenderTrigger: RecommenderTrigger = async ({ repoPath }) => {
+    if (!repoPath) return { status: 400, body: "repoPath required" };
+    return runRecommenderForRepo(repoPath);
   };
 
   // Wire the workflow deps + PR-ready gate via the shared factory. `bindServer`
@@ -412,6 +430,28 @@ async function main(): Promise<void> {
       worktreePath ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath) : Promise.resolve(),
   });
 
+  // Recommender cron (#135): every minute, run the recommender for each managed
+  // repo whose `[recommender] interval_minutes` has elapsed — the periodic source
+  // that drives auto-dispatch without a manual trigger, turning `mm start` into
+  // set-and-forget. Reads the durable managed-repo registry, so it works cold
+  // (post-restart) and for any repo `mm init` registered.
+  const stopRecommenderCron = await startRecommenderCron({
+    db,
+    loadRepoConfig: (checkoutPath) => {
+      try {
+        return loadConfig({
+          globalPath: process.env.MIDDLE_CONFIG,
+          repoPath: join(checkoutPath, ".middle", "config.toml"),
+        });
+      } catch {
+        return null; // unreadable config → skip this repo this tick
+      }
+    },
+    runRecommender: async ({ checkoutPath }) => {
+      await runRecommenderForRepo(checkoutPath);
+    },
+  });
+
   console.log(`middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`);
 
   const shutdown = async (): Promise<void> => {
@@ -431,6 +471,11 @@ async function main(): Promise<void> {
       await stopPoller();
     } catch (error) {
       console.error(`shutdown: stopPoller failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopRecommenderCron();
+    } catch (error) {
+      console.error(`shutdown: stopRecommenderCron failed — ${(error as Error).message}`);
     }
     try {
       hookServer.stop();

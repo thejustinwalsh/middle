@@ -27,7 +27,26 @@ import { runConfig } from "./commands/config.ts";
 import { runDispatch } from "./commands/dispatch.ts";
 import { runDocs } from "./commands/docs.ts";
 import { runDoctor } from "./commands/doctor.ts";
+import { loadConfig } from "@middle/core";
+import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
+import { registerManagedRepo } from "@middle/dispatcher/src/repo-config.ts";
 import { runInit } from "./commands/init.ts";
+
+/**
+ * Record an initialized repo in the daemon's managed-repo registry (#135) so the
+ * recommender cron picks it up without a manual dispatch. Opens the daemon db at
+ * the configured `db_path`, upserts the checkout path, and closes. Best-effort:
+ * a throw here is caught by `runInit` and never fails the init.
+ */
+function registerRepoInDaemonDb(repo: string, repoPath: string): void {
+  const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
+  const db = openAndMigrate(config.global.dbPath);
+  try {
+    registerManagedRepo(db, repo, repoPath);
+  } finally {
+    db.close();
+  }
+}
 import { runPause, runResume } from "./commands/pause.ts";
 import { runRecommender } from "./commands/run-recommender.ts";
 import { runStartCommand } from "./commands/start.ts";
@@ -49,7 +68,9 @@ program
   .argument("<path>", "path to the local repo checkout")
   .option("--dry-run", "print planned actions without executing")
   .action(async (path: string, options: { dryRun?: boolean }) =>
-    process.exit(await runInit(path, { dryRun: options.dryRun })),
+    process.exit(
+      await runInit(path, { dryRun: options.dryRun, registerRepo: registerRepoInDaemonDb }),
+    ),
   );
 
 program
