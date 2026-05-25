@@ -33,6 +33,14 @@ export function dashboardHostExtras(ctx: DaemonHostContext): {
     events: bus,
     runRecommender: ctx.runRecommender,
   });
+  // Build the routes BEFORE registering the process-global observers. If route
+  // construction throws, `runDaemon` catches it and runs the daemon dashboard-less
+  // — and because no observer is registered yet, none leaks (left firing into an
+  // orphaned bus for the daemon's lifetime). Mount the SPA at "/" (exact), NOT
+  // "/*": a wildcard would shadow the hook server's fetch fallback (/health,
+  // /control/*, /hooks/*). Bun still auto-serves the bundle's hashed JS/CSS assets.
+  const routes = { ...createDashboardRoutes(deps), "/": index };
+
   // Live banner: a usage-limit detection broadcasts a fresh banner on the global
   // channel within ~2s. The bridge reaches the dispatcher's process-global
   // rate-limit observer, so this MUST run in-process (which it does — same daemon).
@@ -42,11 +50,6 @@ export function dashboardHostExtras(ctx: DaemonHostContext): {
   // instead of polling. Reaches the dispatcher's process-global workflow observer,
   // so this MUST run in-process (which it does — same daemon).
   const disposeWorkflow = bridgeWorkflowsToBus(bus, ctx.db);
-
-  // Mount the SPA at "/" (exact), NOT "/*": a wildcard would shadow the hook
-  // server's fetch fallback (/health, /control/*, /hooks/*). Bun still auto-serves
-  // the bundle's hashed JS/CSS assets at their own routes.
-  const routes = { ...createDashboardRoutes(deps), "/": index };
   // dispose tears down both bridges (rate-limit banner + per-repo workflow nudge).
   // The EventHub heartbeats self-stop with their last SSE subscriber, and the
   // daemon process.exits on shutdown, so the bus needs no explicit teardown in v1
