@@ -448,7 +448,14 @@ async function main(): Promise<void> {
       }
     },
     runRecommender: async ({ checkoutPath }) => {
-      await runRecommenderForRepo(checkoutPath);
+      // A non-202 means the run never launched (bad config / unresolvable repo) —
+      // surface it as an error so the cron's per-repo catch logs it and does NOT
+      // count it as a fired run. The repo stays stamped (already done before this
+      // call), so a persistent misconfig retries next interval rather than spinning.
+      const result = await runRecommenderForRepo(checkoutPath);
+      if (result.status !== 202) {
+        throw new Error(`recommender launch failed (${result.status}): ${result.body}`);
+      }
     },
   });
 
