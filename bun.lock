@@ -52,12 +52,17 @@
       "version": "0.0.0",
       "dependencies": {
         "@middle/core": "workspace:*",
+        "@middle/dispatcher": "workspace:*",
+        "@middle/state-issue": "workspace:*",
         "react": "^19.2.6",
         "react-dom": "^19.2.6",
       },
       "devDependencies": {
         "@types/react": "^19.2.14",
         "@types/react-dom": "^19.2.3",
+      },
+      "optionalDependencies": {
+        "webview-bun": "^0.2.1",
       },
     },
     "packages/dispatcher": {

@@ -104,6 +104,7 @@ function toRunnerSummary(row: WorkflowRow): RunnerSummary {
     state: row.state,
     controlledBy: row.controlled_by === "human" ? "human" : "middle",
     lastHeartbeat: row.last_heartbeat,
+    attachCommands: attachCommands(row.session_name ?? row.id),
   };
 }
 
