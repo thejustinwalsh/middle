@@ -17,7 +17,9 @@ import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
+import { refreshEpics } from "./epics-cache.ts";
 import { EventHub } from "./event-hub.ts";
+import { ghGitHub } from "./github.ts";
 import { type ControlPlane, HookServer } from "./hook-server.ts";
 import { collectMetrics } from "./metrics.ts";
 import type { RecommenderTrigger } from "./hook-server.ts";
@@ -54,6 +56,14 @@ export type DaemonHostContext = {
   config: MiddleConfig;
   stateGateway: StateIssueGateway;
   runRecommender: (repo: string) => Promise<{ status: number; body: string }>;
+  /** Force-dispatch an Epic with a chosen adapter — same path as `mm dispatch`. */
+  dispatch: (
+    repo: string,
+    epicNumber: number,
+    adapter: string,
+  ) => Promise<{ status: number; body: string }>;
+  /** Refresh a repo's Epic browse cache from GitHub. */
+  refreshEpics: (repo: string) => Promise<{ status: number; body: string }>;
 };
 
 /** Options for {@link runDaemon}. `hostExtras` injects the dashboard (or any extra routes). */
@@ -72,6 +82,8 @@ export type RunDaemonOptions = {
 const SLOT_FREEING_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
 /** Debounce window coalescing a burst of triggers (terminal transitions, etc.) into one pass. */
 const AUTO_DISPATCH_DEBOUNCE_MS = 250;
+/** Epic-cache refresh cadence (constant, like POLLER/WATCHDOG; config-ification deferred). */
+const EPICS_REFRESH_INTERVAL_MS = 60_000;
 
 /** Adapter registry — only `claude` is implemented. */
 function getAdapter(name: string): AgentAdapter {
@@ -326,6 +338,54 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     );
   }
 
+  /** Force-dispatch an Epic (the dashboard's button + a future API). Mirrors the
+   *  control-route gates: 400 (unknown repo/adapter), 429 (no slot), 409 (collision). */
+  async function dispatchEpicManual(
+    repo: string,
+    epicNumber: number,
+    adapter: string,
+  ): Promise<{ status: number; body: string }> {
+    const repoPath = repoPaths.get(repo);
+    if (repoPath === undefined) {
+      return { status: 400, body: JSON.stringify({ error: `unknown repo: ${repo}` }) };
+    }
+    if (adapter !== "claude") {
+      return { status: 400, body: JSON.stringify({ error: `unknown adapter: ${adapter}` }) };
+    }
+    const input = { repo, repoPath, epicNumber, adapter };
+    if (!slotAvailable(input)) {
+      return {
+        status: 429,
+        body: JSON.stringify({ error: `no free slot for ${adapter} in ${repo}` }),
+      };
+    }
+    const workflowId = await startDispatchImpl(input, "manual");
+    if (workflowId === null) {
+      return {
+        status: 409,
+        body: JSON.stringify({
+          error: `Epic #${epicNumber} in ${repo} already has an active workflow`,
+        }),
+      };
+    }
+    scheduleAutoDispatch(repo);
+    void refreshEpics(db, repo, ghGitHub).catch(() => {}); // best-effort cache refresh after dispatch
+    return { status: 200, body: JSON.stringify({ workflowId }) };
+  }
+
+  /** Refresh a repo's Epic cache on demand (the dashboard's refresh affordance). */
+  async function refreshEpicsForRepo(repo: string): Promise<{ status: number; body: string }> {
+    if (!repoPaths.has(repo)) {
+      return { status: 404, body: JSON.stringify({ error: `unknown repo: ${repo}` }) };
+    }
+    try {
+      await refreshEpics(db, repo, ghGitHub);
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    } catch (error) {
+      return { status: 502, body: JSON.stringify({ error: (error as Error).message }) };
+    }
+  }
+
   // Trigger #3: any rate-limit state change re-runs auto-dispatch for every known
   // repo (rate-limit state is cross-repo, keyed by adapter — a reset can unblock
   // ready work anywhere).
@@ -445,6 +505,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
               if (path === undefined) return { status: 404, body: `no checkout for ${repo}` };
               return recommenderTrigger({ repoPath: path });
             },
+            dispatch: (repo, epicNumber, adapter) => dispatchEpicManual(repo, epicNumber, adapter),
+            refreshEpics: (repo) => refreshEpicsForRepo(repo),
           });
           extraRoutes = hosted.routes;
           hostDispose = hosted.dispose;
@@ -583,6 +645,18 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     console.error(`[recommender-cron] startup pass failed: ${(error as Error).message}`);
   });
 
+  // Epic-cache refresh: an initial pass + a fixed-cadence sweep over every known
+  // repo. Best-effort — a GitHub hiccup logs and the next tick retries.
+  function refreshAllEpics(): void {
+    for (const repo of repoPaths.keys()) {
+      void refreshEpics(db, repo, ghGitHub).catch((e: unknown) =>
+        console.error(`[epics] refresh ${repo} failed: ${(e as Error).message}`),
+      );
+    }
+  }
+  refreshAllEpics();
+  const epicsTimer = setInterval(refreshAllEpics, EPICS_REFRESH_INTERVAL_MS);
+
   console.log(`middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`);
 
   const shutdown = async (): Promise<void> => {
@@ -598,6 +672,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     }
     for (const timer of autoDispatchTimers.values()) clearTimeout(timer);
     autoDispatchTimers.clear();
+    clearInterval(epicsTimer);
     try {
       await stopWatchdog();
     } catch (error) {
