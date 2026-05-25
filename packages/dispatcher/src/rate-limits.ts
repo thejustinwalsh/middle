@@ -54,6 +54,32 @@ export type SetRateLimitedInput = {
   now?: number;
 };
 
+/**
+ * An observer notified after a rate-limit state mutation (an adapter flips to
+ * RATE_LIMITED or back to AVAILABLE). The daemon registers one to re-run
+ * auto-dispatch — a reset can unblock ready work for any repo (build spec →
+ * "Auto-dispatch loop": "every rate-limit state change" is a trigger).
+ * Module-level (process-scoped) and reset to `null` on daemon shutdown.
+ */
+export type RateLimitObserver = (adapter: string, status: RateLimitStatus) => void;
+
+let rateLimitObserver: RateLimitObserver | null = null;
+
+/** Register (or clear, with `null`) the {@link RateLimitObserver}. */
+export function setRateLimitObserver(observer: RateLimitObserver | null): void {
+  rateLimitObserver = observer;
+}
+
+/** Notify the observer of a state change, never letting it break the write path. */
+function notifyRateLimitObserver(adapter: string, status: RateLimitStatus): void {
+  if (!rateLimitObserver) return;
+  try {
+    rateLimitObserver(adapter, status);
+  } catch (error) {
+    console.error(`[rate-limits] observer threw: ${(error as Error).message}`);
+  }
+}
+
 /** Upsert an adapter to `RATE_LIMITED` with its reset time + provenance. */
 export function setRateLimited(db: Database, input: SetRateLimitedInput): void {
   const now = input.now ?? Date.now();
@@ -65,6 +91,7 @@ export function setRateLimited(db: Database, input: SetRateLimitedInput): void {
        observed_at = excluded.observed_at, source = excluded.source, detail = excluded.detail`,
     [input.adapter, input.resetAt, now, input.source, input.detail ?? null],
   );
+  notifyRateLimitObserver(input.adapter, "RATE_LIMITED");
 }
 
 /** Upsert an adapter to `AVAILABLE`, clearing its reset time. */
@@ -77,6 +104,7 @@ export function markAvailable(db: Database, adapter: string, now: number = Date.
        source = excluded.source, detail = NULL`,
     [adapter, now, "probe-via-real-work"],
   );
+  notifyRateLimitObserver(adapter, "AVAILABLE");
 }
 
 /**

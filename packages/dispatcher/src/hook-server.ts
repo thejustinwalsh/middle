@@ -52,6 +52,14 @@ export type ControlPlane = {
   startDispatch: (input: ControlDispatchInput) => Promise<string | null>;
   /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
   initEvents?: () => Event[];
+  /**
+   * Fired (best-effort, fire-and-forget) after a successful route dispatch — the
+   * "manual `mm dispatch`" auto-dispatch trigger (build spec → "Auto-dispatch
+   * loop"). Only route-initiated dispatches reach it; the auto-dispatch loop
+   * enqueues via `startDispatch` directly (not the HTTP route), so this never
+   * re-enters the loop. Absent in gate-only mode and the unit tests.
+   */
+  afterDispatch?: (repo: string) => void;
 };
 
 /**
@@ -371,6 +379,9 @@ export class HookServer implements SessionGate {
         { status: 409 },
       );
     }
+    // A manual dispatch is one of the four auto-dispatch triggers: re-run the
+    // loop so any slots this dispatch didn't take get filled. Best-effort.
+    control.afterDispatch?.(normalizedRepo);
     return Response.json({ workflowId });
   }
 

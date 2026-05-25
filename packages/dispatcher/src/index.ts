@@ -10,6 +10,10 @@
  * Public surface:
  * - `buildImplementationDeps` — assemble the implementation workflow's deps +
  *   PR-ready gate (the daemon and any host share this wiring)
+ * - `autoDispatch` (+ `AutoDispatchDeps`, `AutoDispatchResult`) — the
+ *   slot-and-rate-limit-aware loop that enqueues ready Epics
+ * - `getSlotState` / `hasFreeSlot` / `reserveSlot` (+ `SlotState`, `SlotLimits`,
+ *   `SlotDimension`) — the concurrency-slot authority the enqueue paths consult
  * - `EventHub` (+ `Event`) — the control plane's SSE broadcast hub
  * - `HookServer` (+ `SessionGate`, `ControlPlane`, `ControlDispatchInput`) — the
  *   hook receiver + `/control` + `/health` surface
@@ -20,7 +24,9 @@
  *
  * Where things live:
  * - `main.ts` — the process entry (`mm start` spawns it); the daemon owns the
- *   one long-lived engine that hosts every dispatch + review-resume
+ *   one long-lived engine that hosts every dispatch + review-resume, and wires
+ *   the four auto-dispatch triggers
+ * - `auto-dispatch.ts` — the auto-dispatch loop; `slots.ts` — slot accounting
  * - `build-deps.ts` — the shared implementation-workflow deps + gate factory
  * - `event-hub.ts` — the SSE broadcast hub the control plane serves
  * - `hook-server.ts`, `hook-store.ts` — receive + persist hooks; `/control` + `/health`
@@ -37,6 +43,10 @@
  * claude-md: true
  */
 export { buildImplementationDeps } from "./build-deps.ts";
+export { autoDispatch } from "./auto-dispatch.ts";
+export type { AutoDispatchDeps, AutoDispatchResult } from "./auto-dispatch.ts";
+export { getSlotState, hasFreeSlot, reserveSlot } from "./slots.ts";
+export type { SlotDimension, SlotLimits, SlotState } from "./slots.ts";
 export { EventHub } from "./event-hub.ts";
 export type { Event, WorkflowEventData } from "./event-hub.ts";
 export { POLLER_INTERVAL_MS, startPoller } from "./poller-cron.ts";

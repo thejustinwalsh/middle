@@ -160,9 +160,9 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
     }
   });
 
-  test("is read-only: a clean run never auto-dispatches (triggerAutoDispatch stays unwired)", async () => {
-    // The override bag has no triggerAutoDispatch seam, and dispatchRecommender
-    // never wires one — so even with autoDispatch true in config, nothing dispatches.
+  test("read-only by default: with no triggerAutoDispatch wired, a clean run dispatches nothing", async () => {
+    // baseOptions carries no triggerAutoDispatch seam, so even with autoDispatch
+    // true in config the workflow's trigger step is a no-op — the Phase 7 default.
     const dbPath = join(scratch, "db.sqlite3");
     const opts = baseOptions(dbPath, makeOverrides());
     opts.runConfig.autoDispatch = true;
@@ -176,5 +176,31 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
     } finally {
       db.close();
     }
+  });
+
+  test("fires triggerAutoDispatch on a clean run when wired and auto_dispatch is on (trigger #1)", async () => {
+    const dbPath = join(scratch, "db.sqlite3");
+    const calls: { repo: string; stateIssue: number }[] = [];
+    const opts = baseOptions(dbPath, makeOverrides());
+    opts.runConfig.autoDispatch = true;
+    opts.triggerAutoDispatch = async (o) => {
+      calls.push(o);
+    };
+    const result = await dispatchRecommender(opts);
+    expect(result.state).toBe("completed");
+    expect(calls).toEqual([{ repo: "thejustinwalsh/middle", stateIssue: 99 }]);
+  });
+
+  test("does not fire triggerAutoDispatch when auto_dispatch is off, even if wired", async () => {
+    const dbPath = join(scratch, "db.sqlite3");
+    const calls: unknown[] = [];
+    const opts = baseOptions(dbPath, makeOverrides());
+    opts.runConfig.autoDispatch = false;
+    opts.triggerAutoDispatch = async (o) => {
+      calls.push(o);
+    };
+    const result = await dispatchRecommender(opts);
+    expect(result.state).toBe("completed");
+    expect(calls).toEqual([]);
   });
 });

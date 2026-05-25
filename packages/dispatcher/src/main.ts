@@ -12,6 +12,7 @@ import { claudeAdapter } from "@middle/adapter-claude";
 import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
 import { Engine } from "bunqueue/workflow";
+import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
@@ -19,9 +20,12 @@ import { EventHub } from "./event-hub.ts";
 import { type ControlPlane, HookServer } from "./hook-server.ts";
 import type { RecommenderTrigger } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
+import { getRateLimitState, setRateLimitObserver } from "./rate-limits.ts";
 import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
+import { getSlotState } from "./slots.ts";
+import { ghStateIssueGateway, readState } from "./state-issue.ts";
 import { killSession, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import {
@@ -30,7 +34,13 @@ import {
   listNonTerminalWorkflows,
   setUpdateWorkflowObserver,
 } from "./workflow-record.ts";
+import type { ControlDispatchInput } from "./hook-server.ts";
 import { createImplementationWorkflow, RESUME_EVENT } from "./workflows/implementation.ts";
+
+/** Workflow states that free a dispatch slot — a transition into one re-runs auto-dispatch. */
+const SLOT_FREEING_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
+/** Debounce window coalescing a burst of triggers (terminal transitions, etc.) into one pass. */
+const AUTO_DISPATCH_DEBOUNCE_MS = 250;
 
 /** Adapter registry — only `claude` is implemented. */
 function getAdapter(name: string): AgentAdapter {
@@ -97,6 +107,9 @@ async function main(): Promise<void> {
       type: "workflow",
       data: { id: executionId, repo: row?.repo ?? "", epic: row?.epicNumber ?? null, state },
     });
+    // Trigger #2: a workflow terminal-state transition freed a slot — re-run
+    // auto-dispatch for that repo so the next ready Epic takes the slot.
+    if (row && SLOT_FREEING_STATES.has(state)) scheduleAutoDispatch(row.repo);
   };
 
   // Source 1: bunqueue-native lifecycle (running/waiting/completed/failed/compensating).
@@ -118,10 +131,125 @@ async function main(): Promise<void> {
   // resolveRepoPath reads it. In-memory — see the durability note on the engine.
   const repoPaths = new Map<string, string>();
 
-  // Dashboard "run recommender now" trigger (build spec → Phase 7). Read-only:
-  // the run rewrites the state issue but `triggerAutoDispatch` stays unwired, so
-  // nothing auto-dispatches. The run uses an ephemeral port so it never collides
-  // with the live dispatcher's port.
+  // ── Auto-dispatch (build spec → "Auto-dispatch loop") ──────────────────────
+  // The collision-guarded enqueue: the single source of truth for the 409 guard
+  // (the active-check and reservation run with no intervening await). Both the
+  // control route AND the auto-dispatch loop enqueue through this — the loop calls
+  // it directly (not the HTTP route), so its enqueues never re-trigger the loop.
+  async function startDispatchImpl(input: ControlDispatchInput): Promise<string | null> {
+    const key = epicKey(input.repo, input.epicNumber);
+    if (inFlightEpics.has(key) || hasNonTerminalEpicWorkflow(db, input.repo, input.epicNumber)) {
+      return null;
+    }
+    inFlightEpics.add(key);
+    try {
+      repoPaths.set(input.repo, input.repoPath);
+      const handle = await engine.start("implementation", {
+        repo: input.repo,
+        epicNumber: input.epicNumber,
+        adapter: input.adapter,
+      });
+      return handle.id;
+    } catch (error) {
+      // Start failed → no row will exist to release the reservation via the
+      // broadcast path, so free the slot here rather than leak it.
+      inFlightEpics.delete(key);
+      throw error;
+    }
+  }
+
+  /** The adapter names currently RATE_LIMITED with a reset still in the future. */
+  function rateLimitedAdapters(adapters: string[]): Set<string> {
+    const now = Date.now();
+    const limited = new Set<string>();
+    for (const adapter of adapters) {
+      const state = getRateLimitState(db, adapter);
+      if (state?.status === "RATE_LIMITED" && (state.resetAt === null || state.resetAt > now)) {
+        limited.add(adapter);
+      }
+    }
+    return limited;
+  }
+
+  /** Run one auto-dispatch pass for a repo, building deps from its merged config. */
+  async function runAutoDispatch(repo: string): Promise<void> {
+    const repoPath = repoPaths.get(repo);
+    if (repoPath === undefined) return; // unknown checkout — can't locate the repo
+    let repoConfig: ReturnType<typeof loadConfig>;
+    try {
+      repoConfig = loadConfig({
+        globalPath: process.env.MIDDLE_CONFIG,
+        repoPath: join(repoPath, ".middle", "config.toml"),
+      });
+    } catch {
+      return;
+    }
+    const stateIssueNumber = repoConfig.stateIssue?.number;
+    if (stateIssueNumber === undefined || stateIssueNumber === 0) return;
+    const limits = {
+      perAdapter: repoConfig.limits?.maxConcurrentPerAdapter ?? {},
+      repoMax: repoConfig.limits?.maxConcurrent ?? repoConfig.global.maxConcurrent,
+      globalMax: repoConfig.global.maxConcurrent,
+    };
+    const adapters = Object.keys(repoConfig.adapters);
+    const result = await autoDispatch({
+      repo,
+      isAutoDispatchEnabled: () => repoConfig.recommender?.autoDispatch ?? false,
+      readState: () => readState(ghStateIssueGateway, repo, stateIssueNumber),
+      rateLimitedAdapters: () => rateLimitedAdapters(adapters),
+      getSlotState: () => getSlotState(db, repo, limits),
+      enqueue: ({ repo: r, epicNumber, adapter }) =>
+        startDispatchImpl({ repo: r, repoPath, epicNumber, adapter }),
+    });
+    if (result.enqueued.length > 0) {
+      const list = result.enqueued.map((e) => `#${e.epicNumber}(${e.adapter})`).join(", ");
+      console.log(`[auto-dispatch] ${repo}: enqueued ${list} — ${result.reason}`);
+    }
+  }
+
+  // Debounced, re-entrancy-guarded scheduler so a burst of triggers (many
+  // terminal transitions, a rate-limit flip) coalesces into one pass per repo,
+  // and a trigger arriving mid-pass re-runs once after it finishes.
+  const autoDispatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const autoDispatchRunning = new Set<string>();
+  const autoDispatchRerun = new Set<string>();
+  function scheduleAutoDispatch(repo: string): void {
+    if (shuttingDown) return;
+    const existing = autoDispatchTimers.get(repo);
+    if (existing) clearTimeout(existing);
+    autoDispatchTimers.set(
+      repo,
+      setTimeout(() => {
+        autoDispatchTimers.delete(repo);
+        if (autoDispatchRunning.has(repo)) {
+          autoDispatchRerun.add(repo);
+          return;
+        }
+        autoDispatchRunning.add(repo);
+        void runAutoDispatch(repo)
+          .catch((error: unknown) => {
+            console.error(`[auto-dispatch] ${repo} failed: ${(error as Error).message}`);
+          })
+          .finally(() => {
+            autoDispatchRunning.delete(repo);
+            if (autoDispatchRerun.delete(repo)) scheduleAutoDispatch(repo);
+          });
+      }, AUTO_DISPATCH_DEBOUNCE_MS),
+    );
+  }
+
+  // Trigger #3: any rate-limit state change re-runs auto-dispatch for every known
+  // repo (rate-limit state is cross-repo, keyed by adapter — a reset can unblock
+  // ready work anywhere).
+  setRateLimitObserver(() => {
+    for (const repo of repoPaths.keys()) scheduleAutoDispatch(repo);
+  });
+
+  // Dashboard "run recommender now" trigger (build spec → Phase 7). The run
+  // rewrites the state issue on its own ephemeral engine; Trigger #1 (recommender
+  // run completes) then schedules an auto-dispatch pass on THIS daemon's engine.
+  // The repo's checkout is registered up front so that pass can locate it. The
+  // run uses an ephemeral port so it never collides with the live dispatcher's.
   const recommenderTrigger: RecommenderTrigger = async ({ repoPath }) => {
     if (!repoPath) return { status: 400, body: "repoPath required" };
     let repoConfig: ReturnType<typeof loadConfig>;
@@ -135,7 +263,15 @@ async function main(): Promise<void> {
     }
     const resolved = await resolveRecommenderOptions(repoPath, repoConfig, getAdapter);
     if (!resolved.ok) return { status: 400, body: resolved.error };
-    void dispatchRecommender({ ...resolved.options, dispatcherPort: 0 }).catch((error: unknown) => {
+    const repoSlug = resolved.options.repoSlug;
+    repoPaths.set(repoSlug, repoPath);
+    void dispatchRecommender({
+      ...resolved.options,
+      dispatcherPort: 0,
+      // Trigger #1: when the run completes (clean parse + auto_dispatch on), the
+      // recommender workflow fires this back into the daemon to run the loop.
+      triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
+    }).catch((error: unknown) => {
       console.error(`[main] recommender trigger run failed: ${(error as Error).message}`);
     });
     return { status: 202, body: "recommender run started" };
@@ -165,27 +301,11 @@ async function main(): Promise<void> {
         hub,
         version,
         knownAdapter: (name) => name === "claude",
-        startDispatch: async ({ repo, repoPath, epicNumber, adapter }) => {
-          const key = epicKey(repo, epicNumber);
-          // Atomic collision guard: this active-check and the reservation that
-          // follows run with no await between them, so two concurrent dispatches
-          // of the same Epic cannot both pass — the second sees the reservation
-          // (or, once started, the DB row) and gets `null` → 409.
-          if (inFlightEpics.has(key) || hasNonTerminalEpicWorkflow(db, repo, epicNumber)) {
-            return null;
-          }
-          inFlightEpics.add(key);
-          try {
-            repoPaths.set(repo, repoPath);
-            const handle = await engine.start("implementation", { repo, epicNumber, adapter });
-            return handle.id;
-          } catch (error) {
-            // Start failed → no row will exist to release the reservation via the
-            // broadcast path, so free the slot here rather than leak it.
-            inFlightEpics.delete(key);
-            throw error;
-          }
-        },
+        startDispatch: startDispatchImpl,
+        // Trigger #4: a manual `mm dispatch` (a route dispatch) re-runs the loop
+        // so any slot this dispatch didn't claim gets filled. The loop's own
+        // enqueues bypass the route, so this never re-enters the loop.
+        afterDispatch: scheduleAutoDispatch,
         initEvents: () =>
           listNonTerminalWorkflows(db).map((w) => ({
             type: "workflow",
@@ -229,6 +349,9 @@ async function main(): Promise<void> {
     shuttingDown = true;
     // Guard each teardown so a throw/rejection can't skip process.exit.
     setUpdateWorkflowObserver(null);
+    setRateLimitObserver(null);
+    for (const timer of autoDispatchTimers.values()) clearTimeout(timer);
+    autoDispatchTimers.clear();
     try {
       await stopWatchdog();
     } catch (error) {
