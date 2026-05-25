@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ApiError, api } from "../src/app/api-client.ts";
-import { App } from "../src/app/App.tsx";
+import { App, applyWorkflowFrame } from "../src/app/App.tsx";
 import { GlobalBanner } from "../src/app/components/GlobalBanner.tsx";
 import { Inspector } from "../src/app/components/Inspector.tsx";
 import { NeedsYou } from "../src/app/components/NeedsYou.tsx";
@@ -19,6 +19,16 @@ import { makeConfig, makeDb, seedWorkflow } from "./helpers.ts";
 test("App nav includes a queue tab", () => {
   const html = renderToStaticMarkup(<App />);
   expect(html).toContain(">queue<");
+});
+
+test("applyWorkflowFrame upserts non-terminal and drops terminal workflows", () => {
+  let live = applyWorkflowFrame([], { id: "a", repo: "o/r", epic: 1, state: "running" });
+  live = applyWorkflowFrame(live, { id: "b", repo: "o/r", epic: 2, state: "running" });
+  expect(live.map((w) => w.id)).toEqual(["b", "a"]); // most-recent first
+  live = applyWorkflowFrame(live, { id: "a", repo: "o/r", epic: 1, state: "completed" });
+  expect(live.map((w) => w.id)).toEqual(["b"]); // terminal 'a' dropped
+  live = applyWorkflowFrame(live, { id: "b", repo: "o/r", epic: 2, state: "waiting-human" });
+  expect(live.map((w) => w.id)).toEqual(["b"]); // non-terminal upsert, no dup
 });
 
 describe("dashboard views (static render)", () => {
