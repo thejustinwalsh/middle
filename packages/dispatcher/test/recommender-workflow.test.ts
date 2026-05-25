@@ -596,3 +596,55 @@ describe("recommender workflow — sessionNameFor collision-resistance", () => {
     expect(name("owner/repo")).not.toBe(name("owner/rep o"));
   });
 });
+
+describe("recommender workflow — daemon path (resolveRunSettings, #135 fix)", () => {
+  // The bug this guards: the daemon used to fire the recommender on a *second*
+  // ephemeral engine that never processed the job, so no `recommender` row was
+  // ever created. The daemon now registers ONE workflow on its long-lived engine
+  // and resolves per-repo settings via `resolveRunSettings`. This proves that
+  // path actually RUNS: it creates the recommender row and drives to completion.
+  test("runs on the engine via per-repo resolveRunSettings and creates the recommender row", async () => {
+    const h = makeHarness({ autoDispatch: true, wireTrigger: true });
+    const resolverCalls: string[] = [];
+    const daemonDeps: RecommenderDeps = {
+      ...h.deps,
+      // The daemon omits the static settings and resolves them per-repo instead.
+      schemaPath: undefined,
+      config: undefined,
+      repoConfig: undefined,
+      resolveRunSettings: (repo) => {
+        resolverCalls.push(repo);
+        return {
+          schemaPath: "/abs/schemas/state-issue.v1.md",
+          config: { defaultAdapter: "claude", autoDispatch: true, prMode: "worktree" },
+          repoConfig: REPO_CONFIG,
+          agentTimeoutMs: 2000,
+        };
+      },
+    };
+
+    const id = await runToEnd(daemonDeps);
+
+    const row = getWorkflow(db, id)!;
+    expect(row.state).toBe("completed"); // it actually ran on the engine
+    expect(row.kind).toBe("recommender"); // the row the old dead-engine path never created
+    expect(resolverCalls).toContain(REPO); // per-repo resolver drove the run, not static deps
+    // auto_dispatch came from the resolved per-repo config → the trigger fired.
+    expect(h.triggered).toEqual([{ repo: REPO, stateIssue: STATE_ISSUE }]);
+  });
+
+  test("a clear wiring error when neither resolveRunSettings nor static settings are provided", async () => {
+    const h = makeHarness();
+    const broken: RecommenderDeps = {
+      ...h.deps,
+      schemaPath: undefined,
+      config: undefined,
+      repoConfig: undefined,
+      // resolveRunSettings deliberately absent → the build-prompt guard throws.
+    };
+    const id = await runToEnd(broken);
+    // The guard fails the run (and compensation rolls the worktree back) rather
+    // than silently producing a half-run — exactly the failure mode we're fixing.
+    expect(["failed", "compensated"]).toContain(getWorkflow(db, id)!.state);
+  });
+});

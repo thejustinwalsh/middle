@@ -156,7 +156,7 @@ export async function resolveRecommenderOptions(
 }
 
 /** Default human surface: comment the problem on the state issue via `gh`. */
-async function ghSurfaceProblem(opts: {
+export async function ghSurfaceProblem(opts: {
   repo: string;
   stateIssue: number;
   problem: string;

@@ -69,6 +69,14 @@ export type StateIssueReader = {
   readBody(repo: string, issueNumber: number): Promise<string>;
 };
 
+/** The per-repo settings the recommender workflow resolves for each run. */
+export type RecommenderRunSettings = {
+  schemaPath: string;
+  config: RecommenderRunConfig;
+  repoConfig: RepoConfig;
+  agentTimeoutMs?: number;
+};
+
 /** Everything the recommender workflow needs that is not part of its per-run input. */
 export type RecommenderDeps = {
   db: Database;
@@ -79,14 +87,27 @@ export type RecommenderDeps = {
   resolveRepoPath: (repo: string) => string;
   worktreeRoot: string;
   dispatcherUrl: string;
-  /** On-disk path to `state-issue.v1.md` the recommender is pointed at. */
-  schemaPath: string;
+  /**
+   * On-disk path to `state-issue.v1.md`. Per-repo via {@link resolveRunSettings}
+   * on the daemon; the standalone runner supplies it statically.
+   */
+  schemaPath?: string;
   /** Reads the state issue body — `prior_body` for the prompt, and the produced body to verify. */
   stateIssue: StateIssueReader;
-  /** Configured adapter names, for `validate()` in the verify step. */
-  repoConfig: RepoConfig;
-  /** The `config` block reported to the recommender. */
-  config: RecommenderRunConfig;
+  /** Configured adapter names, for `validate()` in the verify step (static-runner path). */
+  repoConfig?: RepoConfig;
+  /** The `config` block reported to the recommender (static-runner path). */
+  config?: RecommenderRunConfig;
+  /**
+   * Per-repo run settings resolver — the **daemon path**. When set, the workflow
+   * resolves `schemaPath`/`config`/`repoConfig`/`agentTimeoutMs` from this for
+   * each run's `input.repo`, so ONE workflow registration on the daemon's
+   * long-lived engine serves every managed repo (mirrors how the implementation
+   * workflow resolves per-repo). When absent, the workflow falls back to the
+   * static fields above (the standalone `dispatchRecommender` path). Provide one
+   * or the other.
+   */
+  resolveRunSettings?: (repo: string) => RecommenderRunSettings;
   /**
    * Gather the dispatcher-owned context (rate limits, in-flight, slots) verbatim.
    * Injected so tests stub it and the runner wires the real db/config-backed
@@ -284,7 +305,30 @@ type VerifyResult = { ok: boolean; errors: string[] };
  */
 export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<RecommenderInput> {
   const launchTimeout = deps.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
-  const agentTimeout = deps.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+
+  /**
+   * Resolve the run's per-repo settings: the daemon's `resolveRunSettings(repo)`
+   * when wired (one registration serves every repo), else the static deps (the
+   * standalone runner). One path must be present — a missing both is a wiring bug.
+   */
+  function runSettings(repo: string): RecommenderRunSettings {
+    if (deps.resolveRunSettings) return deps.resolveRunSettings(repo);
+    if (
+      deps.schemaPath === undefined ||
+      deps.config === undefined ||
+      deps.repoConfig === undefined
+    ) {
+      throw new Error(
+        "recommender deps: provide resolveRunSettings (daemon) or schemaPath+config+repoConfig (standalone)",
+      );
+    }
+    return {
+      schemaPath: deps.schemaPath,
+      config: deps.config,
+      repoConfig: deps.repoConfig,
+      agentTimeoutMs: deps.agentTimeoutMs,
+    };
+  }
 
   /** Tear down the worktree + session. Both the final step and the prepare
    * compensation route here; idempotent so running it twice is safe. */
@@ -336,13 +380,14 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     const { handle } = ctx.steps["prepare-shallow-worktree"] as PrepareResult;
     const priorBody = await deps.stateIssue.readBody(ctx.input.repo, ctx.input.stateIssue);
     const context = deps.gatherContext(ctx.input.repo);
+    const settings = runSettings(ctx.input.repo);
     const promptText = assembleRecommenderPrompt({
       repo: ctx.input.repo,
       stateIssue: ctx.input.stateIssue,
-      schemaPath: deps.schemaPath,
+      schemaPath: settings.schemaPath,
       priorBody,
       context,
-      config: deps.config,
+      config: settings.config,
     });
     // The launch references `.middle/prompt.md`; write the assembled context there.
     const middleDir = join(handle.path, ".middle");
@@ -354,6 +399,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
   async function spawnRecommenderAgent(ctx: StepContext<RecommenderInput>): Promise<void> {
     const { handle } = ctx.steps["prepare-shallow-worktree"] as PrepareResult;
     const adapter = deps.getAdapter(ctx.input.adapter);
+    const agentTimeout = runSettings(ctx.input.repo).agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
     const sessionName = sessionNameFor(ctx.input);
     const sessionToken = crypto.randomUUID();
     const tag = `[recommender:${sessionName}]`;
@@ -413,7 +459,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
       await surface(ctx, problem);
       return { ok: false, errors: [parsed.message] };
     }
-    const result = validate(parsed, deps.repoConfig);
+    const result = validate(parsed, runSettings(ctx.input.repo).repoConfig);
     if (!result.ok) {
       const problem = `state issue #${ctx.input.stateIssue} failed validation: ${result.errors.join("; ")}`;
       await surface(ctx, problem);
@@ -441,7 +487,8 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     const verify = ctx.steps["verify-state-issue-parses"] as VerifyResult;
     // Gate on a clean parse. Phase 7 is read-only: the runner leaves
     // `triggerAutoDispatch` unwired, so nothing dispatches regardless of config.
-    if (!verify.ok || !deps.config.autoDispatch || !deps.triggerAutoDispatch) return;
+    if (!verify.ok || !runSettings(ctx.input.repo).config.autoDispatch || !deps.triggerAutoDispatch)
+      return;
     await deps.triggerAutoDispatch({ repo: ctx.input.repo, stateIssue: ctx.input.stateIssue });
   }
 
@@ -468,9 +515,10 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
       .step("build-prompt", buildPrompt)
       .step("spawn-recommender-agent", spawnRecommenderAgent, {
         retry: 1,
-        // The spec's hard cap; widened slightly above the internal Stop-await so the
-        // internal timeout (specific error) fires first in the normal case.
-        timeout: launchTimeout + agentTimeout + 30_000,
+        // Registration-time backstop above the internal Stop-await (which is the
+        // controlling, per-repo timeout). Uses the static `agentTimeoutMs` when
+        // given, else the default — a generous outer cap, not the precise bound.
+        timeout: launchTimeout + (deps.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS) + 30_000,
       })
       .step("verify-state-issue-parses", verifyStateIssueParses)
       .step("trigger-auto-dispatch", triggerAutoDispatch)
