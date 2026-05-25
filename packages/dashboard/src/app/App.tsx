@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  EpicCard,
   GlobalBanner as BannerData,
   NeedsYouItem,
   RepoDetail,
@@ -29,6 +30,7 @@ import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
 import { NeedsYou } from "./components/NeedsYou.tsx";
+import { Epics } from "./components/Epics.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Repos } from "./components/Repos.tsx";
 import { Settings } from "./components/Settings.tsx";
@@ -60,7 +62,9 @@ export function App() {
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
   );
-  const [view, setView] = useState<"dashboard" | "queue" | "settings">("dashboard");
+  const [view, setView] = useState<"epics" | "dashboard" | "queue" | "settings">("epics");
+  const [epics, setEpics] = useState<EpicCard[]>([]);
+  const [epicRepo, setEpicRepo] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsWire | null>(null);
   const [queueMetrics, setQueueMetrics] = useState<ControlMetrics | null>(null);
   const [queueLive, setQueueLive] = useState<ControlWorkflowFrame[]>([]);
@@ -221,6 +225,33 @@ export function App() {
     void guard("queue", async () => setQueueMetrics(await fetchControlMetrics()));
   }, [view, guard]);
 
+  // Default the Epic-view repo filter to the first tracked repo once repos arrive.
+  useEffect(() => {
+    if (epicRepo === null && repos.length > 0) setEpicRepo(repos[0]!.repo);
+  }, [repos, epicRepo]);
+
+  const refreshEpics = useCallback(
+    (repo: string) => guard("epics", async () => setEpics(await api.epics(repo))),
+    [guard],
+  );
+
+  // Load + poll the selected repo's Epics while the Epics view is open.
+  useEffect(() => {
+    if (view !== "epics" || epicRepo === null) return;
+    void refreshEpics(epicRepo);
+    const id = setInterval(() => void refreshEpics(epicRepo), POLL_MS);
+    return () => clearInterval(id);
+  }, [view, epicRepo, refreshEpics]);
+
+  const dispatchEpic = useCallback(
+    (repo: string, epicNumber: number, adapter: string) =>
+      guard("epics", async () => {
+        await api.dispatchEpic(repo, epicNumber, adapter);
+        await Promise.all([refreshEpics(repo), refreshTop()]);
+      }),
+    [guard, refreshEpics, refreshTop],
+  );
+
   const inspectorSession = inspector?.panel.session ?? null;
 
   return (
@@ -259,9 +290,20 @@ export function App() {
             setQueueLive((prev) => applyWorkflowFrame(prev, d as ControlWorkflowFrame)),
         }}
       />
+      <ChannelSubscriber
+        url={view === "epics" && epicRepo ? `/events/repos/${encodeURIComponent(epicRepo)}` : null}
+        handlers={{ workflow: () => epicRepo && void refreshEpics(epicRepo) }}
+      />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error.message}</div> : null}
       <nav className="view-nav">
+        <button
+          type="button"
+          className={view === "epics" ? "active" : ""}
+          onClick={() => setView("epics")}
+        >
+          epics
+        </button>
         <button
           type="button"
           className={view === "dashboard" ? "active" : ""}
@@ -284,7 +326,30 @@ export function App() {
           settings
         </button>
       </nav>
-      {view === "settings" ? (
+      {view === "epics" ? (
+        <>
+          {repos.length > 1 ? (
+            <select
+              className="epic-repo-filter"
+              aria-label="repo"
+              value={epicRepo ?? ""}
+              onChange={(e) => setEpicRepo(e.target.value)}
+            >
+              {repos.map((r) => (
+                <option key={r.repo} value={r.repo}>
+                  {r.repo}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <Epics
+            epics={epics}
+            adapters={(banner?.adapters ?? []).map((a) => a.adapter)}
+            onDispatch={dispatchEpic}
+            onOpenInspector={openInspector}
+          />
+        </>
+      ) : view === "settings" ? (
         <main>
           {settings ? (
             <Settings

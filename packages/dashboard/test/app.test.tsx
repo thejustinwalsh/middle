@@ -21,6 +21,45 @@ test("App nav includes a queue tab", () => {
   expect(html).toContain(">queue<");
 });
 
+test("App defaults to the Epics view (nav tab + empty state render)", () => {
+  const html = renderToStaticMarkup(<App />);
+  expect(html).toContain(">epics<");
+  expect(html).toContain("No open Epics for this repo.");
+});
+
+test("api.epics reads Epic cards from a live server", async () => {
+  const { db, cleanup } = makeDb();
+  try {
+    db.run(
+      `INSERT INTO epics (repo, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
+       VALUES ('o/r', 247, 'OAuth refresh', 'open', '[]', 4, 2, 0)`,
+    );
+    seedWorkflow(db, {
+      id: "wf1",
+      repo: "o/r",
+      epicNumber: 247,
+      adapter: "claude",
+      state: "running",
+      sessionName: "o-r-247",
+      currentSubIssue: 2,
+    });
+    const deps = createDbDeps({ db, config: makeConfig() });
+    const server = await createDashboardServer({ deps, port: 0, serveSpa: false });
+    try {
+      const res = await fetch(
+        `http://localhost:${server.port}/api/epics/${encodeURIComponent("o/r")}`,
+      );
+      expect(res.status).toBe(200);
+      const cards = (await res.json()) as { number: number; runner: { adapter: string } | null }[];
+      expect(cards[0]).toMatchObject({ number: 247, runner: { adapter: "claude" } });
+    } finally {
+      server.stop(true);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("applyWorkflowFrame upserts non-terminal and drops terminal workflows", () => {
   let live = applyWorkflowFrame([], { id: "a", repo: "o/r", epic: 1, state: "running" });
   live = applyWorkflowFrame(live, { id: "b", repo: "o/r", epic: 2, state: "running" });
