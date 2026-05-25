@@ -396,8 +396,15 @@ export class HookServer implements SessionGate {
       );
     }
     // A manual dispatch is one of the four auto-dispatch triggers: re-run the
-    // loop so any slots this dispatch didn't take get filled. Best-effort.
-    control.afterDispatch?.(normalizedRepo);
+    // loop so any slots this dispatch didn't take get filled. Best-effort — a
+    // throw here must not turn a dispatch that already succeeded into a 500.
+    try {
+      control.afterDispatch?.(normalizedRepo);
+    } catch (error) {
+      console.error(
+        `[hook-server] afterDispatch failed for ${normalizedRepo}: ${(error as Error).message}`,
+      );
+    }
     return Response.json({ workflowId });
   }
 
