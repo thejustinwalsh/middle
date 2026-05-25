@@ -10,6 +10,7 @@ import {
   listManagedRepos,
   markRecommenderRun,
   registerManagedRepo,
+  setLastRecommenderRun,
   setPausedUntil,
 } from "../src/repo-config.ts";
 
@@ -103,6 +104,13 @@ describe("managed-repo registry (#135)", () => {
     setPausedUntil(db, "paused/only"); // creates a row with null checkout_path
     registerManagedRepo(db, "managed/repo", "/checkouts/m");
     expect(listManagedRepos(db)).toEqual([{ repo: "managed/repo", checkoutPath: "/checkouts/m" }]);
+  });
+
+  test("setLastRecommenderRun writes a value and clears it with null (cron rollback)", () => {
+    setLastRecommenderRun(db, "o/r", 1_700_000);
+    expect(getLastRecommenderRun(db, "o/r")).toBe(1_700_000);
+    setLastRecommenderRun(db, "o/r", null); // roll back to "never ran"
+    expect(getLastRecommenderRun(db, "o/r")).toBeNull();
   });
 
   test("markRecommenderRun stamps and reads back last_recommender_run", () => {

@@ -26,7 +26,7 @@ import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from
 import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
-import { startRecommenderCron } from "./recommender-cron.ts";
+import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
@@ -548,9 +548,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // that drives auto-dispatch without a manual trigger, turning `mm start` into
   // set-and-forget. Reads the durable managed-repo registry, so it works cold
   // (post-restart) and for any repo `mm init` registered.
-  const stopRecommenderCron = await startRecommenderCron({
+  const recommenderCronDeps = {
     db,
-    loadRepoConfig: (checkoutPath) => {
+    loadRepoConfig: (checkoutPath: string) => {
       try {
         return loadConfig({
           globalPath: process.env.MIDDLE_CONFIG,
@@ -560,16 +560,27 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         return null; // unreadable config → skip this repo this tick
       }
     },
-    runRecommender: async ({ checkoutPath }) => {
+    runRecommender: async ({ checkoutPath }: { checkoutPath: string }) => {
       // A non-202 means the run never launched (bad config / unresolvable repo) —
-      // surface it as an error so the cron's per-repo catch logs it and does NOT
-      // count it as a fired run. The repo stays stamped (already done before this
-      // call), so a persistent misconfig retries next interval rather than spinning.
+      // surface it as an error so the cron's per-repo catch logs it (and rolls the
+      // stamp back, so the failure retries next tick rather than going quiet for a
+      // full interval).
       const result = await runRecommenderForRepo(checkoutPath);
       if (result.status !== 202) {
         throw new Error(`recommender launch failed (${result.status}): ${result.body}`);
       }
     },
+  };
+  const stopRecommenderCron = await startRecommenderCron(recommenderCronDeps);
+
+  // Startup kick: don't idle until the first cron tick / next interval. Run one
+  // recommender due-check pass NOW — any overdue managed repo fires immediately
+  // (then auto-dispatch on completion) instead of waiting up to the cron interval.
+  // And nudge auto-dispatch for every managed repo so an already-ready state issue
+  // (from a prior run) drains on restart without needing a fresh recommender pass.
+  for (const managed of listManagedRepos(db)) scheduleAutoDispatch(managed.repo);
+  void runRecommenderCronPass(recommenderCronDeps).catch((error: unknown) => {
+    console.error(`[recommender-cron] startup pass failed: ${(error as Error).message}`);
   });
 
   console.log(`middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`);
