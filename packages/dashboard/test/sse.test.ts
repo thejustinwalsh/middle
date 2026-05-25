@@ -150,7 +150,9 @@ describe("dashboard SSE channels", () => {
   });
 
   test("a malformed percent-encoded channel segment is a 400, not a crash", async () => {
-    const res = await fetch(`${base}/events/repos/%ZZ`, { headers: { accept: "text/event-stream" } });
+    const res = await fetch(`${base}/events/repos/%ZZ`, {
+      headers: { accept: "text/event-stream" },
+    });
     expect(res.status).toBe(400);
   });
 

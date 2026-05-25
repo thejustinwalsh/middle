@@ -8,7 +8,7 @@
  * in the `api` client; this component owns view state (which repos are expanded,
  * which session the Inspector shows) and orchestrates refreshes.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   GlobalBanner as BannerData,
   NeedsYouItem,
@@ -19,6 +19,7 @@ import type {
   SettingsWire,
 } from "../wire.ts";
 import { api } from "./api-client.ts";
+import { type GuardError, makeGuard } from "./guard.ts";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
@@ -40,26 +41,12 @@ export function App() {
   );
   const [view, setView] = useState<"dashboard" | "settings">("dashboard");
   const [settings, setSettings] = useState<SettingsWire | null>(null);
-  const [error, setError] = useState<{ source: string; message: string } | null>(null);
+  const [error, setError] = useState<GuardError | null>(null);
 
-  // Every API call funnels through here. The callbacks below are invoked
-  // fire-and-forget — `void f()` from effects/intervals, or straight from an
-  // onClick whose returned promise React drops — so an un-caught rejection would
-  // be an unhandled rejection *and* never reach the error bar. `guard` makes the
-  // failure mode uniform: surface it on the bar, clear it on the next success.
-  //
-  // Errors are keyed by `source` because the dashboard runs concurrent pollers
-  // (the top refresh + the settings refresh). A success only clears *its own*
-  // source's error, so a healthy top poll can't wipe out a live settings failure
-  // (which would otherwise flicker the bar on every 4s tick).
-  const guard = useCallback(async (source: string, work: () => Promise<void>) => {
-    try {
-      await work();
-      setError((cur) => (cur?.source === source ? null : cur));
-    } catch (e) {
-      setError({ source, message: e instanceof Error ? e.message : String(e) });
-    }
-  }, []);
+  // The uniform async-error funnel for every fire-and-forget API call below —
+  // surface failures on the error bar, clear on the next same-source success.
+  // See `guard.ts` for the source-keying rationale and the nesting gotcha.
+  const guard = useMemo(() => makeGuard(setError), []);
 
   const refreshSettings = useCallback(
     () => guard("settings", async () => setSettings(await api.settings())),
@@ -147,16 +134,20 @@ export function App() {
     [refreshDetail],
   );
 
+  // Raw inspector refresh: fetch the panel + events and update state, letting
+  // errors propagate. `openInspector` wraps it in a guard for the unguarded
+  // call sites (opening the drawer); `takeControl`/`release` await it *directly*
+  // inside their own `guard("inspector", …)` so the single outer guard owns the
+  // error. Nesting a second `guard("inspector", …)` here would swallow a refresh
+  // failure and the outer success path would then clear it — the error vanishes.
+  const loadInspector = useCallback(async (session: string) => {
+    const [panel, events] = await Promise.all([api.session(session), api.sessionEvents(session)]);
+    setInspector({ panel, events });
+  }, []);
+
   const openInspector = useCallback(
-    (session: string) =>
-      guard("inspector", async () => {
-        const [panel, events] = await Promise.all([
-          api.session(session),
-          api.sessionEvents(session),
-        ]);
-        setInspector({ panel, events });
-      }),
-    [guard],
+    (session: string) => guard("inspector", () => loadInspector(session)),
+    [guard, loadInspector],
   );
 
   const watch = useCallback((session: string) => {
@@ -173,20 +164,20 @@ export function App() {
     (session: string) =>
       guard("inspector", async () => {
         await api.attach(session, "control");
-        if (inspector?.panel.session === session) await openInspector(session);
+        if (inspector?.panel.session === session) await loadInspector(session);
         void refreshTop();
       }),
-    [guard, inspector, openInspector, refreshTop],
+    [guard, inspector, loadInspector, refreshTop],
   );
 
   const release = useCallback(
     (session: string) =>
       guard("inspector", async () => {
         await api.release(session);
-        if (inspector?.panel.session === session) await openInspector(session);
+        if (inspector?.panel.session === session) await loadInspector(session);
         void refreshTop();
       }),
-    [guard, inspector, openInspector, refreshTop],
+    [guard, inspector, loadInspector, refreshTop],
   );
 
   // Load settings on first switch to the Settings view (and keep them fresh
