@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAndMigrate } from "../src/db.ts";
 import { type EpicPrLifecycle, reconcileMergedParks } from "../src/poller.ts";
-import { createWorkflowRecord, getWorkflow, updateWorkflow } from "../src/workflow-record.ts";
+import {
+  createWorkflowRecord,
+  finalizeParkedWorkflow,
+  getWorkflow,
+  updateWorkflow,
+} from "../src/workflow-record.ts";
 
 let scratch: string;
 let db: Database;
@@ -147,5 +152,46 @@ describe("reconcileMergedParks", () => {
       62: { number: 3, state: "MERGED" },
     });
     expect(await reconcileMergedParks({ ...deps, maxPollsPerPass: 2 })).toBe(2);
+  });
+
+  test("does not tear down the worktree when it loses the race to a concurrent resume", async () => {
+    // Row passes the parked-row scan, but a resume advances it before the write:
+    // model that by stubbing the lifecycle call to flip the row to `running`
+    // just before reconcile finalizes it.
+    const id = seedParked(63);
+    const removed: string[] = [];
+    const deps = {
+      db,
+      github: {
+        async findEpicPrLifecycle(): Promise<EpicPrLifecycle> {
+          updateWorkflow(db, id, { state: "running" }); // the concurrent resume wins
+          return { number: 96, state: "MERGED" };
+        },
+        async getRateLimit() {
+          return { remaining: 5000, resetAt: 0 };
+        },
+      },
+      removeWorktree: async (_repo: string, wp: string | null) => {
+        if (wp) removed.push(wp);
+      },
+    };
+    expect(await reconcileMergedParks(deps)).toBe(0); // guarded write found no waiting-human row
+    expect(getWorkflow(db, id)?.state).toBe("running"); // not clobbered
+    expect(removed).toEqual([]); // worktree left intact for the resume
+  });
+});
+
+describe("finalizeParkedWorkflow", () => {
+  test("transitions a still-parked row and reports the change", () => {
+    const id = seedParked(80);
+    expect(finalizeParkedWorkflow(db, id, "completed")).toBe(true);
+    expect(getWorkflow(db, id)?.state).toBe("completed");
+  });
+
+  test("no-ops (returns false) a row that already left waiting-human", () => {
+    const id = seedParked(81);
+    updateWorkflow(db, id, { state: "running" });
+    expect(finalizeParkedWorkflow(db, id, "completed")).toBe(false);
+    expect(getWorkflow(db, id)?.state).toBe("running"); // not clobbered
   });
 });

@@ -200,7 +200,13 @@ export async function pruneWorktreeAt(
     if (repoPath) {
       const registered = await rawList(repoPath).catch(() => [] as RawWorktree[]);
       if (registered.some((w) => w.path === worktreePath)) {
-        await runGit(repoPath, ["worktree", "remove", "--force", worktreePath]);
+        // Deregister before deleting the directory. If `git worktree remove`
+        // fails, do NOT rmSync — that would strand a git registration pointing
+        // at a missing path, which poisons later worktree operations for the
+        // repo. Leave both in place; a leftover dir is recoverable, a stale
+        // registration is the worse failure.
+        const res = await runGit(repoPath, ["worktree", "remove", "--force", worktreePath]);
+        if (res.exitCode !== 0) return;
       }
     }
     if (existsSync(worktreePath)) {

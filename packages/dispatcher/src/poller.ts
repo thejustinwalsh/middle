@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
 import type { ResumeReason } from "./workflows/implementation.ts";
 import {
+  finalizeParkedWorkflow,
   listParkedImplementationWorkflows,
   loadPollableWaits,
   markSignalFired,
-  updateWorkflow,
 } from "./workflow-record.ts";
 
 /**
@@ -336,6 +336,14 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
       // for `runPoller` / the human; only a landed/abandoned PR is reconciled.
       if (!life || life.state === "OPEN") continue;
       const finalState = life.state === "MERGED" ? "completed" : "cancelled";
+      // Transition FIRST, conditionally: if a concurrent resume already advanced
+      // the row out of `waiting-human`, we lose the race and must NOT tear down
+      // its worktree (that resume still needs it). Teardown only on the win.
+      if (!finalizeParkedWorkflow(deps.db, wf.id, finalState)) continue;
+      reconciled++;
+      console.error(
+        `[reconcile] ${wf.repo}#${wf.epicNumber} PR ${life.state} → ${finalState} (workflow ${wf.id})`,
+      );
       if (deps.removeWorktree) {
         try {
           await deps.removeWorktree(wf.repo, wf.worktreePath);
@@ -345,11 +353,6 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
           );
         }
       }
-      updateWorkflow(deps.db, wf.id, { state: finalState });
-      console.error(
-        `[reconcile] ${wf.repo}#${wf.epicNumber} PR ${life.state} → ${finalState} (workflow ${wf.id})`,
-      );
-      reconciled++;
     } catch (error) {
       console.error(
         `[reconcile] failed for workflow ${wf.id} (${wf.repo}#${wf.epicNumber}): ${(error as Error).message}`,

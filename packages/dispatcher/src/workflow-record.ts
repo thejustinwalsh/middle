@@ -138,6 +138,35 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
 }
 
 /**
+ * Conditionally finalize a parked workflow: write `finalState` **only if the row
+ * is still `waiting-human`**, returning whether it actually transitioned. Guards
+ * the reconciler against the race where another path (a resume signal firing)
+ * advances the row between the reconciler's parked-row scan and its write — an
+ * unconditional `updateWorkflow` would clobber the newer state. Fires the update
+ * observer (the SSE broadcast) only on a real transition, so the page reflects
+ * exactly the rows that were finalized.
+ */
+export function finalizeParkedWorkflow(
+  db: Database,
+  id: string,
+  finalState: WorkflowState,
+): boolean {
+  const res = db.run(
+    "UPDATE workflows SET state = ?, updated_at = ? WHERE id = ? AND state = 'waiting-human'",
+    [finalState, Date.now(), id],
+  );
+  const changed = (res.changes ?? 0) > 0;
+  if (changed && updateObserver) {
+    try {
+      updateObserver(id, { state: finalState });
+    } catch (error) {
+      console.error(`[workflow-record] update observer threw: ${(error as Error).message}`);
+    }
+  }
+  return changed;
+}
+
+/**
  * The terminal states. A workflow in one of these no longer owns its session,
  * so its hooks are stale and must not be correlated to it — `session.started`
  * for a *new* dispatch reusing a deterministic session name would otherwise
