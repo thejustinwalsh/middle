@@ -33,6 +33,7 @@ middle's dispatch unit is an **Epic** — one Epic = one branch = one PR. The Ep
 - Bun monorepo (Bun ≥ 1.3.12), TypeScript across the board. See the build spec's "Tech stack" and "Repo layout".
 - `bun test` runs tests; `bun run typecheck` (`tsc --noEmit`) type-checks.
 - The root `tsconfig.json` enables `allowImportingTsExtensions`, and import specifiers include the `.ts` extension. This is intentional — Bun runs `.ts` natively and `tsc` is type-check-only.
+- **Lint & format:** `bun run lint` (`oxlint --fix --deny-warnings`) and `bun run format` (`oxfmt`). The ruleset is **pinned** in `.oxlintrc.json` — the `correctness` category as **errors**, with the `eslint`/`typescript`/`unicorn`/`oxc` plugins on. Broader categories (`suspicious`/`pedantic`/`perf`/`style`) are deliberately **off** for now: correctness is the high-signal, low-false-positive baseline; tighten by enabling categories explicitly as the codebase warrants, never by relying on oxlint's shifting defaults (pinning is what keeps the gate's meaning stable across versions). `oxfmt` config is in `.oxfmtrc.json` — semicolons enforced (`semi: true`), `printWidth: 100`, hand-authored markdown/`schemas/`/`planning/`/`docs/` ignored. Both run as per-phase gates via `.middle/verify.toml`, **optimistically** (auto-fix in place; only what can't be auto-fixed escalates to the agent).
 
 ## state-issue contract
 

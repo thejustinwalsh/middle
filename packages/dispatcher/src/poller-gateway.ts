@@ -1,4 +1,10 @@
-import type { GitHubPollGateway, IssueComment, PrReview, PrSnapshot } from "./poller.ts";
+import type {
+  GitHubPollGateway,
+  IssueComment,
+  PrReview,
+  PrSnapshot,
+  RateLimitStatus,
+} from "./poller.ts";
 
 /**
  * The production {@link GitHubPollGateway} — reads issue comments and PR review
@@ -119,5 +125,18 @@ export const ghPollGateway: GitHubPollGateway = {
       reviews,
       labels: view.labels.map((l) => l.name),
     };
+  },
+
+  async getRateLimit(): Promise<RateLimitStatus> {
+    // The `rate_limit` endpoint is special-cased by GitHub: querying it does
+    // NOT consume budget. `core.reset` is epoch *seconds* → convert to ms.
+    const out = await gh([
+      "api",
+      "rate_limit",
+      "--jq",
+      "{ remaining: .resources.core.remaining, reset: .resources.core.reset }",
+    ]);
+    const r = JSON.parse(out) as { remaining: number; reset: number };
+    return { remaining: r.remaining, resetAt: r.reset * 1000 };
   },
 };

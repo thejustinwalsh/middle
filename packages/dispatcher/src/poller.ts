@@ -50,11 +50,19 @@ export type PrSnapshot = {
   labels: string[];
 };
 
+/** GitHub's remaining REST budget and when it resets (epoch ms). */
+export type RateLimitStatus = { remaining: number; resetAt: number };
+
 /** The read-only GitHub surface the poller needs — injectable so tests need no `gh`. */
 export type GitHubPollGateway = {
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   /** The Epic's one open PR, or null if it hasn't been opened yet. */
   findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null>;
+  /**
+   * Current REST budget. Read from `gh api rate_limit`, whose own request does
+   * not consume quota — so the poller can consult it every pass for free.
+   */
+  getRateLimit(): Promise<RateLimitStatus>;
 };
 
 /** What the poller fires into the workflow's resume signal for #36 to interpret. */
@@ -78,7 +86,31 @@ export type PollerDeps = {
   /** Deliver the resume signal to the parked workflow (engine.signal in prod). */
   fireSignal: (workflowId: string, payload: ResumeSignalPayload) => Promise<void>;
   now?: () => number;
+  /**
+   * Skip the whole pass when GitHub's remaining REST budget is below this.
+   * Defaults to {@link DEFAULT_RATE_LIMIT_BUFFER}.
+   */
+  rateLimitBuffer?: number;
+  /**
+   * Cap on the workflows polled in one pass — burst protection against tripping
+   * secondary limits. Defaults to {@link DEFAULT_MAX_POLLS_PER_PASS}.
+   */
+  maxPollsPerPass?: number;
 };
+
+/**
+ * Skip a pass when GitHub's remaining REST budget is below this. Leaves headroom
+ * for the agent's own `gh` use + interactive work, and keeps the poller from
+ * being the thing that tips the account over its hourly limit.
+ */
+export const DEFAULT_RATE_LIMIT_BUFFER = 100;
+
+/**
+ * Most workflows polled in a single pass. Bounds the burst of `gh` calls a large
+ * parked set would otherwise fire in a tight loop (the secondary/abuse-limit
+ * risk); the remainder are picked up on the next tick.
+ */
+export const DEFAULT_MAX_POLLS_PER_PASS = 25;
 
 const ACTIONABLE_RE = /actionable comments posted:\s*(\d+)/i;
 
@@ -152,17 +184,50 @@ export function classifyReviewOutcome(
  * errors) are isolated and logged — they skip that workflow this pass and are
  * retried next pass; they never abort the pass for the others. Returns the
  * number of signals fired (for logging/tests).
+ *
+ * Two GitHub-friendliness guards run before any per-workflow `gh` call:
+ *  - **Rate-limit ceiling** — if the remaining REST budget is below
+ *    `rateLimitBuffer`, the whole pass is skipped (the work waits for the next
+ *    tick, by which point the budget may have reset). Checking `rate_limit` is
+ *    itself free, so this never costs budget.
+ *  - **Burst cap** — at most `maxPollsPerPass` workflows are polled per pass, so
+ *    a large parked set can't fire a tight burst that trips secondary limits.
  */
 export async function runPoller(deps: PollerDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
-  let fired = 0;
+  const buffer = deps.rateLimitBuffer ?? DEFAULT_RATE_LIMIT_BUFFER;
+  const maxPerPass = deps.maxPollsPerPass ?? DEFAULT_MAX_POLLS_PER_PASS;
+
+  // Gather only the waits that will actually make GitHub calls, so the budget
+  // gate + burst cap apply to the real workload (the skipped ones below cost
+  // nothing).
+  type PollableWait = ReturnType<typeof loadPollableWaits>[number];
+  const actionable: Array<{ wait: PollableWait; reason: ResumeReason; epicNumber: number }> = [];
   for (const wait of loadPollableWaits(deps.db)) {
     if (wait.firedAt !== null || wait.epicNumber === null) continue;
     const reason = reasonFromSignalName(wait.signalName);
-    if (!reason) continue;
+    if (reason === null) continue;
+    // epicNumber is narrowed to `number` past the guard above; capture it so the
+    // gh calls in the loop below don't see the row's nullable type again.
+    actionable.push({ wait, reason, epicNumber: wait.epicNumber });
+  }
+  if (actionable.length === 0) return 0;
+
+  // Rate-limit ceiling: never let the poller be the call that tips us over.
+  const budget = await deps.github.getRateLimit();
+  if (budget.remaining < buffer) {
+    console.error(
+      `[poller] GitHub budget low (${budget.remaining} < ${buffer}); skipping pass — resets ${new Date(budget.resetAt).toISOString()}`,
+    );
+    return 0;
+  }
+
+  let fired = 0;
+  // Burst cap: bound the calls fired in one tick; the rest wait for next pass.
+  for (const { wait, reason, epicNumber } of actionable.slice(0, maxPerPass)) {
     try {
       if (reason === "answered-question") {
-        const comments = await deps.github.listIssueComments(wait.repo, wait.epicNumber);
+        const comments = await deps.github.listIssueComments(wait.repo, epicNumber);
         const reply = classifyNewHumanReply(comments, wait.createdAt);
         if (!reply) continue;
         await deps.fireSignal(wait.workflowId, {
@@ -170,7 +235,7 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
           reply: { commentId: reply.id, authorLogin: reply.authorLogin, body: reply.body },
         });
       } else {
-        const pr = await deps.github.findPrForEpic(wait.repo, wait.epicNumber);
+        const pr = await deps.github.findPrForEpic(wait.repo, epicNumber);
         if (!pr) continue;
         const verdict = classifyReviewOutcome(pr, wait.createdAt);
         if (!verdict) continue;
