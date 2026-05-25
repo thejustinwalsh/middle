@@ -19,6 +19,12 @@ import {
  */
 export const RECOMMENDER_CRON_INTERVAL_MS = 60_000;
 
+/**
+ * Collaborators the recommender cron needs, as injectable seams so the pass
+ * unit-tests with no engine, GitHub, or config files. The daemon wires `db`, a
+ * `loadRepoConfig` that reads each checkout's `.middle/config.toml`, and a
+ * `runRecommender` that launches a run on an ephemeral engine; tests stub them.
+ */
 export type RecommenderCronDeps = {
   db: Database;
   /** Load a managed repo's merged config from its checkout, or null if unreadable. */
