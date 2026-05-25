@@ -88,6 +88,13 @@ export type WorkflowPatch = {
   sessionToken?: string;
   sessionId?: string;
   transcriptPath?: string;
+  /**
+   * Who drives the session. The dashboard's Take control / Release affordances
+   * flip this (`human` suspends middle's send-keys driving and the watchdog's
+   * idle-kill; `middle` resumes both). The watchdog reads `controlled_by` to
+   * skip freshness checks while a human is driving — see this package's CLAUDE.md.
+   */
+  controlledBy?: "middle" | "human";
 };
 
 const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
@@ -97,6 +104,7 @@ const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
   sessionToken: "session_token",
   sessionId: "session_id",
   transcriptPath: "transcript_path",
+  controlledBy: "controlled_by",
 };
 
 /**
