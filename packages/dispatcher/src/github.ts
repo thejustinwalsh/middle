@@ -34,10 +34,12 @@ export type EpicListItem = {
 };
 
 /**
- * Parse `gh api --paginate --jq '.'` NDJSON (one issue object per line) into the
- * Epic rows we cache. An Epic is an open issue with ≥1 sub-issue
- * (`sub_issues_summary.total > 0`); rows without a summary or with no sub-issues
- * are dropped. Blank lines are tolerated.
+ * Parse NDJSON (one issue object per line) into the Epic rows we cache. Each
+ * line is one issue object emitted by `gh api --paginate` with a `--jq` filter
+ * of `.[] | select(.pull_request == null)` (so PR objects are already excluded
+ * before we see them). An Epic is an issue with ≥1 sub-issue
+ * (`sub_issues_summary.total > 0`); rows without a summary or with no
+ * sub-issues are dropped. Blank lines are tolerated.
  */
 export function parseEpicsList(stdout: string): EpicListItem[] {
   const out: EpicListItem[] = [];
