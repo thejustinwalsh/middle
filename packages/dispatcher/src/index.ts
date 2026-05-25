@@ -36,8 +36,8 @@
  * - `build-deps.ts` — the shared implementation-workflow deps + gate factory
  * - `event-hub.ts` — the SSE broadcast hub the control plane serves
  * - `hook-server.ts`, `hook-store.ts` — receive + persist hooks; `/control` + `/health`
- * - `metrics.ts`, `status-page.ts` — queue observability: the `/metrics`
- *   (Prometheus) + `/control/metrics` (JSON) snapshot and the `GET /` live page
+ * - `metrics.ts` — queue observability: the `/metrics` (Prometheus) +
+ *   `/control/metrics` (JSON) snapshot exports
  * - `poller*.ts` / `watchdog*.ts` — the GitHub-poll + liveness crons
  * - `db.ts`, `db/` — SQLite open/migrate + migrations
  * - `tmux.ts`, `worktree.ts` — session + worktree lifecycle
