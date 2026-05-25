@@ -23,6 +23,48 @@ export type CommentAuthor = {
   isBot: boolean;
 };
 
+/** An open Epic discovered from GitHub's issues API, with its sub-issue progress. */
+export type EpicListItem = {
+  number: number;
+  title: string;
+  state: string;
+  labels: string[];
+  subTotal: number;
+  subClosed: number;
+};
+
+/**
+ * Parse `gh api --paginate --jq '.'` NDJSON (one issue object per line) into the
+ * Epic rows we cache. An Epic is an open issue with ≥1 sub-issue
+ * (`sub_issues_summary.total > 0`); rows without a summary or with no sub-issues
+ * are dropped. Blank lines are tolerated.
+ */
+export function parseEpicsList(stdout: string): EpicListItem[] {
+  const out: EpicListItem[] = [];
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    const issue = JSON.parse(trimmed) as {
+      number: number;
+      title: string;
+      state: string;
+      labels?: { name: string }[];
+      sub_issues_summary?: { total: number; completed: number };
+    };
+    const summary = issue.sub_issues_summary;
+    if (!summary || summary.total <= 0) continue;
+    out.push({
+      number: issue.number,
+      title: issue.title,
+      state: issue.state,
+      labels: (issue.labels ?? []).map((l) => l.name),
+      subTotal: summary.total,
+      subClosed: summary.completed,
+    });
+  }
+  return out;
+}
+
 export interface GitHubGateway {
   /** Comments on an issue or PR (PRs are issues for the comments endpoint). */
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
@@ -40,6 +82,8 @@ export interface GitHubGateway {
   getCommentAuthor(repo: string, commentUrl: string): Promise<CommentAuthor | null>;
   /** The label names on an issue/Epic (e.g. to check for `approved`). */
   getIssueLabels(repo: string, issueNumber: number): Promise<string[]>;
+  /** Open Epics in a repo (issues with ≥1 sub-issue), each with sub-issue progress. */
+  listOpenEpics(repo: string): Promise<EpicListItem[]>;
 }
 
 async function run(
@@ -159,6 +203,28 @@ export const ghGitHub: GitHubGateway = {
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l !== "");
+  },
+
+  async listOpenEpics(repo) {
+    const { owner, name } = ownerRepo(repo);
+    const result = await run([
+      "gh",
+      "api",
+      "--paginate",
+      `repos/${owner}/${name}/issues`,
+      "-X",
+      "GET",
+      "-f",
+      "state=open",
+      "-F",
+      "per_page=100",
+      "--jq",
+      ".[] | select(.pull_request == null)",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh api list issues for ${repo} failed: ${result.stderr.trim()}`);
+    }
+    return parseEpicsList(result.stdout);
   },
 
   async getPullRequest(repo, prNumber) {
