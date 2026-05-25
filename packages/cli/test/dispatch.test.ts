@@ -221,6 +221,60 @@ describe("runDispatch — control client", () => {
     }
   });
 
+  test("reconnects when the event stream drops mid-flight and follows to completion", async () => {
+    const repoPath = makeRepo();
+    let eventsConnections = 0;
+    let server: BunServer;
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req): Promise<Response> {
+        const { pathname } = new URL(req.url);
+        if (req.method === "GET" && pathname === "/health") {
+          return Response.json({ ok: true, port: server.port, version: "test" });
+        }
+        if (req.method === "POST" && pathname === "/control/dispatch") {
+          await req.json();
+          return Response.json({ workflowId: "wf-1" });
+        }
+        if (req.method === "GET" && pathname === "/control/events") {
+          eventsConnections += 1;
+          const first = eventsConnections === 1;
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const enc = new TextEncoder();
+              controller.enqueue(enc.encode("event: connected\ndata: {}\n\n"));
+              if (first) {
+                // An in-flight frame, then sever the stream (simulating a drop).
+                controller.enqueue(enc.encode(sseWorkflow("wf-1", "running")));
+                controller.close();
+              } else {
+                // The reconnect carries the terminal verdict.
+                controller.enqueue(enc.encode(sseWorkflow("wf-1", "completed")));
+              }
+            },
+          });
+          return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const configPath = writeConfig(server.port);
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        reconnectBackoffMs: 1, // don't actually wait between reconnects
+      });
+      expect(code).toBe(0);
+      expect(eventsConnections).toBeGreaterThanOrEqual(2); // it reconnected, not gave up
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
   test("friendly failure (exit 1) when the daemon can't be reached or started", async () => {
     const repoPath = makeRepo();
     // A port with nothing listening.
