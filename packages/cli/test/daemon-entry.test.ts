@@ -25,6 +25,8 @@ test("dashboardHostExtras routes + the hook fetch fallback coexist on one port",
     config: makeConfig(),
     stateGateway: { readBody: async () => "", writeBody: async () => {} },
     runRecommender: async () => ({ status: 200, body: "ok" }),
+    dispatch: async () => ({ status: 200, body: "ok" }),
+    refreshEpics: async () => ({ status: 200, body: "ok" }),
   } satisfies DaemonHostContext;
   const hosted = dashboardHostExtras(ctx);
   dispose = hosted.dispose;
