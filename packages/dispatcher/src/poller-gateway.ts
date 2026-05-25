@@ -16,11 +16,14 @@ import type {
 export type CheckRollupEntry = {
   status?: string; // CheckRun: QUEUED | IN_PROGRESS | COMPLETED
   conclusion?: string; // CheckRun: SUCCESS | FAILURE | NEUTRAL | CANCELLED | TIMED_OUT | ...
-  state?: string; // StatusContext: SUCCESS | FAILURE | ERROR | PENDING
+  state?: string; // StatusContext: SUCCESS | FAILURE | ERROR | PENDING | EXPECTED
 };
 
 const CONCLUSION_OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-const STATE_OK = new Set(["SUCCESS", "EXPECTED"]);
+const STATE_OK = new Set(["SUCCESS"]);
+// `EXPECTED` is "a status is expected but not yet reported" — not final, so it's
+// pending, never passing (a green gate must require an actual SUCCESS).
+const STATE_PENDING = new Set(["PENDING", "EXPECTED"]);
 
 /**
  * Collapse a `statusCheckRollup` array into a single {@link CiStatus}. Any
@@ -42,7 +45,7 @@ export function deriveCiStatus(rollup: CheckRollupEntry[] | null | undefined): C
     }
     // StatusContext (no status/conclusion) — read `state`.
     if (c.state !== undefined) {
-      if (c.state === "PENDING") pending = true;
+      if (STATE_PENDING.has(c.state)) pending = true;
       else if (!STATE_OK.has(c.state)) return "failing"; // FAILURE / ERROR
     }
   }

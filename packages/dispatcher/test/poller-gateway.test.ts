@@ -38,4 +38,10 @@ describe("deriveCiStatus", () => {
     expect(deriveCiStatus([{ state: "FAILURE" }])).toBe("failing");
     expect(deriveCiStatus([{ state: "ERROR" }])).toBe("failing");
   });
+
+  test("EXPECTED is pending, not passing — a green gate requires an actual SUCCESS", () => {
+    expect(deriveCiStatus([{ state: "EXPECTED" }])).toBe("pending");
+    // SUCCESS alongside an EXPECTED is still pending overall (not all final)
+    expect(deriveCiStatus([{ state: "SUCCESS" }, { state: "EXPECTED" }])).toBe("pending");
+  });
 });
