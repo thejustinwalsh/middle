@@ -30,7 +30,7 @@ import { runDoctor } from "./commands/doctor.ts";
 import { runInit } from "./commands/init.ts";
 import { runPause, runResume } from "./commands/pause.ts";
 import { runRecommender } from "./commands/run-recommender.ts";
-import { runStart } from "./commands/start.ts";
+import { runStartCommand } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninit } from "./commands/uninit.ts";
@@ -64,7 +64,10 @@ program
 program
   .command("start")
   .description("Start the dispatcher process (hook server + workflow engine)")
-  .action(() => process.exit(runStart()));
+  .option("--window", "open the queue observability page once the dispatcher is up")
+  .action(async (options: { window?: boolean }) =>
+    process.exit(await runStartCommand({ window: options.window })),
+  );
 
 program
   .command("stop")

@@ -5,6 +5,8 @@ import { isNormalizedEvent } from "@middle/core";
 import { DEFAULT_HEARTBEAT_MS, type Event, type EventHub } from "./event-hub.ts";
 import type { PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { HookStore } from "./hook-store.ts";
+import { type MetricsSnapshot, renderPrometheus } from "./metrics.ts";
+import { STATUS_PAGE_HTML } from "./status-page.ts";
 
 type BunServer = ReturnType<typeof Bun.serve>;
 
@@ -61,6 +63,12 @@ export type ControlPlane = {
   slotAvailable?: (input: ControlDispatchInput) => boolean;
   /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
   initEvents?: () => Event[];
+  /**
+   * Compute a point-in-time queue/engine snapshot for the observability surfaces
+   * (`GET /metrics` Prometheus text, `GET /control/metrics` JSON, the status
+   * page). Absent in gate-only mode → those routes 404.
+   */
+  metrics?: () => MetricsSnapshot;
   /**
    * Fired (best-effort, fire-and-forget) after a successful route dispatch — the
    * "manual `mm dispatch`" auto-dispatch trigger (build spec → "Auto-dispatch
@@ -184,6 +192,26 @@ export class HookServer implements SessionGate {
     // Liveness — unconditional, no DB access, so a client can probe for the daemon.
     if (req.method === "GET" && pathname === "/health") {
       return Response.json({ ok: true, port: this.port, version: this.#control?.version ?? "" });
+    }
+    // Observability surfaces (read-only). The status page is a static asset and
+    // serves unconditionally; the metric exports need the db-backed `metrics`
+    // seam and 404 in gate-only mode.
+    if (req.method === "GET" && (pathname === "/" || pathname === "/status")) {
+      return new Response(STATUS_PAGE_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
+      });
+    }
+    if (req.method === "GET" && pathname === "/metrics") {
+      const metrics = this.#control?.metrics;
+      if (!metrics) return new Response("not found", { status: 404 });
+      return new Response(renderPrometheus(metrics()), {
+        headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+      });
+    }
+    if (req.method === "GET" && pathname === "/control/metrics") {
+      const metrics = this.#control?.metrics;
+      if (!metrics) return new Response("not found", { status: 404 });
+      return Response.json(metrics());
     }
     if (req.method === "GET" && pathname === "/control/events") {
       return this.#handleControlEvents(req);

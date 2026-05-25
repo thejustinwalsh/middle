@@ -18,6 +18,7 @@ import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
 import { EventHub } from "./event-hub.ts";
 import { type ControlPlane, HookServer } from "./hook-server.ts";
+import { collectMetrics } from "./metrics.ts";
 import type { RecommenderTrigger } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import { getRateLimitState, setRateLimitObserver } from "./rate-limits.ts";
@@ -374,6 +375,8 @@ async function main(): Promise<void> {
             type: "workflow",
             data: { id: w.id, repo: w.repo, epic: w.epicNumber, state: w.state },
           })),
+        // Observability surfaces read the shared db directly (stateless snapshot).
+        metrics: () => collectMetrics(db),
       };
       hookServer = new HookServer(new DbHookStore(db), prReadyGate, recommenderTrigger, control);
       hookServer.start(config.global.dispatcherPort);
