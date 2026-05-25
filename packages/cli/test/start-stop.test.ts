@@ -154,6 +154,25 @@ describe("runStartCommand --window", () => {
     }
   });
 
+  test("a throwing opener (or health probe) never fails the start — window step is best-effort", async () => {
+    const restore = silence();
+    try {
+      const code = await runStartCommand({
+        pidFile,
+        entrypoint,
+        window: true,
+        configPath: bogusConfig,
+        waitForHealth: async () => true,
+        openUrl: () => {
+          throw new Error("no opener on this box");
+        },
+      });
+      expect(code).toBe(0); // the daemon is up; the open throwing is swallowed
+    } finally {
+      restore();
+    }
+  });
+
   test("no --window and no windowed config → never opens, never polls health", async () => {
     const restore = silence();
     const opened: string[] = [];

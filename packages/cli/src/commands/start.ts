@@ -138,17 +138,25 @@ export async function runStartCommand(opts: StartOptions = {}): Promise<number> 
   const { port, windowed } = resolveWindowConfig(opts.configPath);
   if (!(opts.window ?? windowed)) return code;
 
+  // The whole window step is best-effort: the daemon is already up, so neither a
+  // throwing health probe nor a throwing opener (a missing `open`/`xdg-open`, a
+  // spawn failure) may reject — log and return the start code regardless.
   const base = `http://127.0.0.1:${port}`;
-  const ready = await (opts.waitForHealth ?? waitForHealthDefault)(
-    base,
-    opts.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
-  );
-  if (!ready) {
-    console.error(`mm start: dispatcher not ready on ${base} — not opening the window`);
-    return code;
+  try {
+    const ready = await (opts.waitForHealth ?? waitForHealthDefault)(
+      base,
+      opts.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS,
+    );
+    if (!ready) {
+      console.error(`mm start: dispatcher not ready on ${base} — not opening the window`);
+      return code;
+    }
+    const url = `${base}/`;
+    (opts.openUrl ?? openUrlDefault)(url);
+    console.log(`mm start: opened ${url}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`mm start: window step failed (${message}) — the dispatcher is up regardless`);
   }
-  const url = `${base}/`;
-  (opts.openUrl ?? openUrlDefault)(url);
-  console.log(`mm start: opened ${url}`);
   return code;
 }
