@@ -29,4 +29,16 @@ describe("parseEpicsList", () => {
     const ndjson = `\n${JSON.stringify({ number: 1, title: "x", state: "open", labels: [] })}\n`;
     expect(parseEpicsList(ndjson)).toEqual([]);
   });
+
+  test("parses with labels: [] when labels key is wholly absent", () => {
+    const ndjson = JSON.stringify({
+      number: 2,
+      title: "y",
+      state: "open",
+      sub_issues_summary: { total: 1, completed: 0 },
+    });
+    expect(parseEpicsList(ndjson)).toEqual([
+      { number: 2, title: "y", state: "open", labels: [], subTotal: 1, subClosed: 0 },
+    ]);
+  });
 });

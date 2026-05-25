@@ -10,3 +10,4 @@ node_modules/
 # verify.toml, which IS the committed gate config the dispatcher reads.
 .middle/*
 !.middle/verify.toml
+.middle/
