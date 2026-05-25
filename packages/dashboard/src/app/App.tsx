@@ -208,13 +208,14 @@ export function App() {
     return () => clearInterval(id);
   }, [view, refreshSettings]);
 
-  // Fetch the queue metrics snapshot once when the Queue tab is opened.
+  // Fetch the queue metrics snapshot once when the Queue tab is opened. Routed
+  // through `guard` like every other fetch so a backend failure surfaces on the
+  // error bar (and clears on the next success) instead of silently blanking the
+  // tab — a hidden empty state would mask a real /control/metrics outage.
   useEffect(() => {
     if (view !== "queue") return;
-    void fetchControlMetrics()
-      .then(setQueueMetrics)
-      .catch(() => setQueueMetrics(null));
-  }, [view]);
+    void guard("queue", async () => setQueueMetrics(await fetchControlMetrics()));
+  }, [view, guard]);
 
   const inspectorSession = inspector?.panel.session ?? null;
 
