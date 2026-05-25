@@ -18,12 +18,13 @@ afterEach(() => {
 });
 
 const EXPECTED_TABLES = [
-  "workflows",
+  "epics",
   "events",
   "rate_limit_state",
   "repo_config",
-  "waitfor_signals",
   "schema_version",
+  "waitfor_signals",
+  "workflows",
 ];
 
 const EXPECTED_INDEXES = [
@@ -60,8 +61,8 @@ describe("runMigrations", () => {
 
   test("applies every migration and reports the latest version", () => {
     const db = openDb(dbPath);
-    expect(runMigrations(db)).toBe(4);
-    expect(currentSchemaVersion(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
+    expect(currentSchemaVersion(db)).toBe(5);
     db.close();
   });
 
@@ -84,8 +85,8 @@ describe("runMigrations", () => {
   test("is idempotent — running twice leaves version at the latest and does not throw", () => {
     const db = openDb(dbPath);
     runMigrations(db);
-    expect(runMigrations(db)).toBe(4);
-    expect(currentSchemaVersion(db)).toBe(4);
+    expect(runMigrations(db)).toBe(5);
+    expect(currentSchemaVersion(db)).toBe(5);
     db.close();
   });
 
@@ -158,8 +159,8 @@ describe("runMigrations", () => {
       );
       db.run(`INSERT INTO events (workflow_id, ts, type) VALUES ('w1', 2, 'session.started')`);
 
-      // Now apply the remaining migrations (003 rebuild, then 004) over the seeded data.
-      expect(runMigrations(db, realDir)).toBe(4);
+      // Now apply the remaining migrations (003 rebuild, then 004, then 005) over the seeded data.
+      expect(runMigrations(db, realDir)).toBe(5);
 
       // The row survived the rebuild...
       expect(
@@ -182,7 +183,7 @@ describe("runMigrations", () => {
 describe("openAndMigrate", () => {
   test("opens, migrates, and returns a ready database", () => {
     const db = openAndMigrate(dbPath);
-    expect(currentSchemaVersion(db)).toBe(4);
+    expect(currentSchemaVersion(db)).toBe(5);
     db.close();
   });
 });
