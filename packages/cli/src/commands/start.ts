@@ -9,16 +9,16 @@ export type StartOptions = {
   /** Override the dispatcher entrypoint (defaults to `@middle/dispatcher`'s main). */
   entrypoint?: string;
   /**
-   * Open the queue observability page once the dispatcher is up. The flag forces
-   * it on; absent, the `[dashboard] windowed` config default decides.
+   * Open the dashboard in a `webview-bun` window once the dispatcher is up. The
+   * flag forces it on; absent, the `[dashboard] windowed` config default decides.
    */
   window?: boolean;
   /** Override the global config path (for the port + `windowed` default). */
   configPath?: string;
   /** Readiness-poll budget before giving up on opening the window (default 10000ms). */
   healthTimeoutMs?: number;
-  /** Seam: open a URL in the operator's browser. Defaults to the platform opener. */
-  openUrl?: (url: string) => void;
+  /** Seam: open the dashboard window at `url`. Defaults to spawning the webview-bun launcher. */
+  openWindow?: (url: string) => void;
   /** Seam: poll the daemon's `/health` until ready. Injectable for tests. */
   waitForHealth?: (base: string, timeoutMs: number) => Promise<boolean>;
 };
@@ -102,15 +102,20 @@ async function waitForHealthDefault(base: string, timeoutMs: number): Promise<bo
   }
 }
 
-/** Open a URL with the platform's default opener (macOS `open`, Linux `xdg-open`, Windows `start`). */
-function openUrlDefault(url: string): void {
-  const argv =
-    process.platform === "darwin"
-      ? ["open", url]
-      : process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : ["xdg-open", url];
-  const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+/**
+ * Open the dashboard in a `webview-bun` window by spawning the launcher as its
+ * own detached process (`bun @middle/dashboard/src/window.ts <url>`). The native
+ * `webview-bun` dependency is loaded only inside that process — never here — so
+ * the default (no `--window`) path stays HTTP-only. A missing/unbuilt
+ * `webview-bun` is handled by the launcher (it logs and exits 0).
+ */
+function openWindowDefault(url: string): void {
+  const entry = Bun.resolveSync("@middle/dashboard/src/window.ts", import.meta.dir);
+  const proc = Bun.spawn(["bun", entry, url], {
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
   proc.unref();
 }
 
@@ -126,10 +131,10 @@ function resolveWindowConfig(configPath?: string): { port: number; windowed: boo
 
 /**
  * `mm start` (CLI entry) — start the dispatcher, then, when `--window` is set (or
- * `[dashboard] windowed` is true), wait for `/health` and open the queue
- * observability page (`GET /`). The window is best-effort: a daemon that never
- * comes ready, or a missing opener, is logged but never fails the start (the
- * daemon is already up regardless). Returns the start exit code.
+ * `[dashboard] windowed` is true), wait for `/health` and open the dashboard in a
+ * `webview-bun` window. The window is best-effort: a daemon that never comes
+ * ready, or a missing/unbuilt `webview-bun`, is logged but never fails the start
+ * (the daemon is already up regardless). Returns the start exit code.
  */
 export async function runStartCommand(opts: StartOptions = {}): Promise<number> {
   const code = runStart(opts);
@@ -139,8 +144,8 @@ export async function runStartCommand(opts: StartOptions = {}): Promise<number> 
   if (!(opts.window ?? windowed)) return code;
 
   // The whole window step is best-effort: the daemon is already up, so neither a
-  // throwing health probe nor a throwing opener (a missing `open`/`xdg-open`, a
-  // spawn failure) may reject — log and return the start code regardless.
+  // throwing health probe nor a throwing launcher (a spawn failure, an unbuilt
+  // webview-bun) may reject — log and return the start code regardless.
   const base = `http://127.0.0.1:${port}`;
   try {
     const ready = await (opts.waitForHealth ?? waitForHealthDefault)(
@@ -152,8 +157,8 @@ export async function runStartCommand(opts: StartOptions = {}): Promise<number> 
       return code;
     }
     const url = `${base}/`;
-    (opts.openUrl ?? openUrlDefault)(url);
-    console.log(`mm start: opened ${url}`);
+    (opts.openWindow ?? openWindowDefault)(url);
+    console.log(`mm start: opened dashboard window at ${url}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`mm start: window step failed (${message}) — the dispatcher is up regardless`);

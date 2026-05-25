@@ -116,7 +116,7 @@ describe("runStartCommand --window", () => {
     bogusConfig = join(dir, "no-such-config.toml");
   });
 
-  test("opens the observability page once /health is ready", async () => {
+  test("opens the dashboard window once /health is ready", async () => {
     const restore = silence();
     const opened: string[] = [];
     try {
@@ -126,7 +126,7 @@ describe("runStartCommand --window", () => {
         window: true,
         configPath: bogusConfig,
         waitForHealth: async () => true,
-        openUrl: (url) => opened.push(url),
+        openWindow: (url) => opened.push(url),
       });
       expect(code).toBe(0);
       expect(opened).toEqual(["http://127.0.0.1:8822/"]);
@@ -145,7 +145,7 @@ describe("runStartCommand --window", () => {
         window: true,
         configPath: bogusConfig,
         waitForHealth: async () => false,
-        openUrl: (url) => opened.push(url),
+        openWindow: (url) => opened.push(url),
       });
       expect(code).toBe(0); // the daemon is up regardless
       expect(opened).toEqual([]);
@@ -163,7 +163,7 @@ describe("runStartCommand --window", () => {
         window: true,
         configPath: bogusConfig,
         waitForHealth: async () => true,
-        openUrl: () => {
+        openWindow: () => {
           throw new Error("no opener on this box");
         },
       });
@@ -186,7 +186,7 @@ describe("runStartCommand --window", () => {
           polled = true;
           return true;
         },
-        openUrl: (url) => opened.push(url),
+        openWindow: (url) => opened.push(url),
       });
       expect(code).toBe(0);
       expect(opened).toEqual([]);
