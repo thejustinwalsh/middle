@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "@middle/core";
@@ -5,6 +6,11 @@ import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
 import { clearPaused, setPausedUntil } from "@middle/dispatcher/src/repo-config.ts";
 import { deriveRepoSlug } from "../paths.ts";
 
+/**
+ * Overrides for {@link runPause} / {@link runResume} — the config and db paths
+ * and the repo-slug derivation, so a caller (or a test) can redirect them away
+ * from the on-disk defaults and the live git remote.
+ */
 export type PauseResumeOptions = {
   /** Override the global config path (defaults to `~/.middle/config.toml`). */
   configPath?: string;
@@ -42,10 +48,11 @@ async function resolve(
  * exit code: 0 on success, 1 on error.
  */
 export async function runPause(repoPath: string, opts: PauseResumeOptions = {}): Promise<number> {
-  const resolved = await resolve("pause", repoPath, opts);
-  if (!resolved) return 1;
-  const db = openAndMigrate(resolved.dbPath);
+  let db: Database | null = null;
   try {
+    const resolved = await resolve("pause", repoPath, opts);
+    if (!resolved) return 1;
+    db = openAndMigrate(resolved.dbPath);
     setPausedUntil(db, resolved.repo);
     console.log(`mm pause: ${resolved.repo} auto-dispatch paused (resume with \`mm resume\`)`);
     return 0;
@@ -53,7 +60,7 @@ export async function runPause(repoPath: string, opts: PauseResumeOptions = {}):
     console.error(`mm pause: ${(error as Error).message}`);
     return 1;
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
@@ -63,10 +70,11 @@ export async function runPause(repoPath: string, opts: PauseResumeOptions = {}):
  * Returns a process exit code: 0 on success, 1 on error.
  */
 export async function runResume(repoPath: string, opts: PauseResumeOptions = {}): Promise<number> {
-  const resolved = await resolve("resume", repoPath, opts);
-  if (!resolved) return 1;
-  const db = openAndMigrate(resolved.dbPath);
+  let db: Database | null = null;
   try {
+    const resolved = await resolve("resume", repoPath, opts);
+    if (!resolved) return 1;
+    db = openAndMigrate(resolved.dbPath);
     clearPaused(db, resolved.repo);
     console.log(`mm resume: ${resolved.repo} auto-dispatch resumed`);
     return 0;
@@ -74,6 +82,6 @@ export async function runResume(repoPath: string, opts: PauseResumeOptions = {})
     console.error(`mm resume: ${(error as Error).message}`);
     return 1;
   } finally {
-    db.close();
+    db?.close();
   }
 }

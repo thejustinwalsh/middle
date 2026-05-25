@@ -60,6 +60,22 @@ describe("mm pause / mm resume", () => {
     }
   });
 
+  test("a slug-resolution failure returns exit 1, not an unhandled rejection", async () => {
+    const dbPath = join(dir, "db.sqlite3");
+    const boom = async () => {
+      throw new Error("git remote unreadable");
+    };
+    // `resolve()` runs inside the try, so a throw there surfaces as exit 1 with a
+    // logged message — for both commands — rather than rejecting the promise.
+    const paused = await captureLog(() => runPause(dir, { dbPath, resolveSlug: boom }));
+    expect(paused.code).toBe(1);
+    expect(paused.lines.join("\n")).toContain("git remote unreadable");
+
+    const resumed = await captureLog(() => runResume(dir, { dbPath, resolveSlug: boom }));
+    expect(resumed.code).toBe(1);
+    expect(resumed.lines.join("\n")).toContain("git remote unreadable");
+  });
+
   test("a non-git path is rejected with exit 1", async () => {
     const notRepo = mkdtempSync(join(tmpdir(), "middle-cli-notrepo-"));
     try {
