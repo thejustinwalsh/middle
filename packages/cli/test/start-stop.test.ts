@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runStart } from "../src/commands/start.ts";
+import { runStart, runStartCommand } from "../src/commands/start.ts";
 import { runStop } from "../src/commands/stop.ts";
 
 let dir: string;
@@ -102,6 +102,76 @@ describe("runStart / runStop lifecycle", () => {
     const restore = silence();
     try {
       expect(runStop({ pidFile })).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("runStartCommand --window", () => {
+  // A config path that doesn't exist → resolveWindowConfig falls back to the
+  // default port (8822), so the opened URL is deterministic in the test.
+  let bogusConfig: string;
+  beforeEach(() => {
+    bogusConfig = join(dir, "no-such-config.toml");
+  });
+
+  test("opens the observability page once /health is ready", async () => {
+    const restore = silence();
+    const opened: string[] = [];
+    try {
+      const code = await runStartCommand({
+        pidFile,
+        entrypoint,
+        window: true,
+        configPath: bogusConfig,
+        waitForHealth: async () => true,
+        openUrl: (url) => opened.push(url),
+      });
+      expect(code).toBe(0);
+      expect(opened).toEqual(["http://127.0.0.1:8822/"]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("does not open the window when /health never becomes ready (but start still succeeds)", async () => {
+    const restore = silence();
+    const opened: string[] = [];
+    try {
+      const code = await runStartCommand({
+        pidFile,
+        entrypoint,
+        window: true,
+        configPath: bogusConfig,
+        waitForHealth: async () => false,
+        openUrl: (url) => opened.push(url),
+      });
+      expect(code).toBe(0); // the daemon is up regardless
+      expect(opened).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("no --window and no windowed config → never opens, never polls health", async () => {
+    const restore = silence();
+    const opened: string[] = [];
+    let polled = false;
+    try {
+      const code = await runStartCommand({
+        pidFile,
+        entrypoint,
+        configPath: bogusConfig,
+        waitForHealth: async () => {
+          polled = true;
+          return true;
+        },
+        openUrl: (url) => opened.push(url),
+      });
+      expect(code).toBe(0);
+      expect(opened).toEqual([]);
+      expect(polled).toBe(false);
     } finally {
       restore();
     }

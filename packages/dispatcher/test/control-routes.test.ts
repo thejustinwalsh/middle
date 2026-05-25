@@ -232,11 +232,56 @@ describe("HookServer control routes", () => {
     await reader.cancel();
   });
 
+  const SNAPSHOT = {
+    generatedAt: 42,
+    workflows: [{ repo: "o/r", kind: "implementation", state: "running", count: 2 }],
+    slots: { total: 2, perAdapter: { claude: 2 } },
+    rateLimits: [{ adapter: "claude", status: "AVAILABLE", resetAt: null }],
+    totals: { all: 2, active: 2, waitingHuman: 0 },
+  };
+
+  test("GET / serves the observability page (HTML, unconditional)", async () => {
+    startWith(makeControl());
+    const res = await fetch(`${base}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("queue observability");
+    expect(body).toContain("/control/events"); // the page subscribes to the live feed
+  });
+
+  test("GET /metrics renders Prometheus text from the metrics seam", async () => {
+    startWith(makeControl({ metrics: () => SNAPSHOT }));
+    const res = await fetch(`${base}/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const body = await res.text();
+    expect(body).toContain('middle_workflows{repo="o/r",kind="implementation",state="running"} 2');
+    expect(body).toContain("middle_slots_active_total 2");
+  });
+
+  test("GET /control/metrics returns the raw snapshot as JSON", async () => {
+    startWith(makeControl({ metrics: () => SNAPSHOT }));
+    const res = await fetch(`${base}/control/metrics`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(SNAPSHOT);
+  });
+
+  test("metric routes 404 without a metrics seam; the page still serves", async () => {
+    startWith(makeControl()); // no `metrics` override
+    expect((await fetch(`${base}/metrics`)).status).toBe(404);
+    expect((await fetch(`${base}/control/metrics`)).status).toBe(404);
+    expect((await fetch(`${base}/`)).status).toBe(200); // static asset, no seam needed
+  });
+
   test("control routes 404 in gate-only mode (no control plane wired)", async () => {
     startWith(undefined);
     expect((await fetch(`${base}/control/events`)).status).toBe(404);
     const d = await fetch(`${base}/control/dispatch`, { method: "POST", body: "{}" });
     expect(d.status).toBe(404);
+    // The metric exports need the control plane's seam → 404; the static page serves.
+    expect((await fetch(`${base}/metrics`)).status).toBe(404);
+    expect((await fetch(`${base}/`)).status).toBe(200);
     // /health is unconditional liveness; version is empty without a control plane.
     const h = await fetch(`${base}/health`);
     expect(h.status).toBe(200);
