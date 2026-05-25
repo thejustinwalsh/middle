@@ -23,6 +23,13 @@ function sortLive(rows: ControlWorkflowFrame[]): ControlWorkflowFrame[] {
   });
 }
 
+/**
+ * Render the queue-observability view: gauge tiles + the in-flight/parked table
+ * (waiting-human first) from a `/control/metrics` snapshot, plus the rate-limit
+ * chips. `metrics === null` renders the pre-fetch "no data yet" placeholder.
+ * `live` is the latest frame per workflow id (terminal ones already dropped by
+ * the caller); it drives the table, while `metrics.totals` drives the tiles.
+ */
 export function Queue({ metrics, live }: QueueProps) {
   if (!metrics) return <main className="queue"><p className="empty">no data yet</p></main>;
   const rows = sortLive(live);

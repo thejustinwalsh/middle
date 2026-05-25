@@ -16,3 +16,13 @@ test("fetchControlMetrics parses the /control/metrics snapshot", async () => {
     globalThis.fetch = orig;
   }
 });
+
+test("fetchControlMetrics throws on a non-OK response", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("boom", { status: 503 })) as unknown as typeof fetch;
+  try {
+    await expect(fetchControlMetrics()).rejects.toThrow("/control/metrics 503");
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
