@@ -810,3 +810,50 @@ describe("implementation workflow — compensation", () => {
     expectNoSessionLeak(tmux);
   });
 });
+
+describe("implementation workflow — verify-on-stop gate", () => {
+  test("a `done` whose verify fails then passes nudges in-session, then parks for review", async () => {
+    const tmux = makeTmuxStub();
+    let verifyCalls = 0;
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      runVerifyGates: async () => {
+        verifyCalls += 1;
+        return verifyCalls === 1
+          ? { ok: false, report: "### gate `lint` failed (exit 1)\nunused import" }
+          : { ok: true, report: "" };
+      },
+    });
+    const id = await start(deps);
+    await awaitParked(id); // verified `done` → parks for review (waiting-human, signal armed)
+    expect(verifyCalls).toBe(2); // failed once, re-ran after the in-session fix, passed
+    expect(tmux.sent.some((t) => t.includes("verification gates are failing"))).toBe(true);
+  });
+
+  test("a `done` whose verify never passes parks for a human and keeps the worktree", async () => {
+    const tmux = makeTmuxStub();
+    let verifyCalls = 0;
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      verifyRoundCap: 1,
+      runVerifyGates: async () => {
+        verifyCalls += 1;
+        return { ok: false, report: "still broken" };
+      },
+    });
+    const id = await start(deps);
+    await awaitRow(id, "waiting-human"); // exhausted → parks for a human (terminal path)
+    expect(verifyCalls).toBe(2); // round 0 fails → nudge → round 1 hits the cap
+    // The PR never shipped unverified, and the worktree is kept for the human.
+    expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
+    expectNoSessionLeak(tmux);
+  });
+
+  test("no runVerifyGates seam → a `done` parks for review unchanged (verify is opt-in)", async () => {
+    const deps = makeDeps({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
+    const id = await start(deps);
+    await awaitParked(id); // unaffected when the seam is absent
+  });
+});

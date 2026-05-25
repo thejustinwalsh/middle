@@ -174,6 +174,17 @@ export type ImplementationDeps = {
    * gate-free unit tests keep their unguarded completion behavior.
    */
   planCommentReader?: PlanCommentReader;
+  /**
+   * Verify-on-stop gate: run the repo's `verify.toml` gates when the agent
+   * claims `done`, BEFORE it parks for review. Returns `ok` + a human-readable
+   * `report` of the failures. The dispatcher wires it to
+   * `loadVerifyConfig` + `runGates` in the worktree; optional, so a repo with no
+   * `verify.toml` (or a gate-free unit test) skips the enforcement. This is the
+   * first point gates run in a live dispatch (the per-push trigger is #101).
+   */
+  runVerifyGates?: (worktree: string) => Promise<{ ok: boolean; report: string }>;
+  /** Max verify-fix nudges on a `done` before parking in waiting-human (default 3). */
+  verifyRoundCap?: number;
   /** The agent's gh account — restricts the plan-comment match to its comments. */
   agentLogin?: string;
 };
@@ -185,6 +196,7 @@ const DEFAULT_MAX_NUDGES = 3;
 const DEFAULT_NUDGE_STOP_TIMEOUT_MS = 30 * 60 * 1000;
 /** Spec default for `[limits] complexity_ceiling` when no per-repo resolver is wired. */
 const DEFAULT_COMPLEXITY_CEILING = 3;
+const DEFAULT_VERIFY_ROUND_CAP = 3;
 
 /**
  * Session names are deterministic so compensations can recompute them, and
@@ -428,6 +440,7 @@ export function createImplementationWorkflow(
   const reviewRoundCap = deps.reviewRoundCap ?? DEFAULT_REVIEW_ROUND_CAP;
   const maxNudges = deps.maxNudges ?? DEFAULT_MAX_NUDGES;
   const nudgeStopTimeout = deps.nudgeStopTimeoutMs ?? DEFAULT_NUDGE_STOP_TIMEOUT_MS;
+  const verifyRoundCap = deps.verifyRoundCap ?? DEFAULT_VERIFY_ROUND_CAP;
 
   /**
    * Resolve a `bare-stop` into a terminal outcome (#80). Completion requires a
@@ -459,6 +472,51 @@ export function createImplementationWorkflow(
       const stopPayload = await deps.sessionGate.awaitStop(args.sessionName, nudgeStopTimeout);
       const classification = args.classifyAt(stopPayload);
       if (classification.kind !== "bare-stop") return classification;
+    }
+  }
+
+  /**
+   * Verify-on-stop (skill enforcement): a `done` only stands if the repo's
+   * `verify.toml` gates pass. Runs them in the worktree; on failure, nudges the
+   * agent IN-SESSION with the gate report ("fix these and continue") and
+   * re-awaits the Stop, up to `verifyRoundCap`. A re-classification that is no
+   * longer `done` (the agent asked a question, etc.) is handed back as-is;
+   * exhausting the budget parks for a human (worktree kept) rather than shipping
+   * an unverified PR. No `runVerifyGates` seam (or no `verify.toml`) → no-op.
+   */
+  async function enforceVerifyOnDone(args: {
+    tag: string;
+    sessionName: string;
+    worktree: string;
+    classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
+  }): Promise<DriveOutcome> {
+    const runVerify = deps.runVerifyGates!;
+    for (let rounds = 0; ; rounds += 1) {
+      const verify = await runVerify(args.worktree);
+      if (verify.ok) {
+        console.error(`${args.tag} verify-on-stop: all gates pass — done stands`);
+        return { kind: "done" };
+      }
+      if (rounds >= verifyRoundCap) {
+        console.error(
+          `${args.tag} verify-on-stop: still failing after ${verifyRoundCap} rounds — parking for a human`,
+        );
+        return { kind: "nudge-exhausted" };
+      }
+      console.error(
+        `${args.tag} verify-on-stop: gates failed — nudge ${rounds + 1}/${verifyRoundCap}`,
+      );
+      await deps.tmux.sendText(
+        args.sessionName,
+        `The verification gates are failing — fix every failure below, then finish again. ` +
+          `Do not mark the PR ready until they pass.\n\n${verify.report}`,
+      );
+      await deps.tmux.sendEnter(args.sessionName);
+      const stopPayload = await deps.sessionGate.awaitStop(args.sessionName, nudgeStopTimeout);
+      const classification = args.classifyAt(stopPayload);
+      // The agent did something other than finish again (asked a question, etc.)
+      // — hand that back; it flows through the normal branch.
+      if (classification.kind !== "done") return classification;
     }
   }
 
@@ -646,6 +704,18 @@ export function createImplementationWorkflow(
           console.error(`${tag} plan-comment guard: ${guard.reason}`);
           outcome = { kind: "failed", reason: guard.reason };
         }
+      }
+      // Verify-on-stop: a `done` only stands if the verify.toml gates pass. Runs
+      // (and nudges to fix) while the session is still alive, BEFORE the agent
+      // parks for review — so an unverified PR never goes up. Runs after the
+      // plan-comment guard so a still-`done` outcome is the one that gets verified.
+      if (outcome.kind === "done" && deps.runVerifyGates) {
+        outcome = await enforceVerifyOnDone({
+          tag,
+          sessionName,
+          worktree: handle.path,
+          classifyAt,
+        });
       }
       // END SESSION — the turn is over; free the slot before parking/finalizing.
       await deps.tmux.killSession(sessionName);
