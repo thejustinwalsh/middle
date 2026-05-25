@@ -87,9 +87,13 @@ function readBlockedSentinel(path: string): BlockedSentinel | null {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     if (typeof parsed.question !== "string" || parsed.question.length === 0) return null;
     const context = typeof parsed.context === "string" ? parsed.context : undefined;
-    return context === undefined
-      ? { question: parsed.question }
-      : { question: parsed.question, context };
+    // Only "complexity" is a recognized non-default kind; anything else (or
+    // absent) is a plain question.
+    const kind = parsed.kind === "complexity" ? "complexity" : undefined;
+    const out: BlockedSentinel = { question: parsed.question };
+    if (context !== undefined) out.context = context;
+    if (kind !== undefined) out.kind = kind;
+    return out;
   } catch {
     return null;
   }

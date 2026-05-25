@@ -50,8 +50,25 @@ export type ControlPlane = {
    * worktree). The route maps `null` to 409.
    */
   startDispatch: (input: ControlDispatchInput) => Promise<string | null>;
+  /**
+   * Whether this dispatch has a free slot right now. The route consults it before
+   * a manual dispatch so `mm dispatch` respects slot limits (a full queue → 429).
+   * Receives the full {@link ControlDispatchInput} — notably `repoPath` — so the
+   * slot caps resolve even for a repo the daemon hasn't dispatched yet this
+   * lifetime (a cold `repoPaths`). Absent → no slot gate. The auto-dispatch loop
+   * does its own slot accounting and bypasses this route entirely.
+   */
+  slotAvailable?: (input: ControlDispatchInput) => boolean;
   /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
   initEvents?: () => Event[];
+  /**
+   * Fired (best-effort, fire-and-forget) after a successful route dispatch — the
+   * "manual `mm dispatch`" auto-dispatch trigger (build spec → "Auto-dispatch
+   * loop"). Only route-initiated dispatches reach it; the auto-dispatch loop
+   * enqueues via `startDispatch` directly (not the HTTP route), so this never
+   * re-enters the loop. Absent in gate-only mode and the unit tests.
+   */
+  afterDispatch?: (repo: string) => void;
 };
 
 /**
@@ -359,16 +376,33 @@ export class HookServer implements SessionGate {
       );
     }
 
-    const workflowId = await control.startDispatch({
-      repo: normalizedRepo,
-      repoPath,
-      epicNumber,
-      adapter,
-    });
+    const dispatchInput = { repo: normalizedRepo, repoPath, epicNumber, adapter };
+
+    // Manual dispatch respects slot limits — refuse with 429 when the repo/adapter
+    // has no free slot (build spec → "Auto-dispatch loop": manual force-dispatch
+    // "still respects slot limits"). Checked before the collision reservation.
+    if (control.slotAvailable && !control.slotAvailable(dispatchInput)) {
+      return Response.json(
+        { error: `no free slot for ${adapter} in ${normalizedRepo}` },
+        { status: 429 },
+      );
+    }
+
+    const workflowId = await control.startDispatch(dispatchInput);
     if (workflowId === null) {
       return Response.json(
         { error: `Epic #${epicNumber} in ${normalizedRepo} already has an active workflow` },
         { status: 409 },
+      );
+    }
+    // A manual dispatch is one of the four auto-dispatch triggers: re-run the
+    // loop so any slots this dispatch didn't take get filled. Best-effort — a
+    // throw here must not turn a dispatch that already succeeded into a 500.
+    try {
+      control.afterDispatch?.(normalizedRepo);
+    } catch (error) {
+      console.error(
+        `[hook-server] afterDispatch failed for ${normalizedRepo}: ${(error as Error).message}`,
       );
     }
     return Response.json({ workflowId });

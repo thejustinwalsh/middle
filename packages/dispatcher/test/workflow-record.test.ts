@@ -8,6 +8,7 @@ import {
   countActiveImplementationSlots,
   createWorkflowRecord,
   getWorkflow,
+  getWorkflowSource,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
   setUpdateWorkflowObserver,
@@ -25,6 +26,38 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe("dispatch source (#53)", () => {
+  test("records and reads back source 'manual' / 'auto'; null when unset", () => {
+    createWorkflowRecord(db, {
+      id: "m",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+      source: "manual",
+    });
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 2,
+      adapter: "claude",
+      source: "auto",
+    });
+    createWorkflowRecord(db, {
+      id: "none",
+      kind: "recommender",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
+    expect(getWorkflowSource(db, "m")).toBe("manual");
+    expect(getWorkflowSource(db, "a")).toBe("auto");
+    expect(getWorkflowSource(db, "none")).toBeNull();
+    expect(getWorkflowSource(db, "missing")).toBeNull();
+  });
 });
 
 describe("createWorkflowRecord", () => {

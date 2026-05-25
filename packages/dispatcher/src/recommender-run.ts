@@ -61,6 +61,13 @@ export type DispatchRecommenderOptions = {
   runConfig: RecommenderRunConfig;
   /** Hard cap on the agent run (from `[recommender] agent_timeout_minutes`); undefined → workflow default. */
   agentTimeoutMs?: number;
+  /**
+   * The auto-dispatch seam (Phase 8). When wired, the recommender workflow fires
+   * it after a clean run (gated additionally on `runConfig.autoDispatch`) — the
+   * "recommender run completes" trigger. Left undefined keeps the Phase 7
+   * read-only behaviour (nothing auto-dispatches).
+   */
+  triggerAutoDispatch?: (opts: { repo: string; stateIssue: number }) => Promise<void>;
   /** Test seams; production passes none. */
   overrides?: RecommenderRunOverrides;
 };
@@ -261,7 +268,9 @@ export async function dispatchRecommender(
         agentTimeoutMs: opts.agentTimeoutMs,
         gatherContext,
         surfaceProblem: ov.surfaceProblem ?? ghSurfaceProblem,
-        // Phase 7 read-only: triggerAutoDispatch intentionally UNWIRED.
+        // Phase 8: when the caller wires it (the daemon does), the workflow's
+        // trigger-auto-dispatch step fires it on a clean run with auto_dispatch on.
+        triggerAutoDispatch: opts.triggerAutoDispatch,
       }),
     );
 

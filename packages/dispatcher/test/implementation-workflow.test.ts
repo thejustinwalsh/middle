@@ -9,7 +9,7 @@ import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import { getRateLimitState, setRateLimited } from "../src/rate-limits.ts";
-import { getWaitForSignal, getWorkflow } from "../src/workflow-record.ts";
+import { getWaitForSignal, getWorkflow, getWorkflowSource } from "../src/workflow-record.ts";
 import {
   createImplementationWorkflow,
   RESUME_EVENT,
@@ -313,6 +313,156 @@ function readPromptBrief(workflowId: string): string {
   if (!path) throw new Error(`workflow ${workflowId} has no worktree path`);
   return readFileSync(join(path, ".middle", "prompt.md"), "utf8");
 }
+
+describe("implementation workflow — complexity pause (#52)", () => {
+  test("a complexity-kind pause routes to waiting-human and surfaces with kind 'complexity'", async () => {
+    const surfaced: Array<{ kind: string; question: string }> = [];
+    const deps = makeDeps({
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: {
+            question: "4 viable persistence designs, no clear winner",
+            context: "A/B/C/D all plausible",
+            kind: "complexity",
+          },
+        }),
+      postQuestion: async (opts) => {
+        surfaced.push({ kind: opts.kind, question: opts.question });
+      },
+    });
+    const id = await start(deps);
+    await awaitParked(id); // asserts the row reads waiting-human
+    expect(surfaced).toEqual([
+      { kind: "complexity", question: "4 viable persistence designs, no clear winner" },
+    ]);
+  });
+
+  test("a plain question pause surfaces with kind 'question' (the default)", async () => {
+    const surfaced: Array<{ kind: string }> = [];
+    const deps = makeDeps({
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "Which API base URL?" }, // no kind → question
+        }),
+      postQuestion: async (opts) => {
+        surfaced.push({ kind: opts.kind });
+      },
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+    expect(surfaced).toEqual([{ kind: "question" }]);
+  });
+
+  test("the dispatch brief carries the repo's complexity_ceiling as the agent's fork budget", async () => {
+    const deps = makeDeps({
+      resolveComplexityCeiling: () => 5,
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park to keep the worktree" },
+        }),
+      postQuestion: async () => {},
+    });
+    const id = await start(deps);
+    await awaitParked(id); // waiting-human keeps the worktree so the brief is readable
+    const brief = readPromptBrief(id);
+    expect(brief).toContain("more than 5 candidate forks");
+    // Not approved by default → the brief tells the agent to pause, not push past.
+    expect(brief).toContain('"kind": "complexity"');
+    expect(brief).not.toContain("approved");
+  });
+
+  test("an in-ceiling decision never surfaces a complexity pause", async () => {
+    // No complexity sentinel: the agent resolved its decisions within the ceiling.
+    // A `done` parks for *review* (waiting-human), which is NOT a complexity pause —
+    // the only thing that surfaces a pause is an asked-question stop, and this isn't
+    // one, so postQuestion is never called.
+    let surfaced = false;
+    const deps = makeDeps({
+      getAdapter: () => makeAdapterStub({ kind: "done" }),
+      postQuestion: async () => {
+        surfaced = true;
+      },
+    });
+    const id = await start(deps);
+    await awaitRow(id, "waiting-human"); // the review park
+    // Give any stray surface call a chance to land before asserting it didn't.
+    await Bun.sleep(50);
+    expect(surfaced).toBe(false);
+  });
+
+  test("an approved Epic's brief authorizes proceeding past a complexity overrun (#53)", async () => {
+    const deps = makeDeps({
+      isEpicApproved: () => true,
+      resolveComplexityCeiling: () => 3,
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park to keep the worktree" },
+        }),
+      postQuestion: async () => {},
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+    const brief = readPromptBrief(id);
+    // Approved → proceed past, do not pause.
+    expect(brief).toContain("`approved` label");
+    expect(brief).toContain("do NOT pause");
+    expect(brief).toContain("best-judgment call");
+  });
+
+  test("a flaky brief-context read falls back to safe defaults, never failing the dispatch", async () => {
+    const deps = makeDeps({
+      resolveComplexityCeiling: () => {
+        throw new Error("gh rate limited");
+      },
+      isEpicApproved: () => {
+        throw new Error("gh rate limited");
+      },
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park" },
+        }),
+      postQuestion: async () => {},
+    });
+    const id = await start(deps);
+    await awaitParked(id); // parked, not failed — the throw didn't abort the drive
+    const brief = readPromptBrief(id);
+    expect(brief).toContain("more than 3 candidate forks"); // default ceiling
+    expect(brief).not.toContain("`approved` label"); // default: not approved
+  });
+});
+
+describe("implementation workflow — dispatch source (#53)", () => {
+  test("records source 'manual' for a manual dispatch and 'auto' by default", async () => {
+    const manualDeps = makeDeps({
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park" },
+        }),
+      postQuestion: async () => {},
+    });
+    engine.register(createImplementationWorkflow(manualDeps));
+    const manual = await engine.start("implementation", { ...INPUT, source: "manual" as const });
+    await awaitParked(manual.id);
+    expect(getWorkflowSource(db, manual.id)).toBe("manual");
+
+    // A fresh dispatch with no source defaults to 'auto'.
+    const auto = await engine.start("implementation", { ...INPUT, epicNumber: 99 });
+    await awaitParked(auto.id);
+    expect(getWorkflowSource(db, auto.id)).toBe("auto");
+  });
+});
 
 describe("implementation workflow — asked-question park → answer → resume (e2e)", () => {
   test("parks on asked-question, a human reply resumes a fresh continuation with the answer injected", async () => {

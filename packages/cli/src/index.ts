@@ -8,7 +8,7 @@
  *
  * Public surface:
  * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
- *   `dispatch`, `run-recommender`, `docs`, `version`
+ *   `dispatch`, `pause`, `resume`, `config`, `run-recommender`, `docs`, `version`
  *
  * Where things live:
  * - `commands/` — one `run*` function per subcommand
@@ -23,10 +23,12 @@
  * claude-md: false
  */
 import { Command } from "commander";
+import { runConfig } from "./commands/config.ts";
 import { runDispatch } from "./commands/dispatch.ts";
 import { runDocs } from "./commands/docs.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { runInit } from "./commands/init.ts";
+import { runPause, runResume } from "./commands/pause.ts";
 import { runRecommender } from "./commands/run-recommender.ts";
 import { runStart } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
@@ -93,6 +95,26 @@ program
   )
   .argument("<repo>", "path to the local repo checkout")
   .action(async (repo: string) => process.exit(await runRecommender(repo)));
+
+program
+  .command("pause")
+  .description("Pause auto-dispatch for a repo (set repo_config.paused_until)")
+  .argument("<repo>", "path to the local repo checkout")
+  .action(async (repo: string) => process.exit(await runPause(repo)));
+
+program
+  .command("resume")
+  .description("Resume auto-dispatch for a repo (clear its pause)")
+  .argument("<repo>", "path to the local repo checkout")
+  .action(async (repo: string) => process.exit(await runResume(repo)));
+
+program
+  .command("config")
+  .description("Set a per-repo config value (e.g. auto_dispatch true)")
+  .argument("<repo>", "path to the local repo checkout")
+  .argument("<key>", "config key (e.g. auto_dispatch)")
+  .argument("<value>", "the value to set")
+  .action((repo: string, key: string, value: string) => process.exit(runConfig(repo, key, value)));
 
 program
   .command("docs")

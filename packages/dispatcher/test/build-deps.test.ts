@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter } from "@middle/core";
-import { buildImplementationDeps } from "../src/build-deps.ts";
+import { buildImplementationDeps, formatPauseComment } from "../src/build-deps.ts";
 import { openAndMigrate } from "../src/db.ts";
 import type { PrReadyGateHandler } from "../src/gates/pr-ready-handler.ts";
 import type { PullRequest } from "../src/github.ts";
@@ -62,6 +62,8 @@ describe("buildImplementationDeps", () => {
             return epicPr;
           },
           getCommentAuthor: async () => null,
+          postComment: async () => {},
+          getIssueLabels: async () => [],
         },
         bindServer: (gate) => {
           boundGate = gate;
@@ -111,6 +113,8 @@ describe("buildImplementationDeps", () => {
         github: {
           findEpicPr: async () => null,
           getCommentAuthor: async () => null,
+          postComment: async () => {},
+          getIssueLabels: async () => [],
         },
         bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
       });
@@ -125,5 +129,62 @@ describe("buildImplementationDeps", () => {
     const src = await Bun.file(join(import.meta.dir, "..", "src", "build-deps.ts")).text();
     expect(src).not.toContain("bunqueue");
     expect(src).not.toMatch(/new Engine/);
+  });
+
+  test("the default postQuestion posts a gh comment framed by pause kind", async () => {
+    const posted: Array<{ repo: string; issue: number; body: string }> = [];
+    const db = openAndMigrate(dbPath);
+    try {
+      const { deps } = await buildImplementationDeps({
+        db,
+        getAdapter: () => fakeAdapter(),
+        resolveRepoPath: () => "/p",
+        worktreeRoot: dir,
+        enqueueContinuation: async () => {},
+        resolveAgentLogin: async () => undefined,
+        github: {
+          findEpicPr: async () => null,
+          getCommentAuthor: async () => null,
+          postComment: async (repo, issue, body) => {
+            posted.push({ repo, issue, body });
+          },
+          getIssueLabels: async () => [],
+        },
+        bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
+      });
+      await deps.postQuestion!({
+        repo: "o/r",
+        epicNumber: 7,
+        question: "4 designs, no winner",
+        context: "A/B/C/D",
+        kind: "complexity",
+      });
+      expect(posted).toHaveLength(1);
+      expect(posted[0]!.repo).toBe("o/r");
+      expect(posted[0]!.issue).toBe(7);
+      // The complexity-pause framing the recommender keys off for its label.
+      expect(posted[0]!.body).toContain("complexity pause");
+      expect(posted[0]!.body).toContain("4 designs, no winner");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("formatPauseComment", () => {
+  test("a complexity pause carries the `complexity pause` label vocabulary", () => {
+    const body = formatPauseComment({ question: "Q", context: "C", kind: "complexity" });
+    expect(body).toContain("complexity pause");
+    expect(body).toContain("complexity_ceiling");
+    expect(body).toContain("approved");
+    expect(body).toContain("> Q");
+    expect(body).toContain("C");
+  });
+
+  test("a plain question reads as an agent question, not a complexity pause", () => {
+    const body = formatPauseComment({ question: "Q", kind: "question" });
+    expect(body).toContain("agent question");
+    expect(body).not.toContain("complexity pause");
+    expect(body).toContain("> Q");
   });
 });

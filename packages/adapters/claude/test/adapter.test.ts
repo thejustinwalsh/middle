@@ -231,6 +231,42 @@ describe("classifyStop", () => {
     }
   });
 
+  test("a blocked.json with kind 'complexity' surfaces the complexity pause kind", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(
+      join(middle, "blocked.json"),
+      JSON.stringify({ question: "4 designs, no winner", kind: "complexity" }),
+    );
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: true,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("asked-question");
+    if (result.kind === "asked-question") {
+      expect(result.sentinel).toEqual({ question: "4 designs, no winner", kind: "complexity" });
+    }
+  });
+
+  test("an unrecognized kind falls back to a plain question (kind omitted)", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(
+      join(middle, "blocked.json"),
+      JSON.stringify({ question: "Q", kind: "whatever" }),
+    );
+    const result = claudeAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: true,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("asked-question");
+    if (result.kind === "asked-question") {
+      expect(result.sentinel).toEqual({ question: "Q" });
+    }
+  });
+
   test("asked-question tolerates a malformed/contentless blocked.json (sentinel → null)", () => {
     const { cwd, middle, transcript } = writeMiddleDir();
     writeFileSync(join(middle, "blocked.json"), "{ not valid json");

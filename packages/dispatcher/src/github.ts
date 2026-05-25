@@ -38,6 +38,8 @@ export interface GitHubGateway {
   editComment(repo: string, commentId: number, body: string): Promise<void>;
   /** Resolve the author of a comment from its URL; null if unresolvable. */
   getCommentAuthor(repo: string, commentUrl: string): Promise<CommentAuthor | null>;
+  /** The label names on an issue/Epic (e.g. to check for `approved`). */
+  getIssueLabels(repo: string, issueNumber: number): Promise<string[]>;
 }
 
 async function run(
@@ -135,6 +137,28 @@ export const ghGitHub: GitHubGateway = {
     // match #270).
     const closes = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${epicNumber}\\b`, "i");
     return prs.find((pr) => closes.test(pr.body)) ?? null;
+  },
+
+  async getIssueLabels(repo, issueNumber) {
+    const result = await run([
+      "gh",
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "labels",
+      "--jq",
+      ".labels[].name",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh issue view #${issueNumber} labels failed: ${result.stderr.trim()}`);
+    }
+    return result.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l !== "");
   },
 
   async getPullRequest(repo, prNumber) {

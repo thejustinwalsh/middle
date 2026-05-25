@@ -114,6 +114,14 @@ export type TranscriptState = {
 export type BlockedSentinel = {
   question: string;
   context?: string;
+  /**
+   * Why the agent paused. `"complexity"` marks a **complexity pause** — a
+   * sub-issue decision needing more candidate forks than `complexity_ceiling`
+   * (build spec → "Complexity and architectural forks"); the dispatcher surfaces
+   * it under the state issue's `complexity pause` label. Absent / any other value
+   * is treated as a plain `"question"`.
+   */
+  kind?: "question" | "complexity";
 };
 
 export type StopClassification =

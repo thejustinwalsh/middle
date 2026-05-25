@@ -101,6 +101,61 @@ describe("HookServer control routes", () => {
     expect(startCalls).toEqual([]);
   });
 
+  test("POST /control/dispatch refuses with 429 when no slot is available (manual respects limits)", async () => {
+    startWith(makeControl({ slotAvailable: () => false }));
+    const res = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
+    });
+    expect(res.status).toBe(429);
+    // The slot gate runs before the dispatch, so nothing started.
+    expect(startCalls).toEqual([]);
+  });
+
+  test("POST /control/dispatch proceeds when a slot is available", async () => {
+    startWith(makeControl({ slotAvailable: () => true }));
+    const res = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(startCalls).toHaveLength(1);
+  });
+
+  test("POST /control/dispatch survives a throwing afterDispatch (best-effort, still 200)", async () => {
+    // The post-dispatch trigger is best-effort: a throw must not turn a dispatch
+    // that already succeeded into a 500.
+    startWith(
+      makeControl({
+        afterDispatch: () => {
+          throw new Error("scheduler boom");
+        },
+      }),
+    );
+    const res = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ workflowId: "wf-abc" });
+    expect(startCalls).toHaveLength(1);
+  });
+
   test("POST /control/dispatch rejects a colliding Epic with 409", async () => {
     startWith(makeControl());
     collisionEpics.add(7);
