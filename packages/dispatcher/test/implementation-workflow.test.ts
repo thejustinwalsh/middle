@@ -846,7 +846,36 @@ describe("implementation workflow — verify-on-stop gate", () => {
     const id = await start(deps);
     await awaitRow(id, "waiting-human"); // exhausted → parks for a human (terminal path)
     expect(verifyCalls).toBe(2); // round 0 fails → nudge → round 1 hits the cap
+    // Terminal, not a review park: `nudge-exhausted` is not a park kind, so no
+    // resume signal is armed (a reused-park `waiting-human` would arm one).
+    expect(getWaitForSignal(db, id)).toBeNull();
     // The PR never shipped unverified, and the worktree is kept for the human.
+    expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
+    expectNoSessionLeak(tmux);
+  });
+
+  test("a verify re-stop classified `bare-stop` can't bypass the done-signal", async () => {
+    // The fix nudge's re-stop classifies as a bare-stop (not `done`). With a
+    // readiness seam wired and no ready PR, that bare-stop must NOT complete as
+    // legacy — it routes through the #80 done-signal check and, exhausting the
+    // bare-stop nudge budget, parks for a human instead of shipping.
+    const tmux = makeTmuxStub();
+    let verifyCalls = 0;
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      maxNudges: 0, // a bare-stop with no ready PR parks immediately
+      // First stop is `done` (enters verify); every later re-stop is a bare-stop.
+      getAdapter: () => makeAdapterStub([{ kind: "done" }, { kind: "bare-stop" }]),
+      epicPrReadiness: async () => ({ exists: false, isDraft: false }),
+      runVerifyGates: async () => {
+        verifyCalls += 1;
+        return { ok: false, report: "still broken" };
+      },
+    });
+    const id = await start(deps);
+    await awaitRow(id, "waiting-human"); // bare-stop with no ready PR → parks, not completed
+    expect(verifyCalls).toBe(1); // failed once → nudge → re-stop routed to resolveBareStop
+    expect(getWaitForSignal(db, id)).toBeNull(); // nudge-exhausted is terminal
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
     expectNoSessionLeak(tmux);
   });

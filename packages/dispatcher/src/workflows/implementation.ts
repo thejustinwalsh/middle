@@ -488,6 +488,8 @@ export function createImplementationWorkflow(
     tag: string;
     sessionName: string;
     worktree: string;
+    repo: string;
+    epicNumber: number;
     classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
   }): Promise<DriveOutcome> {
     const runVerify = deps.runVerifyGates!;
@@ -514,9 +516,29 @@ export function createImplementationWorkflow(
       await deps.tmux.sendEnter(args.sessionName);
       const stopPayload = await deps.sessionGate.awaitStop(args.sessionName, nudgeStopTimeout);
       const classification = args.classifyAt(stopPayload);
-      // The agent did something other than finish again (asked a question, etc.)
-      // — hand that back; it flows through the normal branch.
-      if (classification.kind !== "done") return classification;
+      // A re-stop means the agent "finished" its fix attempt — re-run the gates
+      // (loop) rather than completing on the stale failure. A `done` loops
+      // directly. A `bare-stop` is never completion on its own (#80): settle it
+      // through the same readiness gate the initial stop used, so a re-classified
+      // bare-stop can't bypass the done-signal — then loop to re-verify if it
+      // cleared, else hand its parked outcome back. (No readiness seam → #80 is
+      // off, but the gates still get the final word, so loop.)
+      if (classification.kind === "done") continue;
+      if (classification.kind === "bare-stop") {
+        if (deps.epicPrReadiness) {
+          const settled = await resolveBareStop({
+            tag: args.tag,
+            sessionName: args.sessionName,
+            repo: args.repo,
+            epicNumber: args.epicNumber,
+            classifyAt: args.classifyAt,
+          });
+          if (settled.kind !== "done") return settled;
+        }
+        continue;
+      }
+      // Anything else (a question, a failure) flows back to the normal branch.
+      return classification;
     }
   }
 
@@ -714,6 +736,8 @@ export function createImplementationWorkflow(
           tag,
           sessionName,
           worktree: handle.path,
+          repo: ctx.input.repo,
+          epicNumber: ctx.input.epicNumber,
           classifyAt,
         });
       }
@@ -909,9 +933,12 @@ export function createImplementationWorkflow(
       // bunqueue's `retry` is `maxAttempts`; `1` means one attempt, no retries.
       .step("launch-and-drive", launchAndDrive, {
         retry: 1,
-        // Backstop above the internal waits, widened for the bare-stop nudge loop
-        // (up to maxNudges further Stop-awaits) so it can't fire mid-nudge.
-        timeout: launchTimeout + stopTimeout + maxNudges * nudgeStopTimeout + 60_000,
+        // Backstop above the internal waits, widened for both bounded in-session
+        // nudge loops — bare-stop done-signal nudges (up to maxNudges) and
+        // verify-on-stop fix nudges (up to verifyRoundCap), each a further
+        // Stop-await — so it can't fire mid-nudge.
+        timeout:
+          launchTimeout + stopTimeout + (maxNudges + verifyRoundCap) * nudgeStopTimeout + 60_000,
       })
       .branch((ctx) =>
         isParkKind((ctx.steps["launch-and-drive"] as DriveResult).outcome.kind)
