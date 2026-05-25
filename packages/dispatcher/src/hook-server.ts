@@ -6,7 +6,6 @@ import { DEFAULT_HEARTBEAT_MS, type Event, type EventHub } from "./event-hub.ts"
 import type { PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { HookStore } from "./hook-store.ts";
 import { type MetricsSnapshot, renderPrometheus } from "./metrics.ts";
-import { STATUS_PAGE_HTML } from "./status-page.ts";
 
 type BunServer = ReturnType<typeof Bun.serve>;
 
@@ -156,17 +155,25 @@ export class HookServer implements SessionGate {
     this.#control = control;
   }
 
-  start(port: number): void {
-    // Bind localhost only. The Phase 1 receiver has no HMAC auth and uses
-    // predictable session names, so a 0.0.0.0 bind (Bun's default) would let
-    // any host on the network POST a fake agent.stopped / session.started and
-    // hijack a running workflow. The dispatcherUrl is 127.0.0.1 everywhere.
+  /**
+   * Bind the server. `extraRoutes` are merged into `Bun.serve`'s `routes` (matched
+   * most-specific-first); everything unmatched falls through to `#handle` (the
+   * `fetch` path). The daemon passes the dashboard's `/api/*` + `/events/*` + `/`
+   * SPA here so one server serves both surfaces on `dispatcher_port`.
+   *
+   * Bind localhost only. The Phase 1 receiver has no HMAC auth and uses
+   * predictable session names, so a 0.0.0.0 bind (Bun's default) would let
+   * any host on the network POST a fake agent.stopped / session.started and
+   * hijack a running workflow. The dispatcherUrl is 127.0.0.1 everywhere.
+   */
+  start(port: number, extraRoutes: Record<string, unknown> = {}): void {
     this.#server = Bun.serve({
       hostname: "127.0.0.1",
       port,
       // Keep long-lived `/control/events` SSE streams alive between heartbeats;
       // see SSE_IDLE_TIMEOUT_SECONDS. Without this, Bun's 10s default closes them.
       idleTimeout: SSE_IDLE_TIMEOUT_SECONDS,
+      routes: extraRoutes as Record<string, never>,
       fetch: (req) => this.#handle(req),
     });
   }
@@ -193,14 +200,7 @@ export class HookServer implements SessionGate {
     if (req.method === "GET" && pathname === "/health") {
       return Response.json({ ok: true, port: this.port, version: this.#control?.version ?? "" });
     }
-    // Observability surfaces (read-only). The status page is a static asset and
-    // serves unconditionally; the metric exports need the db-backed `metrics`
-    // seam and 404 in gate-only mode.
-    if (req.method === "GET" && (pathname === "/" || pathname === "/status")) {
-      return new Response(STATUS_PAGE_HTML, {
-        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
-      });
-    }
+    // Metric exports need the db-backed `metrics` seam and 404 in gate-only mode.
     if (req.method === "GET" && pathname === "/metrics") {
       const metrics = this.#control?.metrics;
       if (!metrics) return new Response("not found", { status: 404 });

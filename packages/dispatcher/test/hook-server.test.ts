@@ -307,3 +307,29 @@ describe("HookServer — recommender trigger endpoint", () => {
     }
   });
 });
+
+describe("HookServer — merged routes", () => {
+  test("extraRoutes are served, and the fetch fallback still answers /health", async () => {
+    const s = new HookServer();
+    s.start(0, { "/api/ping": () => new Response("pong") });
+    try {
+      const ping = await fetch(`http://127.0.0.1:${s.port}/api/ping`);
+      expect(await ping.text()).toBe("pong");
+      const health = await fetch(`http://127.0.0.1:${s.port}/health`);
+      expect(((await health.json()) as { ok: boolean }).ok).toBe(true);
+    } finally {
+      s.stop();
+    }
+  });
+
+  test("GET / no longer returns the status page (404 with no SPA route)", async () => {
+    const s = new HookServer();
+    s.start(0);
+    try {
+      const res = await fetch(`http://127.0.0.1:${s.port}/`);
+      expect(res.status).toBe(404);
+    } finally {
+      s.stop();
+    }
+  });
+});
