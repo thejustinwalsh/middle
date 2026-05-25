@@ -32,6 +32,8 @@ export function dashboardHostExtras(ctx: DaemonHostContext): {
     stateGateway: ctx.stateGateway,
     events: bus,
     runRecommender: ctx.runRecommender,
+    dispatch: ctx.dispatch,
+    refreshEpicsTrigger: ctx.refreshEpics,
   });
   // Build the routes BEFORE registering the process-global observers. If route
   // construction throws, `runDaemon` catches it and runs the daemon dashboard-less
