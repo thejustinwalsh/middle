@@ -275,17 +275,18 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
     expect(countActiveImplementationSlots(db)).toEqual({ total: 0, perAdapter: {} });
   });
 
-  test("spawn-recommender-agent uses the default 15-minute hard cap", () => {
-    // The step `timeout` is the hard cap; assert it via the built workflow's
-    // step config rather than wall-clock. Defaults: 90s launch + 15min agent
-    // (bumped from 5min, which was too tight against a real repo).
+  test("spawn-recommender-agent's step backstop is sized for the per-repo ceiling", () => {
+    // The step `timeout` is a registration-time backstop. It can't see the
+    // per-repo `resolveRunSettings` value (daemon mode), so it's sized for the
+    // 30-min hard ceiling (`MAX_AGENT_TIMEOUT_MS`) that the per-repo `awaitStop`
+    // is clamped to — guaranteeing the internal (specific) timeout fires first.
     const h = makeHarness();
     delete (h.deps as { agentTimeoutMs?: number }).agentTimeoutMs;
     delete (h.deps as { launchTimeoutMs?: number }).launchTimeoutMs;
     const def = stepDef(h.deps, "spawn-recommender-agent");
     expect(def).toBeDefined();
-    // launch (90s) + agent (15min) + 30s backstop, per the factory.
-    expect(def!.timeout).toBe(90_000 + 15 * 60 * 1000 + 30_000);
+    // launch (90s) + ceiling (30min) + 30s backstop.
+    expect(def!.timeout).toBe(90_000 + 30 * 60 * 1000 + 30_000);
   });
 
   test("prepare-shallow-worktree registers a compensation handler", () => {
