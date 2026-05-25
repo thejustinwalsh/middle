@@ -63,6 +63,7 @@ describe("buildImplementationDeps", () => {
           },
           getCommentAuthor: async () => null,
           postComment: async () => {},
+          getIssueLabels: async () => [],
         },
         bindServer: (gate) => {
           boundGate = gate;
@@ -113,6 +114,7 @@ describe("buildImplementationDeps", () => {
           findEpicPr: async () => null,
           getCommentAuthor: async () => null,
           postComment: async () => {},
+          getIssueLabels: async () => [],
         },
         bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
       });
@@ -146,6 +148,7 @@ describe("buildImplementationDeps", () => {
           postComment: async (repo, issue, body) => {
             posted.push({ repo, issue, body });
           },
+          getIssueLabels: async () => [],
         },
         bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
       });

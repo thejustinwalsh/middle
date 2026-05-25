@@ -39,6 +39,12 @@ export type ImplementationInput = {
   epicNumber: number;
   adapter: string;
   /**
+   * How the dispatch was initiated: `"manual"` (`mm dispatch`) or `"auto"` (the
+   * auto-dispatch loop). Recorded on the workflow row's `meta_json`. Defaults to
+   * `"auto"` when omitted; a continuation carries its origin forward.
+   */
+  source?: "manual" | "auto";
+  /**
    * Present only on a continuation execution (a resume). Absent on the initial
    * dispatch. When set, `prepare-worktree` reuses `resume.worktree` instead of
    * creating one, and writes the reason-specific resume brief to
@@ -463,6 +469,7 @@ export function createImplementationWorkflow(
       repo: ctx.input.repo,
       epicNumber: ctx.input.epicNumber,
       adapter: ctx.input.adapter,
+      source: ctx.input.source ?? "auto",
     });
     const resume = ctx.input.resume;
     if (resume) {
@@ -797,6 +804,7 @@ export function createImplementationWorkflow(
       repo: ctx.input.repo,
       epicNumber: ctx.input.epicNumber,
       adapter: ctx.input.adapter,
+      source: ctx.input.source, // a continuation keeps the origin of its workstream
       resume: { reason: payload.reason, round: nextRound, worktree: handle, payload },
     });
     // The drive that just parked ran a working adapter; revert any stale

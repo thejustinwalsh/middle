@@ -25,7 +25,7 @@ import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-ru
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { isPaused } from "./repo-config.ts";
-import { getSlotState } from "./slots.ts";
+import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState } from "./state-issue.ts";
 import { killSession, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
@@ -137,7 +137,12 @@ async function main(): Promise<void> {
   // (the active-check and reservation run with no intervening await). Both the
   // control route AND the auto-dispatch loop enqueue through this — the loop calls
   // it directly (not the HTTP route), so its enqueues never re-trigger the loop.
-  async function startDispatchImpl(input: ControlDispatchInput): Promise<string | null> {
+  // `source` is recorded on the workflow: `"manual"` for a route dispatch
+  // (`mm dispatch`), `"auto"` for an auto-dispatch-loop enqueue.
+  async function startDispatchImpl(
+    input: ControlDispatchInput,
+    source: "manual" | "auto",
+  ): Promise<string | null> {
     const key = epicKey(input.repo, input.epicNumber);
     if (inFlightEpics.has(key) || hasNonTerminalEpicWorkflow(db, input.repo, input.epicNumber)) {
       return null;
@@ -149,6 +154,7 @@ async function main(): Promise<void> {
         repo: input.repo,
         epicNumber: input.epicNumber,
         adapter: input.adapter,
+        source,
       });
       return handle.id;
     } catch (error) {
@@ -157,6 +163,40 @@ async function main(): Promise<void> {
       inFlightEpics.delete(key);
       throw error;
     }
+  }
+
+  /** Resolve a repo's merged slot caps for {@link getSlotState}. */
+  function resolveSlotLimits(repoConfig: ReturnType<typeof loadConfig>) {
+    return {
+      perAdapter: repoConfig.limits?.maxConcurrentPerAdapter ?? {},
+      repoMax: repoConfig.limits?.maxConcurrent ?? repoConfig.global.maxConcurrent,
+      globalMax: repoConfig.global.maxConcurrent,
+    };
+  }
+
+  /** Load a repo's merged config from its registered checkout, or null if unavailable. */
+  function loadRepoConfig(repo: string): ReturnType<typeof loadConfig> | null {
+    const repoPath = repoPaths.get(repo);
+    if (repoPath === undefined) return null;
+    try {
+      return loadConfig({
+        globalPath: process.env.MIDDLE_CONFIG,
+        repoPath: join(repoPath, ".middle", "config.toml"),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether a repo has a free slot for an adapter right now (manual `mm dispatch`
+   * respects slot limits — build spec → "Auto-dispatch loop"). Conservative: an
+   * unknown repo/config reports a free slot rather than blocking a manual dispatch.
+   */
+  function slotAvailable(repo: string, adapter: string): boolean {
+    const repoConfig = loadRepoConfig(repo);
+    if (!repoConfig) return true;
+    return hasFreeSlot(getSlotState(db, repo, resolveSlotLimits(repoConfig)), adapter);
   }
 
   /** The adapter names currently RATE_LIMITED with a reset still in the future. */
@@ -176,22 +216,11 @@ async function main(): Promise<void> {
   async function runAutoDispatch(repo: string): Promise<void> {
     const repoPath = repoPaths.get(repo);
     if (repoPath === undefined) return; // unknown checkout — can't locate the repo
-    let repoConfig: ReturnType<typeof loadConfig>;
-    try {
-      repoConfig = loadConfig({
-        globalPath: process.env.MIDDLE_CONFIG,
-        repoPath: join(repoPath, ".middle", "config.toml"),
-      });
-    } catch {
-      return;
-    }
+    const repoConfig = loadRepoConfig(repo);
+    if (!repoConfig) return;
     const stateIssueNumber = repoConfig.stateIssue?.number;
     if (stateIssueNumber === undefined || stateIssueNumber === 0) return;
-    const limits = {
-      perAdapter: repoConfig.limits?.maxConcurrentPerAdapter ?? {},
-      repoMax: repoConfig.limits?.maxConcurrent ?? repoConfig.global.maxConcurrent,
-      globalMax: repoConfig.global.maxConcurrent,
-    };
+    const limits = resolveSlotLimits(repoConfig);
     const adapters = Object.keys(repoConfig.adapters);
     const result = await autoDispatch({
       repo,
@@ -202,7 +231,7 @@ async function main(): Promise<void> {
       rateLimitedAdapters: () => rateLimitedAdapters(adapters),
       getSlotState: () => getSlotState(db, repo, limits),
       enqueue: ({ repo: r, epicNumber, adapter }) =>
-        startDispatchImpl({ repo: r, repoPath, epicNumber, adapter }),
+        startDispatchImpl({ repo: r, repoPath, epicNumber, adapter }, "auto"),
     });
     if (result.enqueued.length > 0) {
       const list = result.enqueued.map((e) => `#${e.epicNumber}(${e.adapter})`).join(", ");
@@ -320,7 +349,10 @@ async function main(): Promise<void> {
         hub,
         version,
         knownAdapter: (name) => name === "claude",
-        startDispatch: startDispatchImpl,
+        // A route dispatch is a manual `mm dispatch` — recorded `source: 'manual'`.
+        startDispatch: (input) => startDispatchImpl(input, "manual"),
+        // Manual dispatch respects slot limits (the loop does its own accounting).
+        slotAvailable,
         // Trigger #4: a manual `mm dispatch` (a route dispatch) re-runs the loop
         // so any slot this dispatch didn't claim gets filled. The loop's own
         // enqueues bypass the route, so this never re-enters the loop.

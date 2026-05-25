@@ -50,6 +50,13 @@ export type ControlPlane = {
    * worktree). The route maps `null` to 409.
    */
   startDispatch: (input: ControlDispatchInput) => Promise<string | null>;
+  /**
+   * Whether a repo has a free slot for an adapter right now. The route consults
+   * it before a manual dispatch so `mm dispatch` respects slot limits (a full
+   * queue → 429). Absent → no slot gate (the dispatch proceeds). The auto-dispatch
+   * loop does its own slot accounting and bypasses this route entirely.
+   */
+  slotAvailable?: (repo: string, adapter: string) => boolean;
   /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
   initEvents?: () => Event[];
   /**
@@ -364,6 +371,16 @@ export class HookServer implements SessionGate {
     if (typeof adapter !== "string" || !control.knownAdapter(adapter)) {
       return this.#badRequest(
         `unknown adapter: ${typeof adapter === "string" ? adapter : "(missing)"}`,
+      );
+    }
+
+    // Manual dispatch respects slot limits — refuse with 429 when the repo/adapter
+    // has no free slot (build spec → "Auto-dispatch loop": manual force-dispatch
+    // "still respects slot limits"). Checked before the collision reservation.
+    if (control.slotAvailable && !control.slotAvailable(normalizedRepo, adapter)) {
+      return Response.json(
+        { error: `no free slot for ${adapter} in ${normalizedRepo}` },
+        { status: 429 },
       );
     }
 

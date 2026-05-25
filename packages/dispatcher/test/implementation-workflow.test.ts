@@ -9,7 +9,7 @@ import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import { getRateLimitState, setRateLimited } from "../src/rate-limits.ts";
-import { getWaitForSignal, getWorkflow } from "../src/workflow-record.ts";
+import { getWaitForSignal, getWorkflow, getWorkflowSource } from "../src/workflow-record.ts";
 import {
   createImplementationWorkflow,
   RESUME_EVENT,
@@ -394,6 +394,50 @@ describe("implementation workflow — complexity pause (#52)", () => {
     // Give any stray surface call a chance to land before asserting it didn't.
     await Bun.sleep(50);
     expect(surfaced).toBe(false);
+  });
+
+  test("an approved Epic's brief authorizes proceeding past a complexity overrun (#53)", async () => {
+    const deps = makeDeps({
+      isEpicApproved: () => true,
+      resolveComplexityCeiling: () => 3,
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park to keep the worktree" },
+        }),
+      postQuestion: async () => {},
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+    const brief = readPromptBrief(id);
+    // Approved → proceed past, do not pause.
+    expect(brief).toContain("`approved` label");
+    expect(brief).toContain("do NOT pause");
+    expect(brief).toContain("best-judgment call");
+  });
+});
+
+describe("implementation workflow — dispatch source (#53)", () => {
+  test("records source 'manual' for a manual dispatch and 'auto' by default", async () => {
+    const manualDeps = makeDeps({
+      getAdapter: () =>
+        makeAdapterStub({
+          kind: "asked-question",
+          sentinelPath: "/x/.middle/blocked.json",
+          sentinel: { question: "park" },
+        }),
+      postQuestion: async () => {},
+    });
+    engine.register(createImplementationWorkflow(manualDeps));
+    const manual = await engine.start("implementation", { ...INPUT, source: "manual" as const });
+    await awaitParked(manual.id);
+    expect(getWorkflowSource(db, manual.id)).toBe("manual");
+
+    // A fresh dispatch with no source defaults to 'auto'.
+    const auto = await engine.start("implementation", { ...INPUT, epicNumber: 99 });
+    await awaitParked(auto.id);
+    expect(getWorkflowSource(db, auto.id)).toBe("auto");
   });
 });
 

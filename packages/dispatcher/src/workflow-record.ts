@@ -36,17 +36,49 @@ export type CreateWorkflowRecordInput = {
   repo: string;
   epicNumber: number | null;
   adapter: string;
+  /**
+   * How the dispatch was initiated — `"manual"` for `mm dispatch`, `"auto"` for
+   * the auto-dispatch loop (build spec → "Auto-dispatch loop": manual force-
+   * dispatch is "logged with `source: 'manual'`"). Persisted in `meta_json`.
+   * Omitted leaves `meta_json` null (e.g. the recommender's own row).
+   */
+  source?: "manual" | "auto";
 };
 
 /** Insert a fresh `pending` workflow row. `id` doubles as the bunqueue execution id. */
 export function createWorkflowRecord(db: Database, input: CreateWorkflowRecordInput): void {
   const now = Date.now();
+  const metaJson = input.source === undefined ? null : JSON.stringify({ source: input.source });
   db.run(
     `INSERT INTO workflows
-       (id, kind, repo, epic_number, adapter, state, created_at, updated_at, bunqueue_execution_id)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-    [input.id, input.kind, input.repo, input.epicNumber, input.adapter, now, now, input.id],
+       (id, kind, repo, epic_number, adapter, state, created_at, updated_at, bunqueue_execution_id, meta_json)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+    [
+      input.id,
+      input.kind,
+      input.repo,
+      input.epicNumber,
+      input.adapter,
+      now,
+      now,
+      input.id,
+      metaJson,
+    ],
   );
+}
+
+/** Read a workflow's `meta_json.source` (`'manual'`/`'auto'`), or null if unset. */
+export function getWorkflowSource(db: Database, id: string): "manual" | "auto" | null {
+  const row = db.query("SELECT meta_json FROM workflows WHERE id = ?").get(id) as {
+    meta_json: string | null;
+  } | null;
+  if (!row?.meta_json) return null;
+  try {
+    const source = (JSON.parse(row.meta_json) as { source?: unknown }).source;
+    return source === "manual" || source === "auto" ? source : null;
+  } catch {
+    return null;
+  }
 }
 
 export type WorkflowPatch = {

@@ -14,7 +14,13 @@ import type { ImplementationDeps, ImplementationInput } from "./workflows/implem
 import { createWorktree, destroyWorktree } from "./worktree.ts";
 
 /** The slice of {@link GitHubGateway} the deps factory reads. */
-type DepsGitHub = Pick<GitHubGateway, "findEpicPr" | "getCommentAuthor" | "postComment">;
+type DepsGitHub = Pick<
+  GitHubGateway,
+  "findEpicPr" | "getCommentAuthor" | "postComment" | "getIssueLabels"
+>;
+
+/** The label a human applies to an Epic to authorize proceeding past a complexity pause. */
+const APPROVED_LABEL = "approved";
 
 /**
  * Format the pause comment the dispatcher posts on the Epic when an agent parks.
@@ -161,7 +167,11 @@ export async function buildImplementationDeps(
         await github.postComment(repo, epicNumber, formatPauseComment({ question, context, kind }));
       }),
     resolveComplexityCeiling: args.resolveComplexityCeiling,
-    isEpicApproved: args.isEpicApproved,
+    // Default: the Epic is approved iff it carries the `approved` label (#53).
+    isEpicApproved:
+      args.isEpicApproved ??
+      (async (repo, epicNumber) =>
+        (await github.getIssueLabels(repo, epicNumber)).includes(APPROVED_LABEL)),
     launchTimeoutMs: args.launchTimeoutMs,
     stopTimeoutMs: args.stopTimeoutMs,
     reviewRoundCap: args.reviewRoundCap,
