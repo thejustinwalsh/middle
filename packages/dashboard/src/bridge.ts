@@ -10,12 +10,20 @@
  * channel — no polling latency.
  */
 
+import type { Database } from "bun:sqlite";
 import { addRateLimitObserver, type RateLimitStatus } from "@middle/dispatcher/src/rate-limits.ts";
+import {
+  addWorkflowObserver,
+  getWorkflow,
+} from "@middle/dispatcher/src/workflow-record.ts";
 import type { DashboardEventBus } from "./events.ts";
 import type { GlobalBanner } from "./wire.ts";
 
 /** The SSE event type carrying a fresh banner on the global channel. */
 export const BANNER_EVENT = "banner";
+
+/** The SSE event type nudging a repo's channel that a workflow transitioned. */
+export const WORKFLOW_EVENT = "workflow";
 
 /**
  * Register a rate-limit observer that broadcasts a fresh banner on the global
@@ -36,4 +44,24 @@ export function bridgeRateLimitsToBus(
       });
   };
   return addRateLimitObserver(observer);
+}
+
+/**
+ * Register a workflow observer that broadcasts a `workflow` nudge on the repo's
+ * SSE channel whenever a workflow transitions, so the dashboard's expanded-repo
+ * views refresh live instead of by polling. Returns a disposer (the daemon folds
+ * it into shutdown). The repo is resolved from the row (the patch may not carry
+ * it). Observers fan out, so this coexists with the daemon's control-feed
+ * broadcaster. The payload is a minimal nudge — the repo channel's consumer
+ * refetches on any `workflow` event and ignores the frame body.
+ */
+export function bridgeWorkflowsToBus(bus: DashboardEventBus, db: Database): () => void {
+  return addWorkflowObserver((id) => {
+    const row = getWorkflow(db, id);
+    if (!row) return;
+    bus.broadcastRepo(row.repo, {
+      type: WORKFLOW_EVENT,
+      data: { id, repo: row.repo, epic: row.epicNumber, state: row.state },
+    });
+  });
 }

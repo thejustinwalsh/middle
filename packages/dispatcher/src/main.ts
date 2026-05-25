@@ -34,10 +34,11 @@ import { killSession, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import { pruneWorktreeAt } from "./worktree.ts";
 import {
+  addWorkflowObserver,
+  clearWorkflowObservers,
   getWorkflow,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
-  setUpdateWorkflowObserver,
 } from "./workflow-record.ts";
 import type { ControlDispatchInput } from "./hook-server.ts";
 import { createImplementationWorkflow, RESUME_EVENT } from "./workflows/implementation.ts";
@@ -158,9 +159,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   });
   // Source 2: middle's DB-only states bunqueue never emits (waiting-human, the
   // handoff `completed`). The observer fires after each updateWorkflow write.
-  setUpdateWorkflowObserver((id, patch) => {
+  const disposeWorkflowObserver = addWorkflowObserver((id, patch) => {
     if (patch.state) broadcastWorkflow(id, patch.state);
   });
+  void disposeWorkflowObserver; // daemon clears all observers on shutdown
 
   const version = readVersion();
 
@@ -517,7 +519,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     // Guard each teardown so a throw/rejection can't skip process.exit.
-    setUpdateWorkflowObserver(null);
+    clearWorkflowObservers();
     clearRateLimitObservers();
     try {
       hostDispose?.();

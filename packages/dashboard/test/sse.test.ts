@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { clearRateLimitObservers, setRateLimited } from "@middle/dispatcher/src/rate-limits.ts";
-import { bridgeRateLimitsToBus } from "../src/bridge.ts";
+import {
+  clearWorkflowObservers,
+  updateWorkflow,
+} from "@middle/dispatcher/src/workflow-record.ts";
+import { bridgeRateLimitsToBus, bridgeWorkflowsToBus } from "../src/bridge.ts";
 import { createDbDeps } from "../src/db-deps.ts";
 import { DashboardEventBus } from "../src/events.ts";
 import { createDashboardServer } from "../src/server.ts";
-import { makeConfig, makeDb } from "./helpers.ts";
+import { makeConfig, makeDb, seedWorkflow } from "./helpers.ts";
 
 // The SSE channels end-to-end: a real `Bun.serve`, a real `DashboardEventBus`,
 // a live HTTP SSE connection. Each test opens the stream, waits for the
@@ -30,6 +34,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   clearRateLimitObservers(); // never leak the process-global observers across tests
+  clearWorkflowObservers();
   server.stop(true);
   cleanup();
 });
@@ -147,6 +152,41 @@ describe("dashboard SSE channels", () => {
     } finally {
       dispose();
     }
+  });
+
+  test("a workflow transition pushes a `workflow` nudge on that repo's channel", async () => {
+    const repo = "o/alpha";
+    seedWorkflow(db, { id: "wf-1", repo, epicNumber: 7, state: "launching" });
+    const dispose = bridgeWorkflowsToBus(bus, db);
+    try {
+      const data = (await awaitEvent(
+        `${base}/events/repos/${encodeURIComponent(repo)}`,
+        "workflow",
+        () => {
+          updateWorkflow(db, "wf-1", { state: "running" });
+        },
+      )) as { id: string; repo: string; epic: number | null; state: string };
+      expect(data).toEqual({ id: "wf-1", repo, epic: 7, state: "running" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("disposing the workflow bridge stops the repo-channel nudges", () => {
+    const repo = "o/alpha";
+    seedWorkflow(db, { id: "wf-1", repo, state: "launching" });
+    let nudges = 0;
+    const orig = bus.broadcastRepo.bind(bus);
+    bus.broadcastRepo = (r, e) => {
+      if (e.type === "workflow") nudges += 1;
+      orig(r, e);
+    };
+    const dispose = bridgeWorkflowsToBus(bus, db);
+    updateWorkflow(db, "wf-1", { state: "running" });
+    expect(nudges).toBe(1);
+    dispose();
+    updateWorkflow(db, "wf-1", { state: "waiting-human" });
+    expect(nudges).toBe(1); // no further nudge after dispose
   });
 
   test("a malformed percent-encoded channel segment is a 400, not a crash", async () => {

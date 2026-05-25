@@ -14,7 +14,7 @@ import index from "@middle/dashboard/src/index.html";
 // re-exports only the server surface. The composition root needs the deps + bridge
 // factories that live in their own modules (the monorepo resolves deep `src/`
 // specifiers across packages — see e.g. db-deps.ts importing the dispatcher).
-import { bridgeRateLimitsToBus } from "@middle/dashboard/src/bridge.ts";
+import { bridgeRateLimitsToBus, bridgeWorkflowsToBus } from "@middle/dashboard/src/bridge.ts";
 import { createDbDeps } from "@middle/dashboard/src/db-deps.ts";
 import { DashboardEventBus } from "@middle/dashboard/src/events.ts";
 import { createDashboardRoutes } from "@middle/dashboard/src/server.ts";
@@ -37,15 +37,27 @@ export function dashboardHostExtras(ctx: DaemonHostContext): {
   // channel within ~2s. The bridge reaches the dispatcher's process-global
   // rate-limit observer, so this MUST run in-process (which it does — same daemon).
   const disposeBanner = bridgeRateLimitsToBus(bus, () => deps.banner());
+  // Live per-repo views: a workflow transition broadcasts a `workflow` nudge on
+  // that repo's channel so the dashboard's expanded-repo views refresh live
+  // instead of polling. Reaches the dispatcher's process-global workflow observer,
+  // so this MUST run in-process (which it does — same daemon).
+  const disposeWorkflow = bridgeWorkflowsToBus(bus, ctx.db);
 
   // Mount the SPA at "/" (exact), NOT "/*": a wildcard would shadow the hook
   // server's fetch fallback (/health, /control/*, /hooks/*). Bun still auto-serves
   // the bundle's hashed JS/CSS assets at their own routes.
   const routes = { ...createDashboardRoutes(deps), "/": index };
-  // dispose tears down the rate-limit bridge only. The EventHub heartbeats self-stop
-  // with their last SSE subscriber, and the daemon process.exits on shutdown, so the
-  // bus needs no explicit teardown in v1 (revisit if dispose must hard-close live SSE).
-  return { routes, dispose: disposeBanner };
+  // dispose tears down both bridges (rate-limit banner + per-repo workflow nudge).
+  // The EventHub heartbeats self-stop with their last SSE subscriber, and the
+  // daemon process.exits on shutdown, so the bus needs no explicit teardown in v1
+  // (revisit if dispose must hard-close live SSE).
+  return {
+    routes,
+    dispose: () => {
+      disposeBanner();
+      disposeWorkflow();
+    },
+  };
 }
 
 if (import.meta.main) {

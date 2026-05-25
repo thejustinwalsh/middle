@@ -108,18 +108,49 @@ const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
 };
 
 /**
- * An observer notified after every {@link updateWorkflow} write. The daemon
- * registers one to broadcast middle's DB-only state transitions (`waiting-human`,
- * handoff-`completed`) that bunqueue's engine never emits — see `main.ts`.
- * Module-level (process-scoped) and reset to `null` on daemon shutdown.
+ * An observer notified after every {@link updateWorkflow} write. Observers fan
+ * out from one write: the daemon registers one to broadcast middle's DB-only
+ * state transitions (`waiting-human`, handoff-`completed`) that bunqueue's engine
+ * never emits onto `/control/events` (see `main.ts`), and the dashboard registers
+ * one to nudge the affected repo's SSE channel so its views refresh live (see
+ * `bridgeWorkflowsToBus`). Observers are module-level (process-scoped); each
+ * registration returns its own disposer, and the daemon clears all on shutdown.
  */
 export type UpdateWorkflowObserver = (id: string, patch: WorkflowPatch) => void;
 
-let updateObserver: UpdateWorkflowObserver | null = null;
+const updateObservers = new Set<UpdateWorkflowObserver>();
 
-/** Register (or clear, with `null`) the {@link UpdateWorkflowObserver}. */
-export function setUpdateWorkflowObserver(observer: UpdateWorkflowObserver | null): void {
-  updateObserver = observer;
+/**
+ * Register an {@link UpdateWorkflowObserver} and return a disposer that removes
+ * only THAT observer. Observers fan out — the daemon's control-feed broadcaster
+ * and the dashboard's repo-channel nudge coexist. The disposer is idempotent:
+ * calling it more than once is safe (removing an absent observer is a no-op).
+ */
+export function addWorkflowObserver(observer: UpdateWorkflowObserver): () => void {
+  updateObservers.add(observer);
+  return () => {
+    updateObservers.delete(observer);
+  };
+}
+
+/** Remove every registered observer (daemon shutdown / test reset). */
+export function clearWorkflowObservers(): void {
+  updateObservers.clear();
+}
+
+/**
+ * Notify every observer of a write, never letting one break the durable write
+ * path or the others. Each observer runs inside its own try/catch — a throw from
+ * one is logged and the remaining observers still fire.
+ */
+function notifyUpdateObservers(id: string, patch: WorkflowPatch): void {
+  for (const observer of updateObservers) {
+    try {
+      observer(id, patch);
+    } catch (error) {
+      console.error(`[workflow-record] update observer threw: ${(error as Error).message}`);
+    }
+  }
 }
 
 /** Patch the given fields on a workflow row; always bumps `updated_at`. A no-op patch still touches `updated_at`. */
@@ -135,14 +166,7 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
   }
   values.push(id);
   db.run(`UPDATE workflows SET ${sets.join(", ")} WHERE id = ?`, values);
-  if (updateObserver) {
-    // The observer (a broadcast) must never break the durable write path.
-    try {
-      updateObserver(id, patch);
-    } catch (error) {
-      console.error(`[workflow-record] update observer threw: ${(error as Error).message}`);
-    }
-  }
+  notifyUpdateObservers(id, patch);
 }
 
 /**
@@ -164,13 +188,7 @@ export function finalizeParkedWorkflow(
     [finalState, Date.now(), id],
   );
   const changed = (res.changes ?? 0) > 0;
-  if (changed && updateObserver) {
-    try {
-      updateObserver(id, { state: finalState });
-    } catch (error) {
-      console.error(`[workflow-record] update observer threw: ${(error as Error).message}`);
-    }
-  }
+  if (changed) notifyUpdateObservers(id, { state: finalState });
   return changed;
 }
 
