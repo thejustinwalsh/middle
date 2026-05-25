@@ -9,7 +9,8 @@ test("fetchControlMetrics parses the /control/metrics snapshot", async () => {
     totals: { all: 1, active: 1, waitingHuman: 0 },
   };
   const orig = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify(snapshot))) as unknown as typeof fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(snapshot))) as unknown as typeof fetch;
   try {
     expect(await fetchControlMetrics()).toEqual(snapshot);
   } finally {

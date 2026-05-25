@@ -291,15 +291,27 @@ ol {
    NOTE: "waiting" and "compensating" are intentionally left without an .s-*
    color rule — they render unstyled (inheriting the default foreground),
    matching the old status-page behaviour. This is deliberate, not an oversight. */
-.queue .s-running { color: #36d399; }
+.queue .s-running {
+  color: #36d399;
+}
 .queue .s-launching,
-.queue .s-pending { color: var(--accent); }
-.queue .s-waiting-human { color: var(--warn); }
-.queue .s-rate-limited { color: var(--bad); }
-.queue .s-completed { color: var(--ok); }
+.queue .s-pending {
+  color: var(--accent);
+}
+.queue .s-waiting-human {
+  color: var(--warn);
+}
+.queue .s-rate-limited {
+  color: var(--bad);
+}
+.queue .s-completed {
+  color: var(--ok);
+}
 .queue .s-failed,
 .queue .s-cancelled,
-.queue .s-compensated { color: var(--bad); }
+.queue .s-compensated {
+  color: var(--bad);
+}
 
 /* Queue tab — rate-limit chips */
 .queue .chips {
@@ -314,6 +326,14 @@ ol {
   border-radius: 999px;
   font-size: 0.8rem;
 }
-.queue .c-available { color: var(--ok); border-color: var(--ok); }
-.queue .c-rate_limited { color: var(--bad); border-color: var(--bad); }
-.queue .c-unknown { color: var(--muted); }
+.queue .c-available {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.queue .c-rate_limited {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.queue .c-unknown {
+  color: var(--muted);
+}

@@ -35,6 +35,9 @@ export async function refreshEpics(
        sub_total = excluded.sub_total, sub_closed = excluded.sub_closed,
        last_refreshed = excluded.last_refreshed`,
   );
+  const close = db.query(
+    `UPDATE epics SET state = 'closed', last_refreshed = ? WHERE repo = ? AND number = ?`,
+  );
   const open = new Set<number>();
   const tx = db.transaction(() => {
     for (const e of epics) {
@@ -45,9 +48,6 @@ export async function refreshEpics(
     const stale = db
       .query(`SELECT number FROM epics WHERE repo = ? AND state = 'open'`)
       .all(repo) as { number: number }[];
-    const close = db.query(
-      `UPDATE epics SET state = 'closed', last_refreshed = ? WHERE repo = ? AND number = ?`,
-    );
     for (const row of stale) {
       if (!open.has(row.number)) close.run(now, repo, row.number);
     }

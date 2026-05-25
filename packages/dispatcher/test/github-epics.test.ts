@@ -21,7 +21,14 @@ describe("parseEpicsList", () => {
     ].join("\n");
 
     expect(parseEpicsList(ndjson)).toEqual([
-      { number: 247, title: "OAuth refresh", state: "open", labels: ["epic", "agent:claude"], subTotal: 4, subClosed: 2 },
+      {
+        number: 247,
+        title: "OAuth refresh",
+        state: "open",
+        labels: ["epic", "agent:claude"],
+        subTotal: 4,
+        subClosed: 2,
+      },
     ]);
   });
 

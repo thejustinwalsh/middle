@@ -31,7 +31,12 @@ function sortLive(rows: ControlWorkflowFrame[]): ControlWorkflowFrame[] {
  * the caller); it drives the table, while `metrics.totals` drives the tiles.
  */
 export function Queue({ metrics, live }: QueueProps) {
-  if (!metrics) return <main className="queue"><p className="empty">no data yet</p></main>;
+  if (!metrics)
+    return (
+      <main className="queue">
+        <p className="empty">no data yet</p>
+      </main>
+    );
   const rows = sortLive(live);
   return (
     <main className="queue">
