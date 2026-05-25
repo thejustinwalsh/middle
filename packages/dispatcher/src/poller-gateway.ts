@@ -1,4 +1,5 @@
 import type {
+  CiStatus,
   EpicPrLifecycle,
   GitHubPollGateway,
   IssueComment,
@@ -6,6 +7,47 @@ import type {
   PrSnapshot,
   RateLimitStatus,
 } from "./poller.ts";
+
+/**
+ * One `statusCheckRollup` entry as `gh pr view` returns it. A **CheckRun**
+ * (GitHub Actions / most apps) reports `status` + `conclusion`; a **StatusContext**
+ * (legacy commit statuses) reports a single `state`. We read whichever is present.
+ */
+export type CheckRollupEntry = {
+  status?: string; // CheckRun: QUEUED | IN_PROGRESS | COMPLETED
+  conclusion?: string; // CheckRun: SUCCESS | FAILURE | NEUTRAL | CANCELLED | TIMED_OUT | ...
+  state?: string; // StatusContext: SUCCESS | FAILURE | ERROR | PENDING
+};
+
+const CONCLUSION_OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+const STATE_OK = new Set(["SUCCESS", "EXPECTED"]);
+
+/**
+ * Collapse a `statusCheckRollup` array into a single {@link CiStatus}. Any
+ * failing check ⇒ `failing` (a red build can't be reviewed); else any still-
+ * running check ⇒ `pending`; else `passing`. An empty/absent rollup ⇒ `none`
+ * (no checks configured — nothing to gate on). Pure, so it's unit-tested directly.
+ */
+export function deriveCiStatus(rollup: CheckRollupEntry[] | null | undefined): CiStatus {
+  if (!rollup || rollup.length === 0) return "none";
+  let pending = false;
+  for (const c of rollup) {
+    if (c.status !== undefined && c.status !== "COMPLETED") {
+      pending = true; // a CheckRun that hasn't finished
+      continue;
+    }
+    if (c.conclusion !== undefined) {
+      if (!CONCLUSION_OK.has(c.conclusion)) return "failing";
+      continue;
+    }
+    // StatusContext (no status/conclusion) — read `state`.
+    if (c.state !== undefined) {
+      if (c.state === "PENDING") pending = true;
+      else if (!STATE_OK.has(c.state)) return "failing"; // FAILURE / ERROR
+    }
+  }
+  return pending ? "pending" : "passing";
+}
 
 /**
  * The production {@link GitHubPollGateway} — reads issue comments and PR review
@@ -88,11 +130,12 @@ export const ghPollGateway: GitHubPollGateway = {
       "--repo",
       repo,
       "--json",
-      "reviewDecision,labels",
+      "reviewDecision,labels,statusCheckRollup",
     ]);
     const view = JSON.parse(viewOut) as {
       reviewDecision: string | null;
       labels: Array<{ name: string }>;
+      statusCheckRollup: CheckRollupEntry[] | null;
     };
 
     const reviewsOut = await gh([
@@ -125,6 +168,7 @@ export const ghPollGateway: GitHubPollGateway = {
       reviewDecision: view.reviewDecision ?? null,
       reviews,
       labels: view.labels.map((l) => l.name),
+      ci: deriveCiStatus(view.statusCheckRollup),
     };
   },
 

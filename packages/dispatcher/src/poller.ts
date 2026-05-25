@@ -47,13 +47,27 @@ export type PrReview = {
   body: string;
 };
 
+/**
+ * A PR's CI standing, collapsed from `statusCheckRollup`:
+ * - `passing` — every required check succeeded (or was neutral/skipped).
+ * - `failing` — at least one check failed/errored/was cancelled.
+ * - `pending` — nothing failed yet, but a check is still running/queued.
+ * - `none` — no checks are configured on the PR (nothing to gate on).
+ */
+export type CiStatus = "passing" | "failing" | "pending" | "none";
+
 /** A PR's review-relevant snapshot. */
 export type PrSnapshot = {
   number: number;
   reviewDecision: string | null; // 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
   reviews: PrReview[];
   labels: string[];
+  /** CI rollup. Absent (legacy/test fixtures) is treated as `none` — non-blocking. */
+  ci?: CiStatus;
 };
+
+/** The synthetic `decision` a CI-failure resume carries, distinct from a review `CHANGES_REQUESTED`. */
+export const CI_FAILED_DECISION = "CI_FAILED";
 
 /** GitHub's remaining REST budget and when it resets (epoch ms). */
 export type RateLimitStatus = { remaining: number; resetAt: number };
@@ -159,17 +173,44 @@ export function classifyNewHumanReply(
   return fresh[0] ?? null;
 }
 
+/** The resume verdict a classification resolves to (or null = nothing actionable). */
+type ReviewVerdict = { outcome: ReviewOutcome; reviewId: number | null; decision: string | null };
+
 /**
- * Classify the PR's review state into a resume verdict, or null when nothing
- * actionable has changed since the wait armed. The newest review submitted this
+ * Classify the PR into a resume verdict, **CI-gated**: a PR isn't reviewable
+ * until it builds, so CI standing participates in the verdict alongside reviews.
+ *
+ * Precedence:
+ *  1. **Explicit review feedback wins** — a `CHANGES_REQUESTED` (review or label)
+ *     resumes for the feedback; addressing it should also green CI, so don't
+ *     pre-empt it with a CI nudge.
+ *  2. **Red CI is its own resume trigger** — failing checks with no outstanding
+ *     review feedback resume the agent to fix CI ({@link CI_FAILED_DECISION}).
+ *  3. **A resolve is gated on green** — an `APPROVED`/0-actionable verdict while
+ *     checks are still `pending` is held (null) until they finish, so the loop
+ *     never ends on a PR whose CI hasn't reported. `passing`/`none` resolves.
+ *
+ * Absent CI (`undefined` → `none`) is non-blocking, so the pre-CI review loop is
+ * unchanged.
+ */
+export function classifyReviewOutcome(snapshot: PrSnapshot, sinceMs: number): ReviewVerdict | null {
+  const review = classifyReviewVerdict(snapshot, sinceMs);
+  const ci = snapshot.ci ?? "none";
+  if (review?.outcome === "changes-requested") return review;
+  if (ci === "failing") {
+    return { outcome: "changes-requested", reviewId: null, decision: CI_FAILED_DECISION };
+  }
+  if (review?.outcome === "resolved") return ci === "pending" ? null : review;
+  return review;
+}
+
+/**
+ * The review-only verdict (no CI gating) — the newest review submitted this
  * round is authoritative; a 0-actionable re-review counts as **resolved** even
  * while the PR's `reviewDecision` still reads `CHANGES_REQUESTED`. Falls back to
  * the standing decision / `changes-requested` label when no fresh review exists.
  */
-export function classifyReviewOutcome(
-  snapshot: PrSnapshot,
-  sinceMs: number,
-): { outcome: ReviewOutcome; reviewId: number | null; decision: string | null } | null {
+function classifyReviewVerdict(snapshot: PrSnapshot, sinceMs: number): ReviewVerdict | null {
   const fresh = snapshot.reviews
     .filter((r) => r.submittedAt > sinceMs)
     .sort((a, b) => b.submittedAt - a.submittedAt);
