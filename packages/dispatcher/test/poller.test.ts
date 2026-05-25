@@ -12,6 +12,7 @@ import {
   type GitHubPollGateway,
   type IssueComment,
   type PrSnapshot,
+  type RateLimitStatus,
   type ResumeSignalPayload,
 } from "../src/poller.ts";
 import {
@@ -76,10 +77,12 @@ function prSnapshot(over: Partial<PrSnapshot>): PrSnapshot {
 function makeGateway(opts: {
   comments?: IssueComment[];
   pr?: PrSnapshot | null;
-}): GitHubPollGateway & { commentCalls: number; prCalls: number } {
+  rateLimit?: RateLimitStatus;
+}): GitHubPollGateway & { commentCalls: number; prCalls: number; rateLimitCalls: number } {
   const g = {
     commentCalls: 0,
     prCalls: 0,
+    rateLimitCalls: 0,
     async listIssueComments() {
       g.commentCalls++;
       return opts.comments ?? [];
@@ -87,6 +90,10 @@ function makeGateway(opts: {
     async findPrForEpic() {
       g.prCalls++;
       return opts.pr ?? null;
+    },
+    async getRateLimit() {
+      g.rateLimitCalls++;
+      return opts.rateLimit ?? { remaining: 5000, resetAt: 0 };
     },
   };
   return g;
@@ -372,6 +379,9 @@ describe("runPoller — resilience", () => {
       async findPrForEpic() {
         return null;
       },
+      async getRateLimit() {
+        return { remaining: 5000, resetAt: 0 };
+      },
     };
     const { fired, fireSignal } = captureFires();
     // One fires, one throws-and-is-skipped — the pass still completes.
@@ -379,5 +389,55 @@ describe("runPoller — resilience", () => {
     expect(n).toBe(2);
     expect(fired.map((f) => f.workflowId)).toEqual([good]);
     expect(getWaitForSignal(db, good)).not.toBeNull(); // row still present until resume consumes it
+  });
+});
+
+describe("runPoller — GitHub rate-limit guards", () => {
+  test("skips the whole pass when remaining budget is below the buffer", async () => {
+    seedParked("answered-question"); // a fresh human reply is ready → would fire
+    const github = makeGateway({
+      comments: [
+        comment({ id: 1, authorLogin: "human", body: "answer", createdAt: ARMED_AT + 100 }),
+      ],
+      rateLimit: { remaining: 50, resetAt: ARMED_AT + 60_000 },
+    });
+    const { fired, fireSignal } = captureFires();
+    // buffer defaults to 100; 50 < 100 → skip the pass before any per-workflow call.
+    expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(0);
+    expect(github.rateLimitCalls).toBe(1); // it checked the budget
+    expect(github.commentCalls).toBe(0); // …and made no workflow calls
+    expect(fired).toEqual([]);
+  });
+
+  test("a healthy budget proceeds (the guard isn't always-on)", async () => {
+    seedParked("answered-question");
+    const github = makeGateway({
+      comments: [
+        comment({ id: 1, authorLogin: "human", body: "answer", createdAt: ARMED_AT + 100 }),
+      ],
+      rateLimit: { remaining: 4999, resetAt: 0 },
+    });
+    const { fired, fireSignal } = captureFires();
+    expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(1);
+    expect(github.commentCalls).toBe(1);
+    expect(fired.length).toBe(1);
+  });
+
+  test("caps the workflows polled per pass (burst protection)", async () => {
+    seedParked("answered-question", 100);
+    seedParked("answered-question", 200);
+    seedParked("answered-question", 300);
+    const github = makeGateway({
+      comments: [
+        comment({ id: 1, authorLogin: "human", body: "answer", createdAt: ARMED_AT + 100 }),
+      ],
+    });
+    const { fired, fireSignal } = captureFires();
+    // 3 actionable waits, cap 2 → only 2 polled this pass; the rest wait for next.
+    expect(
+      await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000, maxPollsPerPass: 2 }),
+    ).toBe(2);
+    expect(github.commentCalls).toBe(2);
+    expect(fired.length).toBe(2);
   });
 });
