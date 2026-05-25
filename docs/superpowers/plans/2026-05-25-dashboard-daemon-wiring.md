@@ -149,7 +149,7 @@ Then rewrite `createDashboardServer`'s body to consume it:
 
 ```ts
 export async function createDashboardServer(opts: DashboardServerOptions): Promise<BunServer> {
-  const { deps, port = 8822, serveSpa = true } = opts;
+  const { deps, port = 4120, serveSpa = true } = opts; // 4120: the default Task 0 set
   const routes = createDashboardRoutes(deps);
 
   let htmlRoutes: Record<string, unknown> = {};
