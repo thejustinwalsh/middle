@@ -135,6 +135,13 @@ const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 // rewriting the schema-strict state issue without finishing. Operators tune it
 // per repo via `[recommender] agent_timeout_minutes`.
 const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60 * 1000;
+// Hard ceiling on the per-repo agent timeout. The step's bunqueue `timeout` is a
+// registration-time backstop and can't see the per-repo `resolveRunSettings`
+// value (daemon mode), so it's sized for THIS ceiling; the per-repo `awaitStop`
+// is clamped to it. Without the clamp, a repo configured above the default would
+// trip the step timeout (a generic error) before its own `awaitStop` (specific)
+// fired. Tune-up is allowed up to here, not past it.
+const MAX_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Deterministic, repo-namespaced session name for the recommender's dedicated
@@ -399,7 +406,12 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
   async function spawnRecommenderAgent(ctx: StepContext<RecommenderInput>): Promise<void> {
     const { handle } = ctx.steps["prepare-shallow-worktree"] as PrepareResult;
     const adapter = deps.getAdapter(ctx.input.adapter);
-    const agentTimeout = runSettings(ctx.input.repo).agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+    // Clamp the per-repo timeout to the ceiling the step backstop is sized for,
+    // so the internal (specific-error) Stop-await always fires before the step's.
+    const agentTimeout = Math.min(
+      runSettings(ctx.input.repo).agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+      MAX_AGENT_TIMEOUT_MS,
+    );
     const sessionName = sessionNameFor(ctx.input);
     const sessionToken = crypto.randomUUID();
     const tag = `[recommender:${sessionName}]`;
@@ -518,7 +530,10 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
         // Registration-time backstop above the internal Stop-await (which is the
         // controlling, per-repo timeout). Uses the static `agentTimeoutMs` when
         // given, else the default — a generous outer cap, not the precise bound.
-        timeout: launchTimeout + (deps.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS) + 30_000,
+        // Sized for the per-repo ceiling (MAX_AGENT_TIMEOUT_MS), since this
+        // registration-time value can't see `resolveRunSettings`; the per-repo
+        // `awaitStop` is clamped to that ceiling, so this always exceeds it.
+        timeout: launchTimeout + MAX_AGENT_TIMEOUT_MS + 30_000,
       })
       .step("verify-state-issue-parses", verifyStateIssueParses)
       .step("trigger-auto-dispatch", triggerAutoDispatch)
