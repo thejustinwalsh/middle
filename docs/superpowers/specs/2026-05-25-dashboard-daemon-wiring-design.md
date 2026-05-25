@@ -182,5 +182,9 @@ mount + banner + queue-tab first and treat live repo/session push as a follow-up
 
 - Durable config persistence (still in-memory per #54 decision).
 - Auth on the dashboard surface (localhost-only, same as the hook server today).
-- Two-port / proxy topologies (rejected — single 8822 surface chosen).
-- Any change to agent hook-posting behavior or `dispatcher_port` semantics.
+- Two-port / proxy topologies (rejected — single shared surface chosen).
+- Any change to agent hook-posting *behavior* or `dispatcher_port` *semantics*
+  (the port stays the one configurable surface). The default *value* does change:
+  8822 → **4120** (Initech HQ), updated in `core/src/config.ts` and the two other
+  defaults — see the plan's Task 0. Verified safe: unprivileged, below the Linux
+  ephemeral range, no `/etc/services` assignment, not a common dev-server port.
