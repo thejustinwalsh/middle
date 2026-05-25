@@ -12,10 +12,7 @@
 
 import type { Database } from "bun:sqlite";
 import { addRateLimitObserver, type RateLimitStatus } from "@middle/dispatcher/src/rate-limits.ts";
-import {
-  addWorkflowObserver,
-  getWorkflow,
-} from "@middle/dispatcher/src/workflow-record.ts";
+import { addWorkflowObserver, getWorkflow } from "@middle/dispatcher/src/workflow-record.ts";
 import type { DashboardEventBus } from "./events.ts";
 import type { GlobalBanner } from "./wire.ts";
 

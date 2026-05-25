@@ -20,7 +20,11 @@ import type {
 } from "../wire.ts";
 import { api } from "./api-client.ts";
 import { type GuardError, makeGuard } from "./guard.ts";
-import { fetchControlMetrics, type ControlMetrics, type ControlWorkflowFrame } from "./control-client.ts";
+import {
+  fetchControlMetrics,
+  type ControlMetrics,
+  type ControlWorkflowFrame,
+} from "./control-client.ts";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";

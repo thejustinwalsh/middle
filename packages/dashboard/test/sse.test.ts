@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { clearRateLimitObservers, setRateLimited } from "@middle/dispatcher/src/rate-limits.ts";
-import {
-  clearWorkflowObservers,
-  updateWorkflow,
-} from "@middle/dispatcher/src/workflow-record.ts";
+import { clearWorkflowObservers, updateWorkflow } from "@middle/dispatcher/src/workflow-record.ts";
 import { bridgeRateLimitsToBus, bridgeWorkflowsToBus } from "../src/bridge.ts";
 import { createDbDeps } from "../src/db-deps.ts";
 import { DashboardEventBus } from "../src/events.ts";

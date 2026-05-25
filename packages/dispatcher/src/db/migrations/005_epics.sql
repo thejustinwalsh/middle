@@ -11,7 +11,7 @@ CREATE TABLE epics (
   labels_json    TEXT    NOT NULL DEFAULT '[]',
   sub_total      INTEGER NOT NULL DEFAULT 0,
   sub_closed     INTEGER NOT NULL DEFAULT 0,
-  gh_updated_at  TEXT,
+  gh_updated_at  TEXT,                            -- reserved; EpicListItem carries no updated_at yet, so refreshEpics does not populate this
   last_refreshed INTEGER NOT NULL,             -- epoch ms of our last write
   PRIMARY KEY (repo, number)
 );

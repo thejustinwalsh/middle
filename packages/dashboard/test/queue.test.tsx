@@ -53,10 +53,7 @@ test("Queue renders epic as #N for a numeric epic and — for null", () => {
 
 test("Queue state cell carries the s-running class", () => {
   const html = renderToStaticMarkup(
-    <Queue
-      metrics={baseMetrics}
-      live={[{ id: "w1", repo: "o/r", epic: 7, state: "running" }]}
-    />,
+    <Queue metrics={baseMetrics} live={[{ id: "w1", repo: "o/r", epic: 7, state: "running" }]} />,
   );
   expect(html).toContain("s-running");
 });
