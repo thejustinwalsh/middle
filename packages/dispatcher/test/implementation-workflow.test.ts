@@ -192,6 +192,12 @@ const APPROVED = {
   reviewId: 2,
   decision: "APPROVED",
 };
+const CI_FAILED = {
+  reason: "review-changes" as const,
+  outcome: "changes-requested" as const,
+  reviewId: null,
+  decision: "CI_FAILED",
+};
 
 /** No session leak: every tmux session that was created was also killed. */
 function expectNoSessionLeak(tmux: { created: string[]; killed: string[] }): void {
@@ -580,6 +586,30 @@ describe("implementation workflow — done park → review-changes → resume (e
     expect(getWaitForSignal(db, id1)).toBeNull();
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     expectNoSessionLeak(tmux);
+  });
+
+  test("a CI_FAILED verdict resumes a continuation with the fix-CI brief (not the address-review one)", async () => {
+    const prompts: string[] = [];
+    const adapter = makeAdapterStub({ kind: "done" }, prompts);
+    const { deps, continuationIds } = withContinuations({ getAdapter: () => adapter });
+    const id0 = await start(deps);
+    await awaitParked(id0);
+
+    // Red CI (no review feedback) resumes the agent to fix the build.
+    await engine.signal(id0, RESUME_EVENT, CI_FAILED);
+    expect(await awaitSettled(id0)).toBe("completed");
+
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1);
+    const brief = readPromptBrief(id1);
+    expect(brief).toContain("CI is failing — round 1 of 5");
+    expect(brief).toContain("gh pr checks");
+    expect(brief).toContain("Push once");
+    // It is NOT the address-review brief — there are no review threads to work.
+    expect(brief).not.toContain("Addressing review feedback");
+
+    await engine.signal(id1, RESUME_EVENT, APPROVED);
+    expect(await awaitSettled(id1)).toBe("completed");
   });
 
   test("a resolved review reverts a previously RATE_LIMITED adapter to AVAILABLE", async () => {

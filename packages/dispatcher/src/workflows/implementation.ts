@@ -6,7 +6,7 @@ import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import { type PlanCommentReader, verifyPlanComment } from "../gates/plan-comment.ts";
 import type { SessionGate } from "../hook-server.ts";
-import type { ResumeSignalPayload } from "../poller.ts";
+import { CI_FAILED_DECISION, type ResumeSignalPayload } from "../poller.ts";
 import { markAvailableOnSuccess, parseResetAt, setRateLimited } from "../rate-limits.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
 import {
@@ -326,6 +326,34 @@ ${operatingRules}`,
 
   // review-changes
   const decision = resume.payload.reason === "review-changes" ? resume.payload.decision : null;
+
+  // CI-failure resume (#CI gate): a red build, not review feedback. The agent
+  // pulls the failing checks itself and fixes them — a distinct brief from the
+  // address-review one (there are no review threads to work, just broken CI).
+  if (decision === CI_FAILED_DECISION) {
+    writeFileSync(
+      promptPath,
+      `# middle dispatch brief — Epic #${epicNumber} (resumed: CI is failing — round ${resume.round} of ${reviewRoundCap})
+
+The PR's CI is **red** — a PR can't be reviewed until it builds. Investigate and
+fix the failing checks now:
+
+1. Pull the failing checks yourself: \`gh pr checks\` for the rollup, then
+   \`gh run view <run-id> --log-failed\` (or the check's details URL) to read the
+   actual failure — don't guess from the check name.
+2. Reproduce locally where you can (run the failing gate/test), fix the **cause**,
+   and add a regression test if the failure was a real defect, not flake.
+3. **Push once** for the whole fix, then stop. The workflow re-parks and re-checks
+   CI on the next poll; a green build (plus review) is what ends the loop.
+
+This is round ${resume.round} of ${reviewRoundCap}. After ${reviewRoundCap} rounds without resolution the
+workflow parks for a human and stops auto-resuming.
+
+${operatingRules}`,
+    );
+    return;
+  }
+
   writeFileSync(
     promptPath,
     `# middle dispatch brief — Epic #${epicNumber} (resumed: address review — round ${resume.round} of ${reviewRoundCap})
