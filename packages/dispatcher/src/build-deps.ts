@@ -41,7 +41,7 @@ export function formatPauseComment(opts: {
 
 ${body}
 
-A human resolves this by **scope reduction or clarification** — or applies the \`approved\` label to authorize a best-judgment call within the ceiling on resume.`;
+A human resolves this by **scope reduction or clarification** — or applies the \`${APPROVED_LABEL}\` label to authorize a best-judgment call within the ceiling on resume.`;
   }
   return `🙋 **agent question** — the dispatched agent needs input to proceed.
 
