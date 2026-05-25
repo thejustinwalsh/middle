@@ -40,6 +40,30 @@ import {
 import type { ControlDispatchInput } from "./hook-server.ts";
 import { createImplementationWorkflow, RESUME_EVENT } from "./workflows/implementation.ts";
 
+/**
+ * The dashboard-agnostic context the daemon hands to {@link RunDaemonOptions.hostExtras}.
+ * Names no dashboard type — the CLI composition root maps these primitives onto
+ * the dashboard's seams.
+ */
+export type DaemonHostContext = {
+  db: ReturnType<typeof openAndMigrate>;
+  config: ReturnType<typeof loadConfig>;
+  stateGateway: typeof ghStateIssueGateway;
+  runRecommender: (repo: string) => Promise<{ status: number; body: string }>;
+};
+
+/** Options for {@link runDaemon}. `hostExtras` injects the dashboard (or any extra routes). */
+export type RunDaemonOptions = {
+  /**
+   * Mount extra HTTP routes on the daemon's single server and register a disposer
+   * run on shutdown. Called once after the db/state are up, before the server binds.
+   */
+  hostExtras?: (ctx: DaemonHostContext) => {
+    routes: Record<string, unknown>;
+    dispose: () => void;
+  };
+};
+
 /** Workflow states that free a dispatch slot — a transition into one re-runs auto-dispatch. */
 const SLOT_FREEING_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
 /** Debounce window coalescing a burst of triggers (terminal transitions, etc.) into one pass. */
@@ -61,11 +85,14 @@ function readVersion(): string {
   }
 }
 
-async function main(): Promise<void> {
+export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
 
   mkdirSync(dirname(config.global.dbPath), { recursive: true });
   const db = openAndMigrate(config.global.dbPath);
+
+  // Disposer for any host-injected extras (the dashboard) — run on shutdown.
+  let hostDispose: (() => void) | null = null;
 
   // Swallow only bunqueue's benign lock-token lifecycle race for the daemon's
   // lifetime; removed on shutdown. The engine drains here on SIGTERM, which is
@@ -380,7 +407,22 @@ async function main(): Promise<void> {
         metrics: () => collectMetrics(db),
       };
       hookServer = new HookServer(new DbHookStore(db), prReadyGate, recommenderTrigger, control);
-      hookServer.start(config.global.dispatcherPort);
+      let extraRoutes: Record<string, unknown> = {};
+      if (opts.hostExtras) {
+        const hosted = opts.hostExtras({
+          db,
+          config,
+          stateGateway: ghStateIssueGateway,
+          runRecommender: async (repo: string) => {
+            const path = repoPaths.get(repo);
+            if (path === undefined) return { status: 404, body: `no checkout for ${repo}` };
+            return recommenderTrigger({ repoPath: path });
+          },
+        });
+        extraRoutes = hosted.routes;
+        hostDispose = hosted.dispose;
+      }
+      hookServer.start(config.global.dispatcherPort, extraRoutes);
       return { sessionGate: hookServer, dispatcherUrl: `http://127.0.0.1:${hookServer.port}` };
     },
   });
@@ -420,6 +462,11 @@ async function main(): Promise<void> {
     // Guard each teardown so a throw/rejection can't skip process.exit.
     setUpdateWorkflowObserver(null);
     setRateLimitObserver(null);
+    try {
+      hostDispose?.();
+    } catch (error) {
+      console.error(`shutdown: host dispose failed — ${(error as Error).message}`);
+    }
     for (const timer of autoDispatchTimers.values()) clearTimeout(timer);
     autoDispatchTimers.clear();
     try {
@@ -458,7 +505,11 @@ async function main(): Promise<void> {
   await new Promise<void>(() => {});
 }
 
-main().catch((error: unknown) => {
-  console.error(`middle dispatcher failed: ${(error as Error).message}`);
-  process.exit(1);
-});
+// Standalone run (`bun main.ts`) starts the daemon WITHOUT the dashboard. The CLI
+// (`mm start`) spawns daemon-entry.ts instead, which calls runDaemon with hostExtras.
+if (import.meta.main) {
+  runDaemon().catch((error: unknown) => {
+    console.error(`middle dispatcher failed: ${(error as Error).message}`);
+    process.exit(1);
+  });
+}

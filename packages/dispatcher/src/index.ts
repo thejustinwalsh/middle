@@ -8,6 +8,8 @@
  * is the documented API surface.
  *
  * Public surface:
+ * - `runDaemon` (+ `RunDaemonOptions`, `DaemonHostContext`) — start the
+ *   long-running daemon; `hostExtras` injects the dashboard's routes/disposer
  * - `buildImplementationDeps` — assemble the implementation workflow's deps +
  *   PR-ready gate (the daemon and any host share this wiring)
  * - `autoDispatch` (+ `AutoDispatchDeps`, `AutoDispatchResult`) — the
@@ -46,6 +48,9 @@
  *
  * claude-md: true
  */
+/** Start the long-running daemon; `hostExtras` injects the dashboard. The CLI is the only caller that injects. */
+export { runDaemon } from "./main.ts";
+export type { DaemonHostContext, RunDaemonOptions } from "./main.ts";
 export { buildImplementationDeps } from "./build-deps.ts";
 export { autoDispatch } from "./auto-dispatch.ts";
 export type { AutoDispatchDeps, AutoDispatchResult } from "./auto-dispatch.ts";
