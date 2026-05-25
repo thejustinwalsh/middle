@@ -79,6 +79,12 @@ async function main(): Promise<void> {
   // #116) — do NOT add a no-op engine.recover() against the in-memory store.
   const engine = new Engine({ embedded: true });
 
+  // Declared up front: `scheduleAutoDispatch` (hoisted below) reads it, and a
+  // slot-freeing broadcast can fire that path the moment the engine observers
+  // are wired — long before `shutdown` is defined. A `let` initialized later
+  // would throw a TDZ ReferenceError on that early read.
+  let shuttingDown = false;
+
   // One place that turns a state change into a `workflow` broadcast (repo/epic
   // looked up from the row). Fed by two sources below. They overlap on the
   // states the workflow writes to the row AND bunqueue emits (`completed`,
@@ -400,7 +406,6 @@ async function main(): Promise<void> {
 
   console.log(`middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`);
 
-  let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
