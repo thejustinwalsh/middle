@@ -34,7 +34,7 @@ export function makeDb(): { db: Database; dir: string; cleanup: () => void } {
 export function makeConfig(overrides: Partial<MiddleConfig> = {}): MiddleConfig {
   return {
     global: {
-      dispatcherPort: 8822,
+      dispatcherPort: 4120,
       maxConcurrent: 4,
       defaultAdapter: "claude",
       logDir: "/tmp/logs",

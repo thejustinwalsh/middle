@@ -26,9 +26,9 @@ describe("dashboard window launcher", () => {
   test("an unavailable webview-bun degrades to a logged exit 0 (HTTP still serves)", async () => {
     // webview-bun is an optionalDependency, absent in CI → the dynamic import
     // throws, the launcher logs and exits 0 rather than crashing the start.
-    const { code, stderr } = await runLauncher(["http://127.0.0.1:8822/"]);
+    const { code, stderr } = await runLauncher(["http://127.0.0.1:4120/"]);
     expect(code).toBe(0);
     expect(stderr).toContain("webview-bun unavailable");
-    expect(stderr).toContain("http://127.0.0.1:8822/");
+    expect(stderr).toContain("http://127.0.0.1:4120/");
   });
 });
