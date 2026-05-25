@@ -182,6 +182,35 @@ export async function destroyWorktree(handle: WorktreeHandle): Promise<void> {
   }
 }
 
+/**
+ * Best-effort teardown of a worktree directory by path alone — the forgiving
+ * counterpart to {@link destroyWorktree}, for the reconciler, which has only the
+ * row's `worktreePath` (no branch, and the repo checkout may be unknown). It
+ * deregisters the worktree (when `repoPath` is known and the path is still
+ * registered) and removes the directory; it deliberately does **not** delete the
+ * local branch (the merged/closed PR already retired it remotely, and a leftover
+ * local branch is harmless to the page). Never throws — disk hygiene must not
+ * block finalizing the workflow row.
+ */
+export async function pruneWorktreeAt(
+  repoPath: string | null,
+  worktreePath: string,
+): Promise<void> {
+  try {
+    if (repoPath) {
+      const registered = await rawList(repoPath).catch(() => [] as RawWorktree[]);
+      if (registered.some((w) => w.path === worktreePath)) {
+        await runGit(repoPath, ["worktree", "remove", "--force", worktreePath]);
+      }
+    }
+    if (existsSync(worktreePath)) {
+      rmSync(worktreePath, { recursive: true, force: true });
+    }
+  } catch {
+    // Best-effort: a leftover worktree dir is disk noise, not a correctness bug.
+  }
+}
+
 /** Enumerate the active worktrees registered to `repoPath` that live under the root. */
 export async function listWorktrees(opts: {
   repoPath: string;

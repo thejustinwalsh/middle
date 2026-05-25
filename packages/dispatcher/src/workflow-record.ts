@@ -476,6 +476,41 @@ export function listNonTerminalWorkflows(db: Database): NonTerminalWorkflow[] {
   }));
 }
 
+/** A parked `implementation` workflow the reconciler considers, with its worktree. */
+export type ParkedWorkflow = {
+  id: string;
+  repo: string;
+  epicNumber: number;
+  worktreePath: string | null;
+};
+
+/**
+ * Parked `kind = 'implementation'` workflows (`state = 'waiting-human'`) that own
+ * an Epic — the set the merged/closed-PR reconciler walks. Rows with a null
+ * `epic_number` are excluded: with no Epic there's no PR lifecycle to consult.
+ * Ordered oldest-first so the burst cap reconciles the longest-stuck rows first.
+ */
+export function listParkedImplementationWorkflows(db: Database): ParkedWorkflow[] {
+  const rows = db
+    .query(
+      `SELECT id, repo, epic_number, worktree_path FROM workflows
+        WHERE kind = 'implementation' AND state = 'waiting-human' AND epic_number IS NOT NULL
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all() as {
+    id: string;
+    repo: string;
+    epic_number: number;
+    worktree_path: string | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    repo: r.repo,
+    epicNumber: r.epic_number,
+    worktreePath: r.worktree_path,
+  }));
+}
+
 /** Fetch a workflow row by id, or null if it does not exist. */
 export function getWorkflow(db: Database, id: string): WorkflowRecord | null {
   const row = db.query("SELECT * FROM workflows WHERE id = ?").get(id) as WorkflowRow | null;

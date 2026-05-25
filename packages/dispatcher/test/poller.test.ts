@@ -91,6 +91,9 @@ function makeGateway(opts: {
       g.prCalls++;
       return opts.pr ?? null;
     },
+    async findEpicPrLifecycle() {
+      return null; // these tests exercise the resume poller, not reconciliation
+    },
     async getRateLimit() {
       g.rateLimitCalls++;
       return opts.rateLimit ?? { remaining: 5000, resetAt: 0 };
@@ -377,6 +380,9 @@ describe("runPoller — resilience", () => {
         return [comment({ id: 1, authorLogin: "human", body: "answer" })];
       },
       async findPrForEpic() {
+        return null;
+      },
+      async findEpicPrLifecycle() {
         return null;
       },
       async getRateLimit() {

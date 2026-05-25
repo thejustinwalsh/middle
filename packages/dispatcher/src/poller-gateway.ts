@@ -1,4 +1,5 @@
 import type {
+  EpicPrLifecycle,
   GitHubPollGateway,
   IssueComment,
   PrReview,
@@ -125,6 +126,37 @@ export const ghPollGateway: GitHubPollGateway = {
       reviews,
       labels: view.labels.map((l) => l.name),
     };
+  },
+
+  async findEpicPrLifecycle(repo: string, epicNumber: number): Promise<EpicPrLifecycle | null> {
+    // Same `Closes #<epic>` linkage as findPrForEpic, but across ALL states so a
+    // merged/closed PR is visible. The server-side search is a prefix match, so
+    // re-confirm the exact closing reference client-side (anchored boundary).
+    const listOut = await gh([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "all",
+      "--search",
+      `in:body Closes #${epicNumber}`,
+      "--json",
+      "number,body,state",
+    ]);
+    const closesRe = new RegExp(`\\bcloses\\s+#${epicNumber}(?!\\d)`, "i");
+    const matches = (
+      JSON.parse(listOut) as Array<{ number: number; body: string | null; state: string }>
+    ).filter((pr) => closesRe.test(pr.body ?? ""));
+    if (matches.length === 0) return null;
+    // Precedence when an Epic has more than one matching PR across its history
+    // (e.g. a rejected-and-reopened workstream): an OPEN PR means work is still
+    // live — never reconcile it; otherwise a MERGED one wins over a stale CLOSED.
+    const norm = (s: string): "OPEN" | "MERGED" | "CLOSED" =>
+      s === "OPEN" ? "OPEN" : s === "MERGED" ? "MERGED" : "CLOSED";
+    const rank = { OPEN: 0, MERGED: 1, CLOSED: 2 } as const;
+    const best = matches.reduce((a, b) => (rank[norm(a.state)] <= rank[norm(b.state)] ? a : b));
+    return { number: best.number, state: norm(best.state) };
   },
 
   async getRateLimit(): Promise<RateLimitStatus> {

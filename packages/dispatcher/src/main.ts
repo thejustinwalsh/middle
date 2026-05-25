@@ -30,6 +30,7 @@ import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState } from "./state-issue.ts";
 import { killSession, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
+import { pruneWorktreeAt } from "./worktree.ts";
 import {
   getWorkflow,
   hasNonTerminalEpicWorkflow,
@@ -405,6 +406,10 @@ async function main(): Promise<void> {
     db,
     github: ghPollGateway,
     fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
+    // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
+    // and best-effort tear down its worktree (repo checkout from the registry).
+    removeWorktree: (repo, worktreePath) =>
+      worktreePath ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath) : Promise.resolve(),
   });
 
   console.log(`middle dispatcher up — hooks on :${hookServer.port}, db ${config.global.dbPath}`);

@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import type { ResumeReason } from "./workflows/implementation.ts";
-import { loadPollableWaits, markSignalFired } from "./workflow-record.ts";
+import {
+  listParkedImplementationWorkflows,
+  loadPollableWaits,
+  markSignalFired,
+  updateWorkflow,
+} from "./workflow-record.ts";
 
 /**
  * The GitHub poller fires a parked workflow's resume signal when its unblocking
@@ -53,11 +58,25 @@ export type PrSnapshot = {
 /** GitHub's remaining REST budget and when it resets (epoch ms). */
 export type RateLimitStatus = { remaining: number; resetAt: number };
 
+/**
+ * The lifecycle standing of an Epic's PR across ALL states — `MERGED` and
+ * `CLOSED` (unmerged) included, unlike {@link PrSnapshot} which is open-only.
+ * Drives park reconciliation: a parked workflow whose PR has landed or been
+ * abandoned must leave `waiting-human`.
+ */
+export type EpicPrLifecycle = { number: number; state: "OPEN" | "MERGED" | "CLOSED" };
+
 /** The read-only GitHub surface the poller needs — injectable so tests need no `gh`. */
 export type GitHubPollGateway = {
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   /** The Epic's one open PR, or null if it hasn't been opened yet. */
   findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null>;
+  /**
+   * The Epic's PR lifecycle across every state (open/merged/closed), or null if
+   * no PR references the Epic. Unlike {@link findPrForEpic} (open-only), this
+   * sees a merged/closed PR so a parked workflow can be reconciled to terminal.
+   */
+  findEpicPrLifecycle(repo: string, epicNumber: number): Promise<EpicPrLifecycle | null>;
   /**
    * Current REST budget. Read from `gh api rate_limit`, whose own request does
    * not consume quota — so the poller can consult it every pass for free.
@@ -96,6 +115,12 @@ export type PollerDeps = {
    * secondary limits. Defaults to {@link DEFAULT_MAX_POLLS_PER_PASS}.
    */
   maxPollsPerPass?: number;
+  /**
+   * Tear down a reconciled workflow's worktree (best-effort). Receives the repo
+   * slug + the row's `worktreePath`. Optional: omitted → the row is still
+   * finalized, just without disk cleanup. Wired by the daemon; tests stub it.
+   */
+  removeWorktree?: (repo: string, worktreePath: string | null) => Promise<void>;
 };
 
 /**
@@ -255,4 +280,81 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
     }
   }
   return fired;
+}
+
+/**
+ * Reconcile parked workflows whose Epic PR has **landed or been abandoned** —
+ * the gap the resume poller doesn't cover. `runPoller` only watches *armed*
+ * review/question waits and only acts on review *verdicts*; a human who simply
+ * merges (or closes) the PR, or a cap-exhausted park that armed no signal at
+ * all, leaves the row stuck in `waiting-human` forever, polluting the
+ * observability view with ghosts of finished work.
+ *
+ * This pass walks every parked `implementation` workflow and consults the Epic
+ * PR's lifecycle: **merged → `completed`**, **closed-unmerged → `cancelled`**,
+ * **open (or no PR yet) → left alone** (a live review park / a pending
+ * question). The state write broadcasts on the control feed, so the page drops
+ * the row live. Worktree teardown is best-effort (`removeWorktree`); a failure
+ * there never blocks the row's finalization.
+ *
+ * Shares `runPoller`'s GitHub-friendliness guards: the (free) rate-limit ceiling
+ * and the per-pass burst cap. Per-workflow failures are isolated and retried
+ * next pass. Returns the number of rows reconciled.
+ */
+export type ReconcileDeps = {
+  db: Database;
+  /** Only the two PR-lifecycle/budget reads the reconciler makes. */
+  github: Pick<GitHubPollGateway, "findEpicPrLifecycle" | "getRateLimit">;
+  /** Best-effort worktree teardown for a finalized row; omitted → skip cleanup. */
+  removeWorktree?: (repo: string, worktreePath: string | null) => Promise<void>;
+  /** Skip the pass when GitHub's budget is below this. Defaults to {@link DEFAULT_RATE_LIMIT_BUFFER}. */
+  rateLimitBuffer?: number;
+  /** Cap on rows reconciled per pass. Defaults to {@link DEFAULT_MAX_POLLS_PER_PASS}. */
+  maxPollsPerPass?: number;
+};
+
+export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number> {
+  const buffer = deps.rateLimitBuffer ?? DEFAULT_RATE_LIMIT_BUFFER;
+  const maxPerPass = deps.maxPollsPerPass ?? DEFAULT_MAX_POLLS_PER_PASS;
+
+  const parked = listParkedImplementationWorkflows(deps.db);
+  if (parked.length === 0) return 0;
+
+  const budget = await deps.github.getRateLimit();
+  if (budget.remaining < buffer) {
+    console.error(
+      `[reconcile] GitHub budget low (${budget.remaining} < ${buffer}); skipping pass — resets ${new Date(budget.resetAt).toISOString()}`,
+    );
+    return 0;
+  }
+
+  let reconciled = 0;
+  for (const wf of parked.slice(0, maxPerPass)) {
+    try {
+      const life = await deps.github.findEpicPrLifecycle(wf.repo, wf.epicNumber);
+      // Open PR (a live review park) or no PR yet (a pending question) → leave it
+      // for `runPoller` / the human; only a landed/abandoned PR is reconciled.
+      if (!life || life.state === "OPEN") continue;
+      const finalState = life.state === "MERGED" ? "completed" : "cancelled";
+      if (deps.removeWorktree) {
+        try {
+          await deps.removeWorktree(wf.repo, wf.worktreePath);
+        } catch (error) {
+          console.error(
+            `[reconcile] worktree cleanup failed for ${wf.id} (continuing): ${(error as Error).message}`,
+          );
+        }
+      }
+      updateWorkflow(deps.db, wf.id, { state: finalState });
+      console.error(
+        `[reconcile] ${wf.repo}#${wf.epicNumber} PR ${life.state} → ${finalState} (workflow ${wf.id})`,
+      );
+      reconciled++;
+    } catch (error) {
+      console.error(
+        `[reconcile] failed for workflow ${wf.id} (${wf.repo}#${wf.epicNumber}): ${(error as Error).message}`,
+      );
+    }
+  }
+  return reconciled;
 }
