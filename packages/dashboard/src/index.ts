@@ -36,6 +36,9 @@
 export { createDashboardServer, DASHBOARD_IDLE_TIMEOUT_SECONDS } from "./server.ts";
 /** Options accepted by {@link createDashboardServer} (deps, port, whether to serve the SPA). */
 export type { DashboardServerOptions } from "./server.ts";
+/** The dashboard's `/api/*` + `/events/*` route table, for merging into another `Bun.serve`. */
+export { createDashboardRoutes } from "./server.ts";
+export type { DashboardRoutes } from "./server.ts";
 /** The `/api/*` JSON router — returns a `Response`, or `undefined` for a non-API path. Usable without a live server. */
 export { handleApi } from "./api.ts";
 /** The `/events/*` SSE router — returns a `Response`, or `undefined` for a non-events path. */

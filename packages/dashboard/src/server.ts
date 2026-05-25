@@ -46,6 +46,22 @@ function notFound(): Response {
   return new Response("not found", { status: 404 });
 }
 
+/** The function-routes (`/api/*`, `/events/*`) the dashboard serves, sans SPA. */
+export type DashboardRoutes = Record<string, (req: Request) => Response | Promise<Response>>;
+
+/**
+ * Build the dashboard's API + SSE route table (no SPA — the bundled HTML is mixed
+ * in by the caller, which owns the `serveSpa` decision and the route key the
+ * bundle binds to). Lets the daemon merge these into its own `Bun.serve` without
+ * pulling the bundler.
+ */
+export function createDashboardRoutes(deps: DashboardDeps): DashboardRoutes {
+  return {
+    "/api/*": async (req) => (await handleApi(req, deps)) ?? notFound(),
+    "/events/*": (req) => handleEvents(req, deps) ?? notFound(),
+  };
+}
+
 /**
  * Start the dashboard server. Localhost-only (the operator's machine); the SPA
  * is bundled on first request. Returns the live `Bun.serve` handle — call
@@ -53,11 +69,7 @@ function notFound(): Response {
  */
 export async function createDashboardServer(opts: DashboardServerOptions): Promise<BunServer> {
   const { deps, port = 4120, serveSpa = true } = opts;
-
-  const routes: Record<string, (req: Request) => Response | Promise<Response>> = {
-    "/api/*": async (req) => (await handleApi(req, deps)) ?? notFound(),
-    "/events/*": (req) => handleEvents(req, deps) ?? notFound(),
-  };
+  const routes = createDashboardRoutes(deps);
 
   // Mix in the bundled SPA only when asked — keeps the bundler out of API tests.
   let htmlRoutes: Record<string, unknown> = {};
