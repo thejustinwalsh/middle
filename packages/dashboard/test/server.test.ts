@@ -25,5 +25,5 @@ test("createDashboardRoutes maps /api/* and /events/* to the deps seam", async (
   expect(Object.keys(routes).sort()).toEqual(["/api/*", "/events/*"]);
   const res = await routes["/api/*"](new Request("http://x/api/repos"));
   expect(res).toBeInstanceOf(Response);
-  expect(res.status).not.toBe(404); // /api/repos is a real route
+  expect(res.status).toBe(200); // empty db returns 200 with []
 });
