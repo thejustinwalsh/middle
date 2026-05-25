@@ -84,7 +84,7 @@ export function Epics({
       ) : (
         <ul>
           {epics.map((card) => (
-            <li key={card.number} className="epic-card" data-epic={card.number}>
+            <li key={`${card.repo}#${card.number}`} className="epic-card" data-epic={card.number}>
               <div className="epic-head">
                 <span className="epic-title">
                   #{card.number} {card.title}

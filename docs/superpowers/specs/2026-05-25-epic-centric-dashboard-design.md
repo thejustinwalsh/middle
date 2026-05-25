@@ -83,7 +83,7 @@ work splits along the existing dependency direction (`dashboard → dispatcher`)
 
 ## 1. Epic cache (dispatcher)
 
-New migration `packages/dispatcher/src/db/migrations/004_epics.sql`:
+New migration `packages/dispatcher/src/db/migrations/005_epics.sql`:
 
 ```sql
 CREATE TABLE epics (
@@ -134,7 +134,7 @@ page-view — the banner's GitHub quota stays cheap.
 
 ## 3. Endpoint + wire type
 
-`GET /api/epics?repo=<slug>` → `EpicCard[]`. Each card **joins three in-system
+`GET /api/epics/:repo` → `EpicCard[]`. Each card **joins three in-system
 sources** (no new GitHub calls on read):
 
 ```ts

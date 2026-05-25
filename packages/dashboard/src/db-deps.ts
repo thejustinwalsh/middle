@@ -314,10 +314,11 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
         );
         let decision: EpicCard["decision"] = null;
         if (need) {
+          const safeLink = need.link ? extractUrl(need.link) : undefined;
           decision = {
             label: need.label,
             oneLiner: need.oneLiner,
-            ...(need.link ? { link: extractUrl(need.link) } : {}),
+            ...(safeLink ? { link: safeLink } : {}),
           };
         } else if (blocked) {
           decision = {
@@ -494,10 +495,18 @@ function safeParse(json: string): unknown {
 }
 
 /**
- * Extract a bare URL from a markdown link `[text](url)`, or return the raw
- * string unchanged when it is already a URL / doesn't match the pattern.
+ * Extract a safe bare URL from a markdown link `[text](url)` (or a raw URL).
+ * Returns the normalized URL only for http(s); anything else (other schemes,
+ * unparseable) yields `undefined` so callers omit the link rather than render an
+ * unsafe `href`.
  */
-function extractUrl(raw: string): string {
+function extractUrl(raw: string): string | undefined {
   const m = /^\[.*?\]\((.+?)\)$/.exec(raw);
-  return m ? m[1]! : raw;
+  const candidate = (m ? m[1]! : raw).trim();
+  try {
+    const u = new URL(candidate);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }

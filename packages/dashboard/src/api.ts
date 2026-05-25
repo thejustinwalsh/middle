@@ -152,11 +152,15 @@ async function handleEpics(
       return badRequest("epic number must be a positive integer");
     }
     const body = await readJson(req);
-    if (typeof body.adapter !== "string" || body.adapter.trim() === "") {
+    if (typeof body.adapter !== "string") {
+      return badRequest("adapter must be a non-empty string");
+    }
+    const adapter = body.adapter.trim();
+    if (adapter === "") {
       return badRequest("adapter must be a non-empty string");
     }
     if (!deps.dispatchEpic) return notFound("manual dispatch not wired in this dashboard mode");
-    const result = await deps.dispatchEpic(repo, epicNumber, body.adapter);
+    const result = await deps.dispatchEpic(repo, epicNumber, adapter);
     return new Response(result.body, {
       status: result.status,
       headers: { "content-type": "application/json" },
