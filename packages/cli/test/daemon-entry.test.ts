@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { bridgeRateLimitsToBus } from "@middle/dashboard/src/bridge.ts";
 import { DashboardEventBus } from "@middle/dashboard/src/events.ts";
+import type { DaemonHostContext } from "@middle/dispatcher";
 import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
 import { HookServer } from "@middle/dispatcher/src/hook-server.ts";
 import { setRateLimited } from "@middle/dispatcher/src/rate-limits.ts";
@@ -22,10 +23,10 @@ test("dashboardHostExtras routes + the hook fetch fallback coexist on one port",
   const ctx = {
     db,
     config: makeConfig(),
-    stateGateway: { readBody: async () => "" },
+    stateGateway: { readBody: async () => "", writeBody: async () => {} },
     runRecommender: async () => ({ status: 200, body: "ok" }),
-  };
-  const hosted = dashboardHostExtras(ctx as never);
+  } satisfies DaemonHostContext;
+  const hosted = dashboardHostExtras(ctx);
   dispose = hosted.dispose;
   server = new HookServer();
   server.start(0, hosted.routes);
