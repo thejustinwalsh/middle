@@ -5,13 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAndMigrate } from "../src/db.ts";
 import {
+  addWorkflowObserver,
+  clearWorkflowObservers,
   countActiveImplementationSlots,
   createWorkflowRecord,
+  finalizeParkedWorkflow,
   getWorkflow,
   getWorkflowSource,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
-  setUpdateWorkflowObserver,
   updateWorkflow,
 } from "../src/workflow-record.ts";
 
@@ -24,6 +26,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearWorkflowObservers(); // never leak the process-global observers across tests
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -236,8 +239,8 @@ describe("listNonTerminalWorkflows", () => {
   });
 });
 
-describe("setUpdateWorkflowObserver", () => {
-  test("notifies the observer of each patch, and stops after reset", () => {
+describe("workflow observers", () => {
+  test("notifies the observer of each patch, and stops after dispose", () => {
     createWorkflowRecord(db, {
       id: "a",
       kind: "implementation",
@@ -246,7 +249,7 @@ describe("setUpdateWorkflowObserver", () => {
       adapter: "claude",
     });
     const seen: Array<{ id: string; state?: string }> = [];
-    setUpdateWorkflowObserver((id, patch) => seen.push({ id, state: patch.state }));
+    const dispose = addWorkflowObserver((id, patch) => seen.push({ id, state: patch.state }));
     try {
       updateWorkflow(db, "a", { state: "waiting-human" });
       updateWorkflow(db, "a", { worktreePath: "/wt" }); // no state → still observed
@@ -255,10 +258,10 @@ describe("setUpdateWorkflowObserver", () => {
         { id: "a", state: undefined },
       ]);
     } finally {
-      setUpdateWorkflowObserver(null);
+      dispose();
     }
     updateWorkflow(db, "a", { state: "completed" });
-    expect(seen).toHaveLength(2); // no further notifications after reset
+    expect(seen).toHaveLength(2); // no further notifications after dispose
   });
 
   test("a throwing observer does not break the DB write", () => {
@@ -269,14 +272,65 @@ describe("setUpdateWorkflowObserver", () => {
       epicNumber: 1,
       adapter: "claude",
     });
-    setUpdateWorkflowObserver(() => {
+    const dispose = addWorkflowObserver(() => {
       throw new Error("observer boom");
     });
     try {
       updateWorkflow(db, "a", { state: "launching" });
       expect(getWorkflow(db, "a")!.state).toBe("launching");
     } finally {
-      setUpdateWorkflowObserver(null);
+      dispose();
+    }
+  });
+
+  test("addWorkflowObserver fans out to every observer; disposers independent", () => {
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    const seenA: Array<{ id: string; state?: string }> = [];
+    const seenB: Array<{ id: string; state?: string }> = [];
+    const disposeA = addWorkflowObserver((id, patch) => seenA.push({ id, state: patch.state }));
+    const disposeB = addWorkflowObserver((id, patch) => seenB.push({ id, state: patch.state }));
+
+    updateWorkflow(db, "a", { state: "running" });
+    // Both observers saw the same (id, patch).
+    expect(seenA).toEqual([{ id: "a", state: "running" }]);
+    expect(seenB).toEqual([{ id: "a", state: "running" }]);
+
+    // Dispose one; only the remaining observer fires on the next write.
+    disposeA();
+    updateWorkflow(db, "a", { state: "waiting-human" });
+    expect(seenA).toHaveLength(1); // unchanged
+    expect(seenB).toEqual([
+      { id: "a", state: "running" },
+      { id: "a", state: "waiting-human" },
+    ]);
+    disposeB();
+  });
+
+  test("the finalize path notifies observers on a real transition only", () => {
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    updateWorkflow(db, "a", { state: "waiting-human" });
+    const seen: Array<{ id: string; state?: string }> = [];
+    const dispose = addWorkflowObserver((id, patch) => seen.push({ id, state: patch.state }));
+    try {
+      expect(finalizeParkedWorkflow(db, "a", "completed")).toBe(true);
+      expect(seen).toEqual([{ id: "a", state: "completed" }]);
+      // No longer waiting-human → no transition → no notification.
+      expect(finalizeParkedWorkflow(db, "a", "failed")).toBe(false);
+      expect(seen).toHaveLength(1);
+    } finally {
+      dispose();
     }
   });
 });
