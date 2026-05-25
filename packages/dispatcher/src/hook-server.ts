@@ -64,8 +64,8 @@ export type ControlPlane = {
   initEvents?: () => Event[];
   /**
    * Compute a point-in-time queue/engine snapshot for the observability surfaces
-   * (`GET /metrics` Prometheus text, `GET /control/metrics` JSON, the status
-   * page). Absent in gate-only mode → those routes 404.
+   * (`GET /metrics` Prometheus text, `GET /control/metrics` JSON consumed by the
+   * dashboard Queue tab). Absent in gate-only mode → those routes 404.
    */
   metrics?: () => MetricsSnapshot;
   /**
