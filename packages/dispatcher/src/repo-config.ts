@@ -120,16 +120,28 @@ export function getLastRecommenderRun(db: Database, repo: string): number | null
 }
 
 /**
- * Stamp a repo's `last_recommender_run`. The cron sets it **before** firing a
- * run so an overlapping tick can't double-dispatch the same repo (the due-check
- * reads this). Upserts like {@link registerManagedRepo}.
+ * Set a repo's `last_recommender_run` to an explicit value — including `null` to
+ * clear it. The cron stamps it **before** firing (so an overlapping tick can't
+ * double-dispatch), then **rolls it back to the prior value on a failed launch**
+ * so the failure retries on the next tick instead of going quiet for a full
+ * interval. Upserts like {@link registerManagedRepo}.
  */
-export function markRecommenderRun(db: Database, repo: string, now: number = Date.now()): void {
+export function setLastRecommenderRun(
+  db: Database,
+  repo: string,
+  value: number | null,
+  now: number = Date.now(),
+): void {
   db.run(
     `INSERT INTO repo_config (repo, config_json, last_recommender_run, last_synced_at)
        VALUES (?, '{}', ?, ?)
      ON CONFLICT(repo) DO UPDATE SET last_recommender_run = excluded.last_recommender_run,
        last_synced_at = excluded.last_synced_at`,
-    [repo, now, now],
+    [repo, value, now],
   );
+}
+
+/** Stamp a repo's `last_recommender_run` to `now`. Convenience over {@link setLastRecommenderRun}. */
+export function markRecommenderRun(db: Database, repo: string, now: number = Date.now()): void {
+  setLastRecommenderRun(db, repo, now, now);
 }

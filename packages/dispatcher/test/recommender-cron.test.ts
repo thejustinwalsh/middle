@@ -110,20 +110,29 @@ describe("runRecommenderCronPass", () => {
     expect(getLastRecommenderRun(db, "o/r")).toBeNull(); // never stamped
   });
 
-  test("stamps before firing, so a throwing run isn't retried next tick (and is isolated)", async () => {
+  test("a failed launch rolls the stamp back (retries next tick) and is isolated", async () => {
     registerManagedRepo(db, "bad/repo", "/co/bad");
     registerManagedRepo(db, "good/repo", "/co/good");
     const { deps, fired } = makeDeps(
       { "/co/bad": config(), "/co/good": config() },
       { throwFor: "bad/repo" },
     );
-    // bad/repo throws but is stamped + isolated; good/repo still fires.
+    // bad/repo throws but is isolated; good/repo still fires.
     expect(await runRecommenderCronPass(deps)).toBe(1);
     expect(fired).toEqual(["good/repo"]);
-    expect(getLastRecommenderRun(db, "bad/repo")).toBe(NOW); // stamped despite the throw
+    // The failed launch rolled its stamp back to the prior value (null = never
+    // ran) — so it doesn't go quiet for a full interval; the next pass retries it.
+    expect(getLastRecommenderRun(db, "bad/repo")).toBeNull();
+    expect(getLastRecommenderRun(db, "good/repo")).toBe(NOW); // the success stays stamped
 
-    // Next tick at the same time: neither is due (both stamped at NOW).
-    expect(await runRecommenderCronPass(deps)).toBe(0);
+    // Next pass at the same time: bad/repo is due again (retried), good/repo isn't.
+    const retried: string[] = [];
+    const second = makeDeps(
+      { "/co/bad": config(), "/co/good": config() },
+      { throwFor: "bad/repo", onRun: (r) => retried.push(r.repo) },
+    );
+    await runRecommenderCronPass(second.deps);
+    expect(retried).toEqual(["bad/repo"]); // only the rolled-back repo retries
   });
 
   test("ignores unmanaged rows (no checkout path)", async () => {

@@ -7,6 +7,7 @@ import {
   listManagedRepos,
   type ManagedRepo,
   markRecommenderRun,
+  setLastRecommenderRun,
 } from "./repo-config.ts";
 
 /**
@@ -63,13 +64,17 @@ export async function runRecommenderCronPass(deps: RecommenderCronDeps): Promise
     // Guard a missing/zero/negative interval → never auto-run (a 0 would fire
     // every tick). A real periodic cadence must be a positive number of minutes.
     if (!(intervalMs > 0)) continue;
-    const last = getLastRecommenderRun(deps.db, managed.repo) ?? 0;
-    if (now - last < intervalMs) continue; // not due yet
-    markRecommenderRun(deps.db, managed.repo, now); // stamp before firing — no double-dispatch
+    const prev = getLastRecommenderRun(deps.db, managed.repo);
+    if (now - (prev ?? 0) < intervalMs) continue; // not due yet
+    // Stamp BEFORE firing so an overlapping tick can't double-dispatch — but a
+    // failed *launch* rolls the stamp back, so a failure retries next tick rather
+    // than going quiet for a full interval.
+    markRecommenderRun(deps.db, managed.repo, now);
     try {
       await deps.runRecommender(managed);
       fired++;
     } catch (error) {
+      setLastRecommenderRun(deps.db, managed.repo, prev);
       console.error(`[recommender-cron] ${managed.repo} run failed: ${(error as Error).message}`);
     }
   }
