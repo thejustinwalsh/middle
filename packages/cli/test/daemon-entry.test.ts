@@ -66,6 +66,39 @@ test("dashboardHostExtras routes + the hook fetch fallback coexist on one port",
   db.close();
 });
 
+test("a dispatch POST reaches the host-context dispatch callback", async () => {
+  let dispatched: [string, number, string] | undefined;
+  const db = openAndMigrate(":memory:");
+  const ctx = {
+    db,
+    config: makeConfig(),
+    stateGateway: { readBody: async () => "", writeBody: async () => {} },
+    runRecommender: async () => ({ status: 200, body: "ok" }),
+    dispatch: async (repo: string, n: number, adapter: string) => {
+      dispatched = [repo, n, adapter];
+      return { status: 200, body: JSON.stringify({ workflowId: "wf1" }) };
+    },
+    refreshEpics: async () => ({ status: 200, body: "ok" }),
+  } satisfies DaemonHostContext;
+
+  const hosted = dashboardHostExtras(ctx);
+  dispose = hosted.dispose;
+  server = new HookServer();
+  server.start(0, hosted.routes);
+  const base = `http://127.0.0.1:${server.port}`;
+
+  const res = await fetch(`${base}/api/epics/${encodeURIComponent("o/r")}/7/dispatch`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ adapter: "claude" }),
+  });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ workflowId: "wf1" });
+  expect(dispatched).toEqual(["o/r", 7, "claude"]);
+
+  db.close();
+});
+
 test("dispose clears the process-global rate-limit observer (no broadcast after teardown)", async () => {
   const db = openAndMigrate(":memory:");
   const bus = new DashboardEventBus();
