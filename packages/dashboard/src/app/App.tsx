@@ -128,7 +128,9 @@ export function App() {
   }, []);
 
   const watch = useCallback((session: string) => {
-    void api.attach(session, "watch");
+    // Fire-and-forget (a watch attach changes no dashboard state), but surface a
+    // failure rather than swallow it — the copy-command path is the fallback.
+    api.attach(session, "watch").catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   const takeControl = useCallback(

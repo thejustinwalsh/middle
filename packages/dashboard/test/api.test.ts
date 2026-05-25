@@ -180,6 +180,19 @@ describe("dashboard JSON API", () => {
     expect(banner.adapters.find((a) => a.adapter === "claude")?.status).toBe("AVAILABLE");
   });
 
+  test("GET /api/sessions/:session/events validates the limit param", async () => {
+    seedWorkflow(db, { id: "w1", repo: "o/alpha", state: "running", sessionName: "sess-7" });
+    await start();
+    // An unsafe integer (`Number.isInteger` true but not `isSafeInteger`) is rejected.
+    const unsafe = await fetch(`${base}/api/sessions/sess-7/events?limit=9007199254740992`);
+    expect(unsafe.status).toBe(400);
+    const negative = await fetch(`${base}/api/sessions/sess-7/events?limit=0`);
+    expect(negative.status).toBe(400);
+    const ok = await fetch(`${base}/api/sessions/sess-7/events?limit=50`);
+    expect(ok.status).toBe(200);
+    expect(Array.isArray(await ok.json())).toBe(true);
+  });
+
   test("unknown /api routes 404 as JSON", async () => {
     await start();
     const res = await fetch(`${base}/api/nope`);

@@ -7,9 +7,10 @@
  *
  * Producers (the daemon, the dispatcher's rate-limit observer, the hook store)
  * call `broadcastGlobal` / `broadcastRepo` / `broadcastSession`; the SSE routes
- * call `serve*`. Empty hubs linger in the map (bounded by repos + live sessions)
- * — their heartbeat self-stops with the last subscriber, so an idle channel
- * holds no timer.
+ * call `serve`. A hub's heartbeat self-stops with its last subscriber, and the
+ * bus sweeps drained (zero-subscriber) hubs out of the map on the next `serve`,
+ * so the map stays bounded by channels with live subscribers — it doesn't grow
+ * with every repo/session ever touched.
  */
 
 import { type Event, EventHub, type EventHubOptions } from "@middle/dispatcher/src/event-hub.ts";
@@ -48,7 +49,25 @@ export class DashboardEventBus {
 
   /** Serve a new SSE subscriber on a channel (a `connected` frame, then live frames). */
   serve(channel: string, req: Request, initEvents: Event[] = []): Response {
+    // Sweep hubs that have drained to zero subscribers before adding a new one.
+    // A hub with no subscribers carries no live state (its heartbeat already
+    // self-stopped), so dropping it is safe — a later subscriber or broadcast
+    // re-creates it lazily. This bounds the map to channels with live (or
+    // just-served) subscribers rather than every channel ever touched.
+    this.#pruneEmpty(channel);
     return this.#hub(channel).serve(req, initEvents);
+  }
+
+  /** Drop every hub with no current subscribers, except `keep` (about to be served). */
+  #pruneEmpty(keep: string): void {
+    for (const [key, hub] of this.#hubs) {
+      if (key !== keep && hub.subscriberCount() === 0) this.#hubs.delete(key);
+    }
+  }
+
+  /** Live channel (hub) count — for observability and tests. */
+  channelCount(): number {
+    return this.#hubs.size;
   }
 
   /** Fan an event out to a channel's subscribers. */

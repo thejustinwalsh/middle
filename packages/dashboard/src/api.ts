@@ -181,7 +181,10 @@ async function handleSessions(
     if (action === "events" && method === "GET") {
       const limitParam = new URL(req.url).searchParams.get("limit");
       const limit = limitParam !== null ? Number(limitParam) : undefined;
-      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+      // Reject not just non-integers but unsafe ones — `Number.isInteger(1e20)`
+      // is true, yet it would reach SQLite's LIMIT as garbage. A safe integer
+      // ≥ 1 is the contract.
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
         return badRequest("limit must be a positive integer");
       }
       const events = await deps.getSessionEvents(session, limit);
