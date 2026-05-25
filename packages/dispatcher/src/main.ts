@@ -23,16 +23,17 @@ import { collectMetrics } from "./metrics.ts";
 import type { RecommenderTrigger } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from "./rate-limits.ts";
-import { dispatchRecommender, resolveRecommenderOptions } from "./recommender-run.ts";
+import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { startRecommenderCron } from "./recommender-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
-import { killSession, status } from "./tmux.ts";
+import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
-import { pruneWorktreeAt } from "./worktree.ts";
+import { createWorktree, destroyWorktree, pruneWorktreeAt } from "./worktree.ts";
+import { buildRecommenderContext, createRecommenderWorkflow } from "./workflows/recommender.ts";
 import {
   addWorkflowObserver,
   clearWorkflowObservers,
@@ -333,14 +334,15 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   });
   void disposeRateLimitObserver; // daemon clears all observers on shutdown
 
-  // Run the recommender for a repo by checkout path: load its merged config,
-  // resolve the run options, register the repo (durable + in-memory), and fire
-  // the run on an ephemeral engine/port with the auto-dispatch trigger wired —
-  // Trigger #1: when the run completes (clean parse + auto_dispatch on), the
-  // recommender workflow fires `triggerAutoDispatch` back into THIS daemon's
-  // engine to run the loop. Shared by the `/trigger/recommender` route AND the
-  // periodic recommender cron (#135), so both behave identically. The run itself
-  // is fire-and-forget; this returns once it's launched.
+  // Run the recommender for a repo by checkout path. The recommender runs on the
+  // daemon's OWN long-lived engine (registered below), exactly like dispatch —
+  // NOT a second ephemeral engine/HookServer (the old standalone path collided
+  // with the daemon's port and its in-process second engine never processed the
+  // job). This resolves the run input (slug, state-issue number, adapter),
+  // registers the repo, then `engine.start("recommender", …)`. On a clean run the
+  // workflow's trigger-auto-dispatch step fires `scheduleAutoDispatch` back into
+  // this same engine (Trigger #1). Shared by the `/trigger/recommender` route and
+  // the cron, so both behave identically. Returns once enqueued.
   async function runRecommenderForRepo(
     repoPath: string,
   ): Promise<{ status: number; body: string }> {
@@ -356,13 +358,15 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     const resolved = await resolveRecommenderOptions(repoPath, repoConfig, getAdapter);
     if (!resolved.ok) return { status: 400, body: resolved.error };
     rememberRepoPath(resolved.options.repoSlug, repoPath);
-    void dispatchRecommender({
-      ...resolved.options,
-      dispatcherPort: 0,
-      triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
-    }).catch((error: unknown) => {
-      console.error(`[main] recommender run failed: ${(error as Error).message}`);
-    });
+    try {
+      await engine.start("recommender", {
+        repo: resolved.options.repoSlug,
+        stateIssue: resolved.options.stateIssue,
+        adapter: resolved.options.adapterName,
+      });
+    } catch (error) {
+      return { status: 500, body: `recommender enqueue failed: ${(error as Error).message}` };
+    }
     return { status: 202, body: "recommender run started" };
   }
 
@@ -460,6 +464,61 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // Register before announcing readiness: a `/control/dispatch` request is only
   // serviced on a later event-loop tick, by which point the workflow is registered.
   engine.register(createImplementationWorkflow(deps));
+
+  // Register the RECOMMENDER on this same long-lived engine (not a second
+  // ephemeral one) — so `runRecommenderForRepo`'s `engine.start("recommender")`
+  // actually runs, reusing the daemon's HookServer/sessionGate + dispatcherUrl.
+  // Per-repo settings/context resolve from the input repo's config at run time
+  // (`resolveRunSettings`/`gatherContext`), so one registration serves every
+  // managed repo — mirroring how the implementation workflow resolves per-repo.
+  engine.register(
+    createRecommenderWorkflow({
+      db,
+      getAdapter,
+      sessionGate: deps.sessionGate,
+      tmux: { newSession, sendText, sendEnter, killSession },
+      worktree: { createWorktree, destroyWorktree },
+      resolveRepoPath: (repo) => {
+        const path = repoPaths.get(repo);
+        if (path === undefined) throw new Error(`no checkout path registered for repo ${repo}`);
+        return path;
+      },
+      worktreeRoot: config.global.worktreeRoot,
+      dispatcherUrl: deps.dispatcherUrl,
+      stateIssue: ghStateIssueGateway,
+      surfaceProblem: ghSurfaceProblem,
+      triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
+      gatherContext: (repo) => {
+        const cfg = loadRepoConfig(repo);
+        if (!cfg) throw new Error(`recommender: no config for repo ${repo}`);
+        return buildRecommenderContext({
+          db,
+          repo,
+          adapters: Object.keys(cfg.adapters),
+          maxPerAdapter: cfg.limits?.maxConcurrentPerAdapter ?? {},
+          repoMax: cfg.limits?.maxConcurrent ?? cfg.global.maxConcurrent,
+          globalMax: cfg.global.maxConcurrent,
+        });
+      },
+      resolveRunSettings: (repo) => {
+        const repoPath = repoPaths.get(repo);
+        const cfg = loadRepoConfig(repo);
+        if (repoPath === undefined || !cfg) {
+          throw new Error(`recommender: repo ${repo} is not registered/configured`);
+        }
+        return {
+          schemaPath: join(repoPath, "schemas", "state-issue.v1.md"),
+          config: {
+            defaultAdapter: cfg.global.defaultAdapter,
+            autoDispatch: cfg.recommender?.autoDispatch ?? false,
+            prMode: cfg.repo?.prMode ?? "worktree",
+          },
+          repoConfig: { adapters: Object.keys(cfg.adapters) },
+          agentTimeoutMs: cfg.recommender?.agentTimeoutMs,
+        };
+      },
+    }),
+  );
 
   // Watchdog cron: every 30s, correct transcript drift then reconcile every
   // launching/running workflow (launch-timeout, tmux liveness, idle detection,
