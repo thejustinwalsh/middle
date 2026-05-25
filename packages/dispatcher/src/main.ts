@@ -345,18 +345,19 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     epicNumber: number,
     adapter: string,
   ): Promise<{ status: number; body: string }> {
-    const repoPath = repoPaths.get(repo);
+    const normalizedRepo = repo.trim();
+    const repoPath = repoPaths.get(normalizedRepo);
     if (repoPath === undefined) {
-      return { status: 400, body: JSON.stringify({ error: `unknown repo: ${repo}` }) };
+      return { status: 400, body: JSON.stringify({ error: `unknown repo: ${normalizedRepo}` }) };
     }
     if (adapter !== "claude") {
       return { status: 400, body: JSON.stringify({ error: `unknown adapter: ${adapter}` }) };
     }
-    const input = { repo, repoPath, epicNumber, adapter };
+    const input = { repo: normalizedRepo, repoPath, epicNumber, adapter };
     if (!slotAvailable(input)) {
       return {
         status: 429,
-        body: JSON.stringify({ error: `no free slot for ${adapter} in ${repo}` }),
+        body: JSON.stringify({ error: `no free slot for ${adapter} in ${normalizedRepo}` }),
       };
     }
     const workflowId = await startDispatchImpl(input, "manual");
@@ -364,22 +365,23 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       return {
         status: 409,
         body: JSON.stringify({
-          error: `Epic #${epicNumber} in ${repo} already has an active workflow`,
+          error: `Epic #${epicNumber} in ${normalizedRepo} already has an active workflow`,
         }),
       };
     }
-    scheduleAutoDispatch(repo);
-    void refreshEpics(db, repo, ghGitHub).catch(() => {}); // best-effort cache refresh after dispatch
+    scheduleAutoDispatch(normalizedRepo);
+    void refreshEpics(db, normalizedRepo, ghGitHub).catch(() => {}); // best-effort cache refresh after dispatch
     return { status: 200, body: JSON.stringify({ workflowId }) };
   }
 
   /** Refresh a repo's Epic cache on demand (the dashboard's refresh affordance). */
   async function refreshEpicsForRepo(repo: string): Promise<{ status: number; body: string }> {
-    if (!repoPaths.has(repo)) {
-      return { status: 404, body: JSON.stringify({ error: `unknown repo: ${repo}` }) };
+    const normalizedRepo = repo.trim();
+    if (!repoPaths.has(normalizedRepo)) {
+      return { status: 404, body: JSON.stringify({ error: `unknown repo: ${normalizedRepo}` }) };
     }
     try {
-      await refreshEpics(db, repo, ghGitHub);
+      await refreshEpics(db, normalizedRepo, ghGitHub);
       return { status: 200, body: JSON.stringify({ ok: true }) };
     } catch (error) {
       return { status: 502, body: JSON.stringify({ error: (error as Error).message }) };
@@ -647,6 +649,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
 
   // Epic-cache refresh: an initial pass + a fixed-cadence sweep over every known
   // repo. Best-effort — a GitHub hiccup logs and the next tick retries.
+  // Ticks are fire-and-forget per repo: a GitHub call slower than the interval
+  // can overlap the next tick, which is fine — refreshEpics wraps its writes in a
+  // single transaction, so SQLite serializes same-repo writes and each call
+  // independently completes-or-logs without corrupting the cache.
   function refreshAllEpics(): void {
     for (const repo of repoPaths.keys()) {
       void refreshEpics(db, repo, ghGitHub).catch((e: unknown) =>
