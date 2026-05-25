@@ -9,8 +9,9 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { claudeAdapter } from "@middle/adapter-claude";
-import type { AgentAdapter } from "@middle/core";
+import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { loadConfig } from "@middle/core";
+import type { Database } from "bun:sqlite";
 import { Engine } from "bunqueue/workflow";
 import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
@@ -27,7 +28,7 @@ import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { isPaused } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
-import { ghStateIssueGateway, readState } from "./state-issue.ts";
+import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
 import { killSession, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import { pruneWorktreeAt } from "./worktree.ts";
@@ -46,9 +47,9 @@ import { createImplementationWorkflow, RESUME_EVENT } from "./workflows/implemen
  * the dashboard's seams.
  */
 export type DaemonHostContext = {
-  db: ReturnType<typeof openAndMigrate>;
-  config: ReturnType<typeof loadConfig>;
-  stateGateway: typeof ghStateIssueGateway;
+  db: Database;
+  config: MiddleConfig;
+  stateGateway: StateIssueGateway;
   runRecommender: (repo: string) => Promise<{ status: number; body: string }>;
 };
 
@@ -409,18 +410,26 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       hookServer = new HookServer(new DbHookStore(db), prReadyGate, recommenderTrigger, control);
       let extraRoutes: Record<string, unknown> = {};
       if (opts.hostExtras) {
-        const hosted = opts.hostExtras({
-          db,
-          config,
-          stateGateway: ghStateIssueGateway,
-          runRecommender: async (repo: string) => {
-            const path = repoPaths.get(repo);
-            if (path === undefined) return { status: 404, body: `no checkout for ${repo}` };
-            return recommenderTrigger({ repoPath: path });
-          },
-        });
-        extraRoutes = hosted.routes;
-        hostDispose = hosted.dispose;
+        try {
+          const hosted = opts.hostExtras({
+            db,
+            config,
+            stateGateway: ghStateIssueGateway,
+            runRecommender: async (repo: string) => {
+              const path = repoPaths.get(repo);
+              if (path === undefined) return { status: 404, body: `no checkout for ${repo}` };
+              return recommenderTrigger({ repoPath: path });
+            },
+          });
+          extraRoutes = hosted.routes;
+          hostDispose = hosted.dispose;
+        } catch (error) {
+          // The dashboard mount is best-effort: a wiring failure must never take
+          // down the dispatcher (the critical service). Log and run without it.
+          console.error(
+            `[main] hostExtras failed — running without the dashboard: ${(error as Error).message}`,
+          );
+        }
       }
       hookServer.start(config.global.dispatcherPort, extraRoutes);
       return { sessionGate: hookServer, dispatcherUrl: `http://127.0.0.1:${hookServer.port}` };

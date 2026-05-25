@@ -48,7 +48,6 @@
  *
  * claude-md: true
  */
-/** Start the long-running daemon; `hostExtras` injects the dashboard. The CLI is the only caller that injects. */
 export { runDaemon } from "./main.ts";
 export type { DaemonHostContext, RunDaemonOptions } from "./main.ts";
 export { buildImplementationDeps } from "./build-deps.ts";
