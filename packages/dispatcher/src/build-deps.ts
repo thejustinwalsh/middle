@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter } from "@middle/core";
+import { type GateRunReport, runGates } from "./gates/gate-runner.ts";
 import { makePrReadyGateHandler, type PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { PlanCommentReader } from "./gates/plan-comment.ts";
+import { loadVerifyConfig, verifyConfigPath } from "./gates/verify-config.ts";
 import {
   ghGitHub,
   type GitHubGateway,
@@ -46,6 +48,18 @@ A human resolves this by **scope reduction or clarification** — or applies the
   return `🙋 **agent question** — the dispatched agent needs input to proceed.
 
 ${body}`;
+}
+
+/** Render the failed gates of a run into the nudge the agent reads (name + why + tail of output). */
+function formatGateFailures(report: GateRunReport): string {
+  return report.results
+    .filter((r) => !r.passed)
+    .map((r) => {
+      const why = r.timedOut ? "timed out" : `exit ${r.exitCode ?? "killed"}`;
+      const out = (r.stderr.trim() || r.stdout.trim() || "(no output)").slice(-1500);
+      return `### gate \`${r.name}\` failed (${why})\n$ ${r.command}\n${out}`;
+    })
+    .join("\n\n");
 }
 
 /**
@@ -177,6 +191,22 @@ export async function buildImplementationDeps(
     reviewRoundCap: args.reviewRoundCap,
     maxNudges: args.maxNudges,
     nudgeStopTimeoutMs: args.nudgeStopTimeoutMs,
+    // Verify-on-stop: run the worktree's verify.toml gates when the agent claims
+    // `done`. A missing/malformed verify.toml → skip (ok), so the enforcement is
+    // opt-in per repo (middle's own repo has one).
+    runVerifyGates: async (worktree: string) => {
+      let gates;
+      try {
+        gates = loadVerifyConfig(verifyConfigPath(worktree)).gates;
+      } catch (error) {
+        console.error(
+          `[verify-on-stop] no usable verify.toml in ${worktree} — skipping: ${(error as Error).message}`,
+        );
+        return { ok: true, report: "" };
+      }
+      const report = await runGates(gates, { cwd: worktree });
+      return { ok: report.ok, report: report.ok ? "" : formatGateFailures(report) };
+    },
   };
 
   return { deps, prReadyGate };
