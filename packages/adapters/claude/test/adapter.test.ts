@@ -261,6 +261,7 @@ describe("classifyStop", () => {
       sentinelPresent: true,
       worktree: cwd,
     });
+    expect(result.kind).toBe("asked-question");
     if (result.kind === "asked-question") {
       expect(result.sentinel).toEqual({ question: "Q" });
     }

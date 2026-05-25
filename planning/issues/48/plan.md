@@ -4,7 +4,7 @@
 **Branch:** middle-issue-48
 
 ## Goal
-Make dispatch autonomous within limits: slot accounting that gates the enqueue path, the auto-dispatch loop that consumes it, a per-repo opt-in toggle + pause/resume, runtime complexity-pause routing to `waiting-human`, and the `approved`-label override. After this Epic, with auto-dispatch enabled on middle's own repo, the recommender runs on cron and ready Epics auto-dispatch within their slot limits — and nothing dispatches over the complexity ceiling without `approved`.
+Make dispatch autonomous within limits: slot accounting that gates the enqueue path, the auto-dispatch loop that consumes it, a per-repo opt-in toggle + pause/resume, runtime complexity-pause routing to `waiting-human`, and the `approved`-label override. After this Epic, with auto-dispatch enabled on middle's own repo, ready Epics auto-dispatch within their slot limits — and nothing dispatches over the complexity ceiling without `approved`. (Scheduling the recommender on cron is out of scope here, tracked as follow-up `#135`.)
 
 ## Approach
 - Build on what already exists: `countActiveImplementationSlots` (per-adapter/total/global, recommender row excluded) is the slot-counting primitive; `rate-limits.ts` is the rate-limit source of truth; the recommender's `triggerAutoDispatch` dep is the already-stubbed seam; the implementation workflow's `asked-question` park already routes to `waiting-human`. Each phase adds the missing enforcement/wiring on top rather than re-architecting.
