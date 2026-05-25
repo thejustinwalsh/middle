@@ -128,7 +128,7 @@ type RawTable = Record<string, unknown>;
 /** Documented defaults from the build spec's "Global config" block. */
 const GLOBAL_DEFAULTS: RawTable = {
   global: {
-    dispatcher_port: 8822,
+    dispatcher_port: 4120,
     max_concurrent: 4,
     default_adapter: "claude",
     log_dir: "~/.middle/logs",

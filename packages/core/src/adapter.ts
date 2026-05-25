@@ -84,7 +84,7 @@ export type BuildPromptOpts =
 export type InstallHookOpts = {
   worktree: string;
   hookScriptPath: string; // .middle/hooks/hook.sh in the worktree
-  dispatcherUrl: string; // http://127.0.0.1:8822
+  dispatcherUrl: string; // http://127.0.0.1:4120
   sessionName: string;
   sessionToken: string; // HMAC token for hook auth
   epicNumber: number; // the Epic (or standalone issue) being dispatched
