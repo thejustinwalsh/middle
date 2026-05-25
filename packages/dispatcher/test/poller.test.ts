@@ -246,6 +246,51 @@ describe("classifyReviewOutcome", () => {
   });
 });
 
+describe("classifyReviewOutcome — CI gate", () => {
+  test("failing CI with no review feedback → resume to fix CI (CI_FAILED)", () => {
+    const v = classifyReviewOutcome(prSnapshot({ ci: "failing" }), ARMED_AT);
+    expect(v).toEqual({ outcome: "changes-requested", reviewId: null, decision: "CI_FAILED" });
+  });
+
+  test("an APPROVED review while CI is still pending is held (null) — don't end on un-built CI", () => {
+    const v = classifyReviewOutcome(
+      prSnapshot({ reviewDecision: "APPROVED", ci: "pending" }),
+      ARMED_AT,
+    );
+    expect(v).toBeNull();
+  });
+
+  test("an APPROVED review with passing CI resolves", () => {
+    const v = classifyReviewOutcome(
+      prSnapshot({ reviewDecision: "APPROVED", ci: "passing" }),
+      ARMED_AT,
+    );
+    expect(v).toEqual({ outcome: "resolved", reviewId: null, decision: "APPROVED" });
+  });
+
+  test("explicit review feedback wins over red CI (address the review, which greens CI)", () => {
+    const v = classifyReviewOutcome(
+      prSnapshot({ labels: ["changes-requested"], ci: "failing" }),
+      ARMED_AT,
+    );
+    expect(v).toEqual({
+      outcome: "changes-requested",
+      reviewId: null,
+      decision: "CHANGES_REQUESTED",
+    });
+  });
+
+  test("absent CI (`none`) is non-blocking — the pre-CI review loop is unchanged", () => {
+    const v = classifyReviewOutcome(prSnapshot({ reviewDecision: "APPROVED" }), ARMED_AT);
+    expect(v).toEqual({ outcome: "resolved", reviewId: null, decision: "APPROVED" });
+  });
+
+  test("failing CI but no PR change and no review → still CI_FAILED (red build is actionable)", () => {
+    const v = classifyReviewOutcome(prSnapshot({ ci: "failing", reviewDecision: null }), ARMED_AT);
+    expect(v?.decision).toBe("CI_FAILED");
+  });
+});
+
 describe("runPoller — answered-question", () => {
   test("a new human reply fires epic-<n>-answered exactly once (idempotent across passes)", async () => {
     const id = seedParked("answered-question");
