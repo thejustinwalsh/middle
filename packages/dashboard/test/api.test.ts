@@ -193,6 +193,53 @@ describe("dashboard JSON API", () => {
     expect(Array.isArray(await ok.json())).toBe(true);
   });
 
+  test("POST /api/repos/:repo/pause validates untilMs", async () => {
+    await start();
+    const enc = encodeURIComponent;
+    // Non-integer, unsafe-integer, negative, and non-number all reject — a
+    // malformed untilMs must not silently become an *indefinite* pause.
+    for (const untilMs of [1.5, 9007199254740992, -1, "soon", null]) {
+      const res = await fetch(`${base}/api/repos/${enc("o/alpha")}/pause`, {
+        method: "POST",
+        body: JSON.stringify({ untilMs }),
+      });
+      expect(res.status).toBe(400);
+    }
+    // A valid future timestamp is accepted, and so is an omitted untilMs (which
+    // is the intended way to pause indefinitely).
+    const valid = await fetch(`${base}/api/repos/${enc("o/alpha")}/pause`, {
+      method: "POST",
+      body: JSON.stringify({ untilMs: Date.now() + 3600_000 }),
+    });
+    expect(valid.status).toBe(200);
+    const indefinite = await fetch(`${base}/api/repos/${enc("o/alpha")}/pause`, { method: "POST" });
+    expect(indefinite.status).toBe(200);
+  });
+
+  test("a runner with no session_name is reachable by its workflow id", async () => {
+    // No sessionName → the list surfaces the workflow id as the session, and the
+    // Inspector/attach lookups must resolve by that same id rather than 404.
+    seedWorkflow(db, { id: "w-noname", repo: "o/alpha", epicNumber: 9, state: "running" });
+    await start();
+
+    const detail = (await (
+      await fetch(`${base}/api/repos/${encodeURIComponent("o/alpha")}`)
+    ).json()) as RepoDetail;
+    const session = detail.inFlight[0]?.session;
+    expect(session).toBe("w-noname"); // fell back to the id
+
+    const panel = await fetch(`${base}/api/sessions/${encodeURIComponent(session ?? "")}`);
+    expect(panel.status).toBe(200);
+    expect(((await panel.json()) as RunnerPanel).workflowId).toBe("w-noname");
+  });
+
+  test("a malformed percent-encoded path segment is a 400, not a 500", async () => {
+    await start();
+    const res = await fetch(`${base}/api/%ZZ`);
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toHaveProperty("error");
+  });
+
   test("unknown /api routes 404 as JSON", async () => {
     await start();
     const res = await fetch(`${base}/api/nope`);

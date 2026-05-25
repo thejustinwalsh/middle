@@ -45,7 +45,13 @@ export async function handleApi(req: Request, deps: DashboardDeps): Promise<Resp
 
   const method = req.method;
   // segments[0] is "api"; decode the rest (repo = owner/name arrives encoded).
-  const rest = segments.slice(1).map((s) => decodeURIComponent(s));
+  // Malformed percent-encoding throws — turn it into a 400, not an uncaught 500.
+  let rest: string[];
+  try {
+    rest = segments.slice(1).map((s) => decodeURIComponent(s));
+  } catch {
+    return badRequest("invalid URL encoding in path segment");
+  }
   const [resource, ...tail] = rest;
 
   if (resource === "banner" && tail.length === 0 && method === "GET") {
@@ -133,11 +139,17 @@ async function handleRepos(
     const action = tail[1];
     if (action === "pause") {
       const body = await readJson(req);
-      const until =
-        typeof body.untilMs === "number" && Number.isInteger(body.untilMs)
-          ? body.untilMs
-          : undefined;
-      await deps.pauseRepo(repo, until);
+      // Reject a malformed untilMs rather than silently coercing it to undefined
+      // (which would pause the repo *indefinitely*). Same safe-integer contract
+      // as the `limit` param below: an unsafe integer is garbage, not "no expiry".
+      const untilMs = body.untilMs;
+      if (
+        untilMs !== undefined &&
+        !(typeof untilMs === "number" && Number.isSafeInteger(untilMs) && untilMs >= 0)
+      ) {
+        return badRequest("untilMs must be a non-negative safe integer");
+      }
+      await deps.pauseRepo(repo, typeof untilMs === "number" ? untilMs : undefined);
       return Response.json({ ok: true });
     }
     if (action === "resume") {

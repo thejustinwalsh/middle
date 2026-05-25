@@ -205,11 +205,20 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
     return rows.map(toRunnerSummary);
   }
 
-  /** Look up a workflow row by its tmux session name. */
+  /**
+   * Look up a workflow row by the session identifier the list surfaces. That id
+   * is `session_name ?? id` (see {@link toRunnerSummary}), so an as-yet-unnamed
+   * runner is listed under its workflow id — resolve by that same fallback here,
+   * or the Inspector/attach/release lookups 404 on rows the list just returned.
+   */
   function rowBySession(session: string): WorkflowRow | null {
     return db
-      .query(`SELECT ${WORKFLOW_COLUMNS} FROM workflows WHERE session_name = ? LIMIT 1`)
-      .get(session) as WorkflowRow | null;
+      .query(
+        `SELECT ${WORKFLOW_COLUMNS} FROM workflows
+         WHERE session_name = ? OR (session_name IS NULL AND id = ?)
+         LIMIT 1`,
+      )
+      .get(session, session) as WorkflowRow | null;
   }
 
   return {

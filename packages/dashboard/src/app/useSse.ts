@@ -10,8 +10,16 @@
  */
 import { useEffect, useRef } from "react";
 
+/** Map of SSE event names to payload handlers; each receives the JSON-decoded `data` (or `null` for a body-less frame). */
 export type SseHandlers = Record<string, (data: unknown) => void>;
 
+/**
+ * Subscribe to a named-event SSE stream. Opens one `EventSource` per `url` and
+ * dispatches each frame to the matching handler (always the latest handler map,
+ * via a ref, so re-renders don't tear down the connection). `url === null`
+ * subscribes to nothing; the only thing that re-opens the stream is a `url`
+ * change or a change to the set of handled event names.
+ */
 export function useEventStream(url: string | null, handlers: SseHandlers): void {
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;

@@ -4,7 +4,7 @@
  * buttons per adapter. Every change goes through the API and the parent refetches
  * `/api/settings`, so the UI always reflects persisted state.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { GlobalBanner, SettingsWire } from "../../wire.ts";
 
 export function Settings({
@@ -24,6 +24,14 @@ export function Settings({
 }) {
   const [maxConcurrent, setMaxConcurrent] = useState(String(settings.global.maxConcurrent));
   const [defaultAdapter, setDefaultAdapter] = useState(settings.global.defaultAdapter);
+
+  // The parent refetches `/api/settings` after every save (and on each poll
+  // tick), so reflect the persisted values back into the inputs — otherwise an
+  // invalid draft the server stripped would linger in the form.
+  useEffect(() => {
+    setMaxConcurrent(String(settings.global.maxConcurrent));
+    setDefaultAdapter(settings.global.defaultAdapter);
+  }, [settings.global.maxConcurrent, settings.global.defaultAdapter]);
 
   function saveGlobal() {
     const n = Number(maxConcurrent);

@@ -32,15 +32,27 @@
  *
  * claude-md: false
  */
+/** Start the dashboard `Bun.serve` (API + SSE + bundled SPA); `DASHBOARD_IDLE_TIMEOUT_SECONDS` is its idle-socket timeout. */
 export { createDashboardServer, DASHBOARD_IDLE_TIMEOUT_SECONDS } from "./server.ts";
+/** Options accepted by {@link createDashboardServer} (deps, port, whether to serve the SPA). */
 export type { DashboardServerOptions } from "./server.ts";
+/** The `/api/*` JSON router — returns a `Response`, or `undefined` for a non-API path. Usable without a live server. */
 export { handleApi } from "./api.ts";
+/** The `/events/*` SSE router — returns a `Response`, or `undefined` for a non-events path. */
 export { handleEvents } from "./sse.ts";
+/** The channel-keyed SSE bus plus the channel-key builders (`global`, `repo:<repo>`, `session:<session>`). */
 export { DashboardEventBus, GLOBAL_CHANNEL, repoChannel, sessionChannel } from "./events.ts";
+/** The rate-limit→banner event name and the wiring that rebroadcasts dispatcher rate-limit changes onto the bus. */
 export { BANNER_EVENT, bridgeRateLimitsToBus } from "./bridge.ts";
+/** The data + action seam every route delegates to (`DashboardDeps`) and the transcript-read shape it returns. */
 export type { DashboardDeps, TranscriptRead } from "./deps.ts";
+/** Build the production {@link DashboardDeps} backed by the SQLite db + GitHub state issue. */
 export { createDbDeps } from "./db-deps.ts";
+/** Options for {@link createDbDeps} (db handle, config, optional terminal/liveness/state-gateway seams). */
 export type { DbDepsOptions } from "./db-deps.ts";
+/** Build the `tmux attach` watch/control commands for a session, and the default terminal spawner. */
 export { attachCommands, spawnTerminal } from "./attach.ts";
+/** The terminal-spawn seam: given a shell command, open it (returns whether a terminal was launched). */
 export type { TerminalSpawner } from "./attach.ts";
+/** The JSON wire contract shared with the SPA (repo/runner/banner/settings shapes). */
 export type * from "./wire.ts";
