@@ -42,6 +42,9 @@ export function dashboardHostExtras(ctx: DaemonHostContext): {
   // server's fetch fallback (/health, /control/*, /hooks/*). Bun still auto-serves
   // the bundle's hashed JS/CSS assets at their own routes.
   const routes = { ...createDashboardRoutes(deps), "/": index };
+  // dispose tears down the rate-limit bridge only. The EventHub heartbeats self-stop
+  // with their last SSE subscriber, and the daemon process.exits on shutdown, so the
+  // bus needs no explicit teardown in v1 (revisit if dispose must hard-close live SSE).
   return { routes, dispose: disposeBanner };
 }
 
