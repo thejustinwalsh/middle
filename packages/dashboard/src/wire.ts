@@ -70,6 +70,8 @@ export type RunnerSummary = {
   controlledBy: "middle" | "human";
   /** Unix-ms of the last heartbeat, or null if none recorded. */
   lastHeartbeat: number | null;
+  /** Copy-paste-accurate `tmux attach` commands (server-built, never client-derived). */
+  attachCommands: AttachCommands;
 };
 
 /** The per-repo expansion: NEXT UP + IN FLIGHT + the repo's needs-human items. */

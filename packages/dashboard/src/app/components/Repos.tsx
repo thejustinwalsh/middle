@@ -1,0 +1,142 @@
+/**
+ * The Repos list: a per-repo header (slot pills + auto-dispatch state) that
+ * expands to NEXT UP (top of the recommender's ready ranking) and IN FLIGHT
+ * (the running runners). Detail is fetched lazily on expand and passed in via
+ * `details`, so a collapsed repo costs nothing.
+ */
+import type { RepoDetail, RepoSummary } from "../../wire.ts";
+import { RunnerRow } from "./RunnerRow.tsx";
+
+function SlotPills({ summary }: { summary: RepoSummary }) {
+  return (
+    <span className="slot-pills">
+      {summary.adapters.map((a) => (
+        <span key={a.adapter} className="pill">
+          {a.adapter} {a.used}/{a.max}
+        </span>
+      ))}
+      <span className="pill total">
+        total {summary.total.used}/{summary.total.max}
+      </span>
+      <span className={`pill auto ${summary.auto ? "on" : "off"}`}>
+        auto {summary.auto ? "✓" : "✗"}
+      </span>
+    </span>
+  );
+}
+
+export function RepoRow({
+  summary,
+  detail,
+  expanded,
+  now,
+  onToggle,
+  onWatch,
+  onTakeControl,
+  onOpenInspector,
+}: {
+  summary: RepoSummary;
+  detail?: RepoDetail;
+  expanded: boolean;
+  now?: number;
+  onToggle: (repo: string) => void;
+  onWatch?: (session: string) => void;
+  onTakeControl?: (session: string) => void;
+  onOpenInspector?: (session: string) => void;
+}) {
+  return (
+    <li className="repo-row" data-repo={summary.repo}>
+      <button
+        type="button"
+        className="repo-header"
+        aria-expanded={expanded}
+        onClick={() => onToggle(summary.repo)}
+      >
+        <span className="repo-name">{summary.repo}</span>
+        <SlotPills summary={summary} />
+      </button>
+      {expanded && detail ? (
+        <div className="repo-expansion">
+          <div className="next-up">
+            <h4>NEXT UP</h4>
+            {detail.nextUp.length === 0 ? (
+              <p className="empty">—</p>
+            ) : (
+              <ol>
+                {detail.nextUp.map((n) => (
+                  <li key={n.epic}>
+                    #{n.epic} · {n.adapter} · {n.subIssues} sub-issues — {n.reason}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+          <div className="in-flight">
+            <h4>IN FLIGHT</h4>
+            {detail.inFlight.length === 0 ? (
+              <p className="empty">—</p>
+            ) : (
+              <ul>
+                {detail.inFlight.map((r) => (
+                  <RunnerRow
+                    key={r.session}
+                    runner={r}
+                    now={now}
+                    onWatch={onWatch}
+                    onTakeControl={onTakeControl}
+                    onOpenInspector={onOpenInspector}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+export function Repos({
+  repos,
+  details,
+  expanded,
+  now,
+  onToggle,
+  onWatch,
+  onTakeControl,
+  onOpenInspector,
+}: {
+  repos: RepoSummary[];
+  details: Record<string, RepoDetail | undefined>;
+  expanded: Set<string>;
+  now?: number;
+  onToggle: (repo: string) => void;
+  onWatch?: (session: string) => void;
+  onTakeControl?: (session: string) => void;
+  onOpenInspector?: (session: string) => void;
+}) {
+  return (
+    <section className="repos" aria-labelledby="repos-h">
+      <h2 id="repos-h">REPOS</h2>
+      {repos.length === 0 ? (
+        <p className="empty">No repos tracked yet.</p>
+      ) : (
+        <ul>
+          {repos.map((r) => (
+            <RepoRow
+              key={r.repo}
+              summary={r}
+              detail={details[r.repo]}
+              expanded={expanded.has(r.repo)}
+              now={now}
+              onToggle={onToggle}
+              onWatch={onWatch}
+              onTakeControl={onTakeControl}
+              onOpenInspector={onOpenInspector}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
