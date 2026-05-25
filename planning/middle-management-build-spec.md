@@ -1440,6 +1440,61 @@ These keep the dogfooding honest:
 
 ---
 
+## Self-auditing: integration-verified requirements & freshness
+
+middle's recurring failure mode — observed across repos — is the agent treating
+**green tests as the artifact** and deferring the actual integration into the
+product. A feature ships unit-tested but unwired: a dashboard built as a package
+whose SPA the daemon never serves; a docs harvester that audits the inline
+surface but never produces the doc corpus. The work satisfies the *letter* of its
+acceptance criteria (a function returns X, tests pass) without the *intent* (a
+reachable, used feature). The root cause is the **requirements contract**:
+nothing demands the feature be wired into the running product and exercised by a
+test that runs the real path. And after a few iteration rounds the issues — and
+this spec — drift from the code.
+
+Three self-auditing systems close the loop: middle applying its own
+second-pass-review instinct to its *requirements*, its *definition of done*, and
+its *documents*.
+
+### 1. Requirements auditor (the keystone)
+
+A `verifying-requirements` skill plus an `mm audit-issues` check that audits each
+feature issue's acceptance criteria against an **integration rubric** and rewrites
+weak ones. The rubric: every feature issue carries ≥1 criterion that **(i)** wires
+the feature into the running product — mounted, served, invoked, reachable; not
+merely *exported* — and **(ii)** is proven by an **integration / smoke / e2e test
+that exercises that real path**, not a unit stub. "Unit tests pass" is explicitly
+insufficient. The auditor suggests concrete phrasing (e.g. "`mm start` serves the
+dashboard at `/`; a smoke test boots the daemon and GETs `/`, asserting the SPA
+shell and a live `/control/events` frame"). It runs as a **second pass inside
+`creating-github-issues`** and as a **standing backlog audit** (a recommender
+sibling), labelling issues that fail the rubric `needs-design` until hardened.
+Fixing the contract is the highest-leverage move — the artifact follows.
+
+### 2. Integration-verified definition of done
+
+The rubric is enforced **where work lands**, not only where it's filed. A
+`verify.toml` **integration gate category** (run by verify-on-stop) requires a
+feature phase to add a test that runs the actual product; the PR-ready gate /
+reviewer brief checks the integration criterion is *evidenced*, the same way it
+checks acceptance criteria. A feature that is only unit-green cannot reach ready.
+(The disconnected dashboard would have failed this gate — no smoke test boots the
+daemon and loads the SPA.)
+
+### 3. Anti-staleness reconciliation
+
+A periodic pass (a recommender sibling) diffs reality against the open issues and
+this spec after each merge: it **closes issues whose work has landed**, **flags
+spec sections that no longer match the code** (drift — e.g. a "the dashboard UI
+lands in Phase 9" line surviving past the merge), and files "reconcile the
+spec/issue" tasks. It is the document-level twin of the workflow-state reconcile
+pass (a parked workflow whose PR merged is finalized) — the same instinct applied
+to the requirements and the design doc so they do not go stale across iteration.
+
+These are intentionally "middle auditing middle," the CodeRabbit instinct turned
+on middle's own outputs. Tracked as an Epic; build order is (1) → (2) → (3).
+
 ## Things explicitly out of scope for v1
 
 - Multi-machine / multi-user dispatcher (always local, single-user).
