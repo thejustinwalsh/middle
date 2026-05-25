@@ -18,6 +18,7 @@ import type {
   SessionEvent,
 } from "../wire.ts";
 import { api } from "./api-client.ts";
+import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
 import { NeedsYou } from "./components/NeedsYou.tsx";
@@ -109,8 +110,37 @@ export function App() {
     [inspector, openInspector, refreshTop],
   );
 
+  const inspectorSession = inspector?.panel.session ?? null;
+
   return (
     <div className="app">
+      {/* Live channels: the banner updates within 2s of a rate-limit detection
+          (#57), each expanded repo refreshes on a transition, and the open
+          Inspector streams the session's hook events + runner-panel updates. */}
+      <ChannelSubscriber
+        url="/events/global"
+        handlers={{ banner: (d) => setBanner(d as BannerData) }}
+      />
+      {[...expanded].map((repo) => (
+        <ChannelSubscriber
+          key={repo}
+          url={`/events/repos/${encodeURIComponent(repo)}`}
+          handlers={{
+            repo: () => void refreshDetail(repo),
+            workflow: () => void refreshDetail(repo),
+          }}
+        />
+      ))}
+      <ChannelSubscriber
+        url={inspectorSession ? `/events/sessions/${encodeURIComponent(inspectorSession)}` : null}
+        handlers={{
+          "session-event": (d) =>
+            setInspector((cur) =>
+              cur ? { ...cur, events: [...cur.events, d as SessionEvent] } : cur,
+            ),
+          panel: (d) => setInspector((cur) => (cur ? { ...cur, panel: d as RunnerPanel } : cur)),
+        }}
+      />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error}</div> : null}
       <main>

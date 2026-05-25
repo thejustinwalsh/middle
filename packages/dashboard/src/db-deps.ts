@@ -14,7 +14,6 @@
 
 import type { Database } from "bun:sqlite";
 import type { MiddleConfig } from "@middle/core";
-import type { EventHub } from "@middle/dispatcher/src/event-hub.ts";
 import { getRateLimitState, markAvailable } from "@middle/dispatcher/src/rate-limits.ts";
 import {
   clearPaused,
@@ -27,6 +26,7 @@ import { updateWorkflow } from "@middle/dispatcher/src/workflow-record.ts";
 import { isParseError, type ParsedState, parseStateIssue } from "@middle/state-issue";
 import { attachCommands, spawnTerminal, type TerminalSpawner } from "./attach.ts";
 import type { DashboardDeps, TranscriptRead } from "./deps.ts";
+import type { DashboardEventBus } from "./events.ts";
 import type {
   GithubQuota,
   GlobalBanner,
@@ -60,8 +60,8 @@ export type DbDepsOptions = {
   runRecommender?: (repo: string) => Promise<{ status: number; body: string }>;
   /** Best-effort GitHub API quota for the banner. Default UNKNOWN. */
   githubQuota?: () => Promise<GithubQuota>;
-  /** The SSE hub for `/events/*`, when live. */
-  hub?: EventHub;
+  /** The channel-keyed SSE bus for `/events/*`, when live. */
+  events?: DashboardEventBus;
 };
 
 /** The workflow columns the dashboard reads (a superset of `WorkflowRecord`). */
@@ -376,7 +376,7 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
     },
 
     runRecommender: opts.runRecommender,
-    hub: opts.hub,
+    events: opts.events,
   };
 }
 

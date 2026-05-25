@@ -18,6 +18,7 @@
  * Where things live:
  * - `server.ts` — the `Bun.serve` entry (the package `main`); lazy-bundles the SPA
  * - `api.ts` — the `/api/*` route table; `sse.ts` — the `/events/*` channels
+ * - `events.ts` — the channel-keyed SSE bus; `bridge.ts` — dispatcher→bus wiring
  * - `deps.ts` — the `DashboardDeps` seam; `db-deps.ts` — its db/state-issue impl
  * - `attach.ts` — `tmux attach` command builders + terminal spawn
  * - `window.ts` — the optional `webview-bun` launcher (spawned by `mm start --window`)
@@ -35,6 +36,8 @@ export { createDashboardServer, DASHBOARD_IDLE_TIMEOUT_SECONDS } from "./server.
 export type { DashboardServerOptions } from "./server.ts";
 export { handleApi } from "./api.ts";
 export { handleEvents } from "./sse.ts";
+export { DashboardEventBus, GLOBAL_CHANNEL, repoChannel, sessionChannel } from "./events.ts";
+export { BANNER_EVENT, bridgeRateLimitsToBus } from "./bridge.ts";
 export type { DashboardDeps, TranscriptRead } from "./deps.ts";
 export { createDbDeps } from "./db-deps.ts";
 export type { DbDepsOptions } from "./db-deps.ts";

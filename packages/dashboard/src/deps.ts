@@ -7,7 +7,7 @@
  * real db, no GitHub. {@link ./db-deps.ts} is the production implementation.
  */
 
-import type { EventHub } from "@middle/dispatcher/src/event-hub.ts";
+import type { DashboardEventBus } from "./events.ts";
 import type {
   AttachResult,
   GlobalBanner,
@@ -89,8 +89,8 @@ export type DashboardDeps = {
   runRecommender?(repo: string): Promise<{ status: number; body: string }>;
 
   /**
-   * The SSE hub for live fan-out, when wired. Absent → the `/events/*` routes
-   * 404 (a poll-only deployment). Phase #57 wires this.
+   * The channel-keyed SSE bus for live fan-out, when wired. Absent → the
+   * `/events/*` routes 503 (a poll-only deployment; the JSON API still works).
    */
-  hub?: EventHub;
+  events?: DashboardEventBus;
 };
