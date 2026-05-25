@@ -25,6 +25,14 @@ function SlotPills({ summary }: { summary: RepoSummary }) {
   );
 }
 
+/**
+ * A single repo row: a header (slot pills + auto-dispatch state) that, when
+ * `expanded` and its `detail` has loaded, reveals NEXT UP and IN FLIGHT. The
+ * header click delegates to `onToggle`; the runner affordances
+ * (`onWatch`/`onTakeControl`/`onOpenInspector`) pass through to each
+ * {@link RunnerRow}. A collapsed row (or one whose `detail` hasn't arrived)
+ * renders only the header.
+ */
 export function RepoRow({
   summary,
   detail,

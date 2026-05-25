@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { renderToStaticMarkup } from "react-dom/server";
-import { api } from "../src/app/api-client.ts";
+import { ApiError, api } from "../src/app/api-client.ts";
 import { GlobalBanner } from "../src/app/components/GlobalBanner.tsx";
 import { Inspector } from "../src/app/components/Inspector.tsx";
 import { NeedsYou } from "../src/app/components/NeedsYou.tsx";
@@ -196,5 +196,11 @@ describe("api-client against a live server", () => {
     await api.release("mm-alpha-247");
     const released = await api.session("mm-alpha-247");
     expect(released.controlledBy).toBe("middle");
+  });
+
+  test("api.runRecommender surfaces a non-2xx as an ApiError", async () => {
+    // These deps wire no recommender trigger → the route 404s. The client must
+    // throw (like every other method) rather than resolve the raw fetch silently.
+    await expect(api.runRecommender("o/alpha")).rejects.toThrow(ApiError);
   });
 });

@@ -58,6 +58,12 @@ async function errorDetail(res: Response): Promise<string> {
 
 const enc = encodeURIComponent;
 
+/**
+ * The typed dashboard API surface — the single place the SPA talks to the
+ * server. Every method resolves with parsed JSON (or `void` for action
+ * endpoints) and throws {@link ApiError} on a non-2xx response, so callers get
+ * one consistent failure mode to surface in the error bar.
+ */
 export const api = {
   banner: () => getJson<GlobalBanner>("/api/banner"),
   repos: () => getJson<RepoSummary[]>("/api/repos"),
@@ -83,8 +89,13 @@ export const api = {
       untilMs !== undefined ? { untilMs } : {},
     ),
   resumeRepo: (repo: string) => postJson<{ ok: true }>(`/api/repos/${enc(repo)}/resume`),
-  runRecommender: (repo: string) =>
-    fetch(`/api/repos/${enc(repo)}/run-recommender`, { method: "POST" }),
+  runRecommender: async (repo: string): Promise<void> => {
+    // Goes through the same non-2xx → ApiError path as every other method so a
+    // failed trigger surfaces rather than silently resolving (the recommender's
+    // own body/status is opaque to the SPA; success/failure is all it needs).
+    const res = await fetch(`/api/repos/${enc(repo)}/run-recommender`, { method: "POST" });
+    if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
+  },
   updateGlobalConfig: (patch: { maxConcurrent?: number; defaultAdapter?: string }) =>
     postJson<SettingsWire>("/api/settings/global", patch),
 };

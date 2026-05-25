@@ -40,58 +40,83 @@ export function App() {
   );
   const [view, setView] = useState<"dashboard" | "settings">("dashboard");
   const [settings, setSettings] = useState<SettingsWire | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ source: string; message: string } | null>(null);
 
-  const refreshSettings = useCallback(async () => {
-    setSettings(await api.settings());
-  }, []);
-
-  const saveGlobal = useCallback(
-    async (patch: { maxConcurrent?: number; defaultAdapter?: string }) => {
-      setSettings(await api.updateGlobalConfig(patch));
-    },
-    [],
-  );
-
-  const refreshTop = useCallback(async () => {
+  // Every API call funnels through here. The callbacks below are invoked
+  // fire-and-forget — `void f()` from effects/intervals, or straight from an
+  // onClick whose returned promise React drops — so an un-caught rejection would
+  // be an unhandled rejection *and* never reach the error bar. `guard` makes the
+  // failure mode uniform: surface it on the bar, clear it on the next success.
+  //
+  // Errors are keyed by `source` because the dashboard runs concurrent pollers
+  // (the top refresh + the settings refresh). A success only clears *its own*
+  // source's error, so a healthy top poll can't wipe out a live settings failure
+  // (which would otherwise flicker the bar on every 4s tick).
+  const guard = useCallback(async (source: string, work: () => Promise<void>) => {
     try {
-      const [b, r, n] = await Promise.all([api.banner(), api.repos(), api.needsYou()]);
-      setBanner(b);
-      setRepos(r);
-      setNeeds(n);
-      setError(null);
+      await work();
+      setError((cur) => (cur?.source === source ? null : cur));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ source, message: e instanceof Error ? e.message : String(e) });
     }
   }, []);
 
-  const refreshDetail = useCallback(async (repo: string) => {
-    const detail = await api.repo(repo);
-    setDetails((d) => ({ ...d, [repo]: detail }));
-  }, []);
+  const refreshSettings = useCallback(
+    () => guard("settings", async () => setSettings(await api.settings())),
+    [guard],
+  );
+
+  const saveGlobal = useCallback(
+    (patch: { maxConcurrent?: number; defaultAdapter?: string }) =>
+      guard("settings", async () => setSettings(await api.updateGlobalConfig(patch))),
+    [guard],
+  );
+
+  const refreshTop = useCallback(
+    () =>
+      guard("top", async () => {
+        const [b, r, n] = await Promise.all([api.banner(), api.repos(), api.needsYou()]);
+        setBanner(b);
+        setRepos(r);
+        setNeeds(n);
+      }),
+    [guard],
+  );
+
+  const refreshDetail = useCallback(
+    (repo: string) =>
+      guard(`detail:${repo}`, async () => {
+        const detail = await api.repo(repo);
+        setDetails((d) => ({ ...d, [repo]: detail }));
+      }),
+    [guard],
+  );
 
   const pauseRepo = useCallback(
-    async (repo: string) => {
-      await api.pauseRepo(repo);
-      await Promise.all([refreshSettings(), refreshTop()]);
-    },
-    [refreshSettings, refreshTop],
+    (repo: string) =>
+      guard("action", async () => {
+        await api.pauseRepo(repo);
+        await Promise.all([refreshSettings(), refreshTop()]);
+      }),
+    [guard, refreshSettings, refreshTop],
   );
 
   const resumeRepo = useCallback(
-    async (repo: string) => {
-      await api.resumeRepo(repo);
-      await Promise.all([refreshSettings(), refreshTop()]);
-    },
-    [refreshSettings, refreshTop],
+    (repo: string) =>
+      guard("action", async () => {
+        await api.resumeRepo(repo);
+        await Promise.all([refreshSettings(), refreshTop()]);
+      }),
+    [guard, refreshSettings, refreshTop],
   );
 
   const clearRateLimit = useCallback(
-    async (adapter: string) => {
-      await api.clearRateLimit(adapter);
-      await Promise.all([refreshSettings(), refreshTop()]);
-    },
-    [refreshSettings, refreshTop],
+    (adapter: string) =>
+      guard("action", async () => {
+        await api.clearRateLimit(adapter);
+        await Promise.all([refreshSettings(), refreshTop()]);
+      }),
+    [guard, refreshSettings, refreshTop],
   );
 
   // Initial load + poll. (Phase #57 replaces the interval with SSE.)
@@ -122,33 +147,46 @@ export function App() {
     [refreshDetail],
   );
 
-  const openInspector = useCallback(async (session: string) => {
-    const [panel, events] = await Promise.all([api.session(session), api.sessionEvents(session)]);
-    setInspector({ panel, events });
-  }, []);
+  const openInspector = useCallback(
+    (session: string) =>
+      guard("inspector", async () => {
+        const [panel, events] = await Promise.all([
+          api.session(session),
+          api.sessionEvents(session),
+        ]);
+        setInspector({ panel, events });
+      }),
+    [guard],
+  );
 
   const watch = useCallback((session: string) => {
     // Fire-and-forget (a watch attach changes no dashboard state), but surface a
     // failure rather than swallow it — the copy-command path is the fallback.
-    api.attach(session, "watch").catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    api
+      .attach(session, "watch")
+      .catch((e) =>
+        setError({ source: "inspector", message: e instanceof Error ? e.message : String(e) }),
+      );
   }, []);
 
   const takeControl = useCallback(
-    async (session: string) => {
-      await api.attach(session, "control");
-      if (inspector?.panel.session === session) await openInspector(session);
-      void refreshTop();
-    },
-    [inspector, openInspector, refreshTop],
+    (session: string) =>
+      guard("inspector", async () => {
+        await api.attach(session, "control");
+        if (inspector?.panel.session === session) await openInspector(session);
+        void refreshTop();
+      }),
+    [guard, inspector, openInspector, refreshTop],
   );
 
   const release = useCallback(
-    async (session: string) => {
-      await api.release(session);
-      if (inspector?.panel.session === session) await openInspector(session);
-      void refreshTop();
-    },
-    [inspector, openInspector, refreshTop],
+    (session: string) =>
+      guard("inspector", async () => {
+        await api.release(session);
+        if (inspector?.panel.session === session) await openInspector(session);
+        void refreshTop();
+      }),
+    [guard, inspector, openInspector, refreshTop],
   );
 
   // Load settings on first switch to the Settings view (and keep them fresh
@@ -192,7 +230,7 @@ export function App() {
         }}
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
-      {error ? <div className="error-bar">API error: {error}</div> : null}
+      {error ? <div className="error-bar">API error: {error.message}</div> : null}
       <nav className="view-nav">
         <button
           type="button"

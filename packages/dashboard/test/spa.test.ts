@@ -44,7 +44,10 @@ describe("dashboard SPA + server", () => {
   test("the bundled entry script transpiles the TSX app", async () => {
     const body = await (await fetch(`${base}/`)).text();
     const match = body.match(/src="([^"]+\.js)"/);
-    const js = await fetch(base + match![1]!);
+    expect(match).not.toBeNull();
+    const src = match?.[1];
+    expect(typeof src).toBe("string");
+    const js = await fetch(base + src);
     expect(js.status).toBe(200);
     expect(js.headers.get("content-type")).toContain("javascript");
     const code = await js.text();

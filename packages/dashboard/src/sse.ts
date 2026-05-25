@@ -23,7 +23,13 @@ export function handleEvents(req: Request, deps: DashboardDeps): Response | unde
   const bus = deps.events;
   if (!bus) return new Response("event stream unavailable (no bus wired)", { status: 503 });
 
-  const rest = segments.slice(1).map((s) => decodeURIComponent(s));
+  // Malformed percent-encoding throws — answer a 400 rather than crash the handler.
+  let rest: string[];
+  try {
+    rest = segments.slice(1).map((s) => decodeURIComponent(s));
+  } catch {
+    return new Response("invalid URL encoding in path segment", { status: 400 });
+  }
   const [kind, ...tail] = rest;
 
   if (kind === "global" && tail.length === 0) {

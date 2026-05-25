@@ -46,19 +46,29 @@ async function awaitEvent(
   timeoutMs = 2000,
 ): Promise<unknown> {
   const ctrl = new AbortController();
-  const res = await fetch(url, {
-    signal: ctrl.signal,
-    headers: { accept: "text/event-stream" },
-  });
-  const reader = res.body!.getReader();
+  // A blocking `reader.read()` (or a stuck SSE handshake) can't observe a
+  // deadline checked inline, so arm a timer that aborts the connection — the
+  // abort is what unblocks the pending fetch/read, and the catch below
+  // translates it back into the timeout error. The fetch lives *inside* the try
+  // so a timeout during connect is translated too, not leaked as a raw AbortError.
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, timeoutMs);
   const decoder = new TextDecoder();
   let buf = "";
   let connectedFired = false;
-  const deadline = Date.now() + timeoutMs;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { accept: "text/event-stream" },
+    });
+    if (!res.ok || !res.body) throw new Error(`SSE open failed (${res.status}) for ${url}`);
+    reader = res.body.getReader();
     for (;;) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for "${wantType}" on ${url}`);
       const { value, done } = await reader.read();
       if (done) throw new Error(`stream closed before "${wantType}"`);
       buf += decoder.decode(value, { stream: true });
@@ -79,9 +89,13 @@ async function awaitEvent(
         }
       }
     }
+  } catch (e) {
+    if (timedOut) throw new Error(`timed out waiting for "${wantType}" on ${url}`);
+    throw e;
   } finally {
+    clearTimeout(timer);
     ctrl.abort();
-    reader.cancel().catch(() => {});
+    reader?.cancel().catch(() => {});
   }
 }
 
@@ -133,6 +147,11 @@ describe("dashboard SSE channels", () => {
     } finally {
       dispose();
     }
+  });
+
+  test("a malformed percent-encoded channel segment is a 400, not a crash", async () => {
+    const res = await fetch(`${base}/events/repos/%ZZ`, { headers: { accept: "text/event-stream" } });
+    expect(res.status).toBe(400);
   });
 
   test("the /events/* routes 503 when no bus is wired", async () => {

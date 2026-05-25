@@ -4,16 +4,23 @@
  * monospace text with a Copy button; the text is present in the DOM regardless
  * of clipboard support, so it's always copy-paste-accurate by hand.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function CopyCommand({ command, label }: { command: string; label?: string }) {
   const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Cancel the "copied" reset timer on unmount so it never fires (and calls
+  // setState) after the chip is gone.
+  useEffect(() => () => clearTimeout(resetTimer.current), []);
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(command);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
+      // Re-copying before the previous reset fires must not leave two timers racing.
+      clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => setCopied(false), 1200);
     } catch {
       // Clipboard API unavailable (insecure context) — the visible <code> is the
       // fallback the operator selects and copies manually.

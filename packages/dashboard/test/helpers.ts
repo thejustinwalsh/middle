@@ -10,7 +10,11 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { MiddleConfig } from "@middle/core";
 import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
-import { createWorkflowRecord, updateWorkflow } from "@middle/dispatcher/src/workflow-record.ts";
+import {
+  createWorkflowRecord,
+  updateWorkflow,
+  type WorkflowState,
+} from "@middle/dispatcher/src/workflow-record.ts";
 
 /** A migrated db on a real temp file (WAL needs a path, not `:memory:`). */
 export function makeDb(): { db: Database; dir: string; cleanup: () => void } {
@@ -57,7 +61,7 @@ export type SeedWorkflow = {
   repo: string;
   epicNumber?: number | null;
   adapter?: string;
-  state?: string;
+  state?: WorkflowState;
   sessionName?: string;
   controlledBy?: "middle" | "human";
   transcriptPath?: string;
@@ -78,7 +82,7 @@ export function seedWorkflow(db: Database, w: SeedWorkflow): void {
     adapter: w.adapter ?? "claude",
   });
   updateWorkflow(db, w.id, {
-    state: (w.state as never) ?? "running",
+    state: w.state ?? "running",
     sessionName: w.sessionName,
     controlledBy: w.controlledBy,
     transcriptPath: w.transcriptPath,
