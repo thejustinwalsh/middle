@@ -339,11 +339,45 @@ ol {
 }
 
 /* Epics tab */
-.epics .epic-card { border: 1px solid var(--border, #333); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
-.epics .epic-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
-.epics .epic-progress { position: relative; height: 1rem; background: #222; border-radius: 3px; overflow: hidden; margin: 0.35rem 0; }
-.epics .epic-progress-fill { position: absolute; inset: 0 auto 0 0; background: #3a7; }
-.epics .epic-progress-label { position: relative; font-size: 0.75rem; padding-left: 0.35rem; }
-.epics .epic-agent.idle { opacity: 0.6; }
-.epics .epic-decision { font-size: 0.85rem; margin: 0.25rem 0; }
-.epics .epic-dispatch { display: flex; gap: 0.5rem; margin-top: 0.35rem; }
+.epics .epic-card {
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.epics .epic-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.epics .epic-progress {
+  position: relative;
+  height: 1rem;
+  background: #222;
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0.35rem 0;
+}
+.epics .epic-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #3a7;
+}
+.epics .epic-progress-label {
+  position: relative;
+  font-size: 0.75rem;
+  padding-left: 0.35rem;
+}
+.epics .epic-agent.idle {
+  opacity: 0.6;
+}
+.epics .epic-decision {
+  font-size: 0.85rem;
+  margin: 0.25rem 0;
+}
+.epics .epic-dispatch {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}

@@ -12,7 +12,14 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-function seedEpic(repo: string, number: number, title: string, total: number, closed: number, labels: string[] = []): void {
+function seedEpic(
+  repo: string,
+  number: number,
+  title: string,
+  total: number,
+  closed: number,
+  labels: string[] = [],
+): void {
   db.run(
     `INSERT INTO epics (repo, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
      VALUES (?, ?, ?, 'open', ?, ?, ?, 0)`,
@@ -62,16 +69,29 @@ const STATE_BODY = [
 describe("createDbDeps.listEpics", () => {
   test("joins cache progress + state-issue decision/recommendation + free slots", async () => {
     seedEpic("o/r", 247, "OAuth", 4, 2, ["epic"]);
-    db.run("INSERT INTO repo_config (repo, config_json, state_issue_number, last_synced_at) VALUES (?, ?, ?, ?)", ["o/r", "{}", 1, 0]);
+    db.run(
+      "INSERT INTO repo_config (repo, config_json, state_issue_number, last_synced_at) VALUES (?, ?, ?, ?)",
+      ["o/r", "{}", 1, 0],
+    );
     const deps = createDbDeps({
-      db, config: makeConfig(),
+      db,
+      config: makeConfig(),
       stateGateway: { readBody: async () => STATE_BODY },
     });
     const cards = await deps.listEpics("o/r");
     expect(cards).toHaveLength(1);
     const c = cards[0]!;
-    expect(c).toMatchObject({ number: 247, title: "OAuth", progress: { closed: 2, total: 4 }, runner: null });
-    expect(c.decision).toEqual({ label: "awaiting reply", oneLiner: "answer the window question", link: "http://x" });
+    expect(c).toMatchObject({
+      number: 247,
+      title: "OAuth",
+      progress: { closed: 2, total: 4 },
+      runner: null,
+    });
+    expect(c.decision).toEqual({
+      label: "awaiting reply",
+      oneLiner: "answer the window question",
+      link: "http://x",
+    });
     expect(c.dispatch.inFlight).toBe(false);
     expect(c.dispatch.recommendedAdapter).toBe("claude");
     expect(c.dispatch.freeSlots).toContainEqual({ adapter: "claude", available: true });
@@ -79,20 +99,37 @@ describe("createDbDeps.listEpics", () => {
 
   test("an in-flight workflow surfaces as the runner and flips inFlight", async () => {
     seedEpic("o/r", 9, "X", 2, 0);
-    seedWorkflow(db, { id: "wf1", repo: "o/r", epicNumber: 9, adapter: "claude", state: "running", sessionName: "o-r-9", currentSubIssue: 1 });
+    seedWorkflow(db, {
+      id: "wf1",
+      repo: "o/r",
+      epicNumber: 9,
+      adapter: "claude",
+      state: "running",
+      sessionName: "o-r-9",
+      currentSubIssue: 1,
+    });
     const deps = createDbDeps({ db, config: makeConfig() });
     const c = (await deps.listEpics("o/r"))[0]!;
-    expect(c.runner).toMatchObject({ adapter: "claude", state: "running", currentSubIssue: 1, session: "o-r-9" });
+    expect(c.runner).toMatchObject({
+      adapter: "claude",
+      state: "running",
+      currentSubIssue: 1,
+      session: "o-r-9",
+    });
     expect(c.dispatch.inFlight).toBe(true);
   });
 
   test("dispatchEpic + refreshEpics delegate to the injected callbacks", async () => {
     const deps = createDbDeps({
-      db, config: makeConfig(),
+      db,
+      config: makeConfig(),
       dispatch: async (repo, n, adapter) => ({ status: 200, body: `${repo}:${n}:${adapter}` }),
       refreshEpicsTrigger: async (repo) => ({ status: 200, body: repo }),
     });
-    expect(await deps.dispatchEpic!("o/r", 7, "claude")).toEqual({ status: 200, body: "o/r:7:claude" });
+    expect(await deps.dispatchEpic!("o/r", 7, "claude")).toEqual({
+      status: 200,
+      body: "o/r:7:claude",
+    });
     expect(await deps.refreshEpics!("o/r")).toEqual({ status: 200, body: "o/r" });
   });
 });
