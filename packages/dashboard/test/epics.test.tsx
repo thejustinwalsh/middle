@@ -50,4 +50,9 @@ describe("Epics", () => {
     expect(out).toContain("awaiting reply");
     expect(out).toContain("answer the window question");
   });
+
+  test("renders the decision link as an anchor when present", () => {
+    const out = html(card({ decision: { label: "fork tied", oneLiner: "pick one", link: "http://x/1" } }));
+    expect(out).toContain('href="http://x/1"');
+  });
 });

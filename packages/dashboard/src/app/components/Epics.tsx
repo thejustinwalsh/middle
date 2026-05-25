@@ -30,8 +30,10 @@ function DispatchControl({
   onDispatch: (repo: string, epicNumber: number, adapter: string) => void;
 }) {
   const [adapter, setAdapter] = useState(card.dispatch.recommendedAdapter ?? adapters[0] ?? "claude");
+  // An adapter absent from freeSlots has unknown availability — treat as no slot
+  // (it isn't a configured/dispatchable adapter, so the server would reject it anyway).
   const slot = card.dispatch.freeSlots.find((s) => s.adapter === adapter);
-  const noSlot = slot ? !slot.available : false;
+  const noSlot = slot ? !slot.available : true;
   const disabled = card.dispatch.inFlight || noSlot;
   return (
     <div className="epic-dispatch">
@@ -50,6 +52,7 @@ function DispatchControl({
       </select>
       <button
         type="button"
+        aria-label={`Dispatch Epic #${card.number}`}
         disabled={disabled}
         title={card.dispatch.inFlight ? "already in flight" : noSlot ? "no free slot" : ""}
         onClick={() => onDispatch(card.repo, card.number, adapter)}
