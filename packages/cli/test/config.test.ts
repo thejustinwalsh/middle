@@ -65,6 +65,27 @@ interval_minutes = 15
     expect(cfg.repo?.owner).toBe("o"); // untouched
   });
 
+  test("matches a header with a trailing comment in place (no duplicate section)", () => {
+    writeFileSync(configFile, `[recommender] # opt-in toggles\nauto_dispatch = false\n`);
+    expect(silence(() => runConfig(dir, "auto_dispatch", "true", { configFile }))).toBe(0);
+    const text = readFileSync(configFile, "utf8");
+    // Flipped in place — the section header's comment survives and no second
+    // `[recommender]` was appended.
+    expect(text).toContain("auto_dispatch = true");
+    expect(text).toContain("[recommender] # opt-in toggles");
+    expect(text.match(/^\s*\[recommender\]/gm)).toHaveLength(1);
+    expect(loadConfig({ repoPath: configFile }).recommender?.autoDispatch).toBe(true);
+  });
+
+  test("matches a header with whitespace inside the brackets (no duplicate section)", () => {
+    writeFileSync(configFile, `[ recommender ]\nauto_dispatch = false\n`);
+    expect(silence(() => runConfig(dir, "auto_dispatch", "true", { configFile }))).toBe(0);
+    const text = readFileSync(configFile, "utf8");
+    expect(text).toContain("auto_dispatch = true");
+    expect(text.match(/^\s*\[\s*recommender\s*\]/gm)).toHaveLength(1);
+    expect(loadConfig({ repoPath: configFile }).recommender?.autoDispatch).toBe(true);
+  });
+
   test("rejects an unknown key and an invalid value", () => {
     writeFileSync(configFile, `[recommender]\nauto_dispatch = false\n`);
     expect(silence(() => runConfig(dir, "nonsense", "true", { configFile }))).toBe(1);

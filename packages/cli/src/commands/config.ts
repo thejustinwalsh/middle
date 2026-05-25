@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** Overrides for {@link runConfig} — lets a caller (or a test) point at a config file other than the default. */
 export type ConfigOptions = {
   /** Override the per-repo config path (defaults to `<repoPath>/.middle/config.toml`). */
   configFile?: string;
@@ -27,15 +28,22 @@ const SETTABLE: Record<string, { section: string; normalize: (raw: string) => st
  */
 function setTomlKey(source: string, section: string, key: string, value: string): string {
   const lines = source.split("\n");
-  const headerRe = /^\s*\[([^\]]+)\]\s*$/;
+  // A TOML table header: `[section]`, tolerating whitespace inside the brackets
+  // (`[ section ]`) and a trailing line comment (`[section] # note`) — both are
+  // valid TOML the bare-`[section]` form would miss, appending a duplicate
+  // table. Returns the trimmed section name, or null if the line isn't a header.
+  const headerRe = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/;
+  const headerName = (line: string): string | null => {
+    const m = headerRe.exec(line);
+    return m ? m[1]!.trim() : null;
+  };
   // Escape the key — `SETTABLE` is the extension point, and a future key with
   // regex metacharacters must match literally, not as a pattern.
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const keyRe = new RegExp(`^(\\s*)${escapedKey}\\s*=`);
   let sectionStart = -1;
   for (let i = 0; i < lines.length; i += 1) {
-    const m = headerRe.exec(lines[i]!);
-    if (m && m[1] === section) {
+    if (headerName(lines[i]!) === section) {
       sectionStart = i;
       break;
     }
@@ -48,7 +56,7 @@ function setTomlKey(source: string, section: string, key: string, value: string)
   }
   // Scan the section body (until the next header or EOF) for the key.
   for (let i = sectionStart + 1; i < lines.length; i += 1) {
-    if (headerRe.test(lines[i]!)) break; // next section — key absent in this one
+    if (headerName(lines[i]!) !== null) break; // next section — key absent in this one
     if (keyRe.test(lines[i]!)) {
       lines[i] = lines[i]!.replace(keyRe, `$1${key} =`).replace(/=.*/, `= ${value}`);
       return lines.join("\n");
