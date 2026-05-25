@@ -110,8 +110,9 @@ const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
 /**
  * An observer notified after every {@link updateWorkflow} write. Observers fan
  * out from one write: the daemon registers one to broadcast middle's DB-only
- * state transitions (`waiting-human`, handoff-`completed`) that bunqueue's engine
- * never emits onto `/control/events` (see `main.ts`), and the dashboard registers
+ * state transitions (`launching`, `waiting-human`, `rate-limited`, `compensated`)
+ * that bunqueue's engine never emits onto `/control/events` (see `main.ts`), and
+ * the dashboard registers
  * one to nudge the affected repo's SSE channel so its views refresh live (see
  * `bridgeWorkflowsToBus`). Observers are module-level (process-scoped); each
  * registration returns its own disposer, and the daemon clears all on shutdown.

@@ -45,21 +45,25 @@ This spec is that deferred composition.
   `main()` at module top level today) into an exported `runDaemon(opts)`. It is
   no longer the process `mm start` spawns. It gains one injection seam:
 
+  > As-built note: the implementation pared the context down to exactly the
+  > primitives the dashboard's deps/bridges need — the speculative `hub`,
+  > `tmuxStatus`, `getRateLimitState`, and `repoPaths` fields weren't required
+  > (the rate-limit/workflow bridges reach the dispatcher's process-global
+  > observers directly, and `createDbDeps` resolves the rest), so they were
+  > dropped. The shipped shape is:
+
   ```ts
   export type DaemonHostContext = {
     db: Database;
     config: MiddleConfig;
-    hub: EventHub;
-    tmuxStatus: (session: string) => /* tmux status seam */;
     stateGateway: StateIssueGateway;       // ghStateIssueGateway
-    getRateLimitState: () => RateLimitState;
-    repoPaths: Map<string, string>;
+    runRecommender: (repo: string) => Promise<{ status: number; body: string }>;
   };
 
   export type RunDaemonOptions = {
     /** Inject extra HTTP routes (the dashboard) + a shutdown disposer. */
     hostExtras?: (ctx: DaemonHostContext) => {
-      routes: Record<string, RouteHandler>;
+      routes: Record<string, unknown>;
       dispose: () => void;
     };
     // existing test seams (entrypoint overrides etc.) preserved
@@ -69,8 +73,8 @@ This spec is that deferred composition.
   ```
 
   `DaemonHostContext` is **dashboard-agnostic** — defined in dispatcher, names no
-  dashboard type. `hostExtras` is called after the db/hub/state are stood up and
-  the result threaded into `HookServer.start` (see route-merge). On shutdown the
+  dashboard type. `hostExtras` is called after the db/state are stood up and the
+  result threaded into `HookServer.start` (see route-merge). On shutdown the
   daemon calls `dispose()` alongside its other teardown.
 
 - **New CLI-owned entrypoint `packages/cli/src/daemon-entry.ts`** imports both
@@ -81,20 +85,22 @@ This spec is that deferred composition.
   hostExtras: (ctx) => {
     const bus = new DashboardEventBus();
     const deps = createDbDeps({ db: ctx.db, config: ctx.config,
-                               status: ctx.tmuxStatus, stateGateway: ctx.stateGateway,
-                               events: bus, /* terminal spawner default */ });
+                               stateGateway: ctx.stateGateway,
+                               events: bus, runRecommender: ctx.runRecommender });
+    // Build routes BEFORE registering observers, so a route-build throw can't
+    // leak a registered observer (runDaemon then runs dashboard-less).
+    const routes = { ...createDashboardRoutes(deps), "/": index }; // SPA at exact "/"
     // The banner computation already lives on the deps seam (DashboardDeps.banner);
     // reuse it rather than recomputing — GlobalBanner is a dashboard wire type.
     const disposeBanner = bridgeRateLimitsToBus(bus, () => deps.banner());
-    const disposeWorkflow = bridgeWorkflowsToBus(bus, ctx); // see §Live channels
-    const routes = createDashboardRoutes(deps, { serveSpa: true });
+    const disposeWorkflow = bridgeWorkflowsToBus(bus, ctx.db); // see §Live channels
     return { routes, dispose: () => { disposeBanner(); disposeWorkflow(); } };
   }
   ```
 
 - **`packages/cli/src/commands/start.ts`**: `resolveDispatcherEntrypoint()`
   resolves the new `daemon-entry.ts` instead of `@middle/dispatcher`'s main.
-  `--window` / `[dashboard] windowed` and the `8822/` URL are unchanged.
+  `--window` / `[dashboard] windowed` are unchanged; the window URL is `4120/`.
 
 ## Route-merge (single port, `routes` + `fetch`)
 
