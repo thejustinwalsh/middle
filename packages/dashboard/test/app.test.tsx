@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ApiError, api } from "../src/app/api-client.ts";
+import { App } from "../src/app/App.tsx";
 import { GlobalBanner } from "../src/app/components/GlobalBanner.tsx";
 import { Inspector } from "../src/app/components/Inspector.tsx";
 import { NeedsYou } from "../src/app/components/NeedsYou.tsx";
@@ -14,6 +15,11 @@ import { makeConfig, makeDb, seedWorkflow } from "./helpers.ts";
 // The React views render against the wire shapes (renderToStaticMarkup), and the
 // api-client round-trips against a live server with seeded db rows — i.e. the
 // app "reads from the JSON API and renders against live data".
+
+test("App nav includes a queue tab", () => {
+  const html = renderToStaticMarkup(<App />);
+  expect(html).toContain(">queue<");
+});
 
 describe("dashboard views (static render)", () => {
   test("GlobalBanner shows per-adapter rate limits + GitHub quota", () => {

@@ -20,10 +20,12 @@ import type {
 } from "../wire.ts";
 import { api } from "./api-client.ts";
 import { type GuardError, makeGuard } from "./guard.ts";
+import { fetchControlMetrics, type ControlMetrics, type ControlWorkflowFrame } from "./control-client.ts";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
 import { NeedsYou } from "./components/NeedsYou.tsx";
+import { Queue } from "./components/Queue.tsx";
 import { Repos } from "./components/Repos.tsx";
 import { Settings } from "./components/Settings.tsx";
 
@@ -39,8 +41,10 @@ export function App() {
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
   );
-  const [view, setView] = useState<"dashboard" | "settings">("dashboard");
+  const [view, setView] = useState<"dashboard" | "queue" | "settings">("dashboard");
   const [settings, setSettings] = useState<SettingsWire | null>(null);
+  const [queueMetrics, setQueueMetrics] = useState<ControlMetrics | null>(null);
+  const [queueLive, setQueueLive] = useState<ControlWorkflowFrame[]>([]);
   const [error, setError] = useState<GuardError | null>(null);
 
   // The uniform async-error funnel for every fire-and-forget API call below —
@@ -189,6 +193,14 @@ export function App() {
     return () => clearInterval(id);
   }, [view, refreshSettings]);
 
+  // Fetch the queue metrics snapshot once when the Queue tab is opened.
+  useEffect(() => {
+    if (view !== "queue") return;
+    void fetchControlMetrics()
+      .then(setQueueMetrics)
+      .catch(() => setQueueMetrics(null));
+  }, [view]);
+
   const inspectorSession = inspector?.panel.session ?? null;
 
   return (
@@ -220,6 +232,15 @@ export function App() {
           panel: (d) => setInspector((cur) => (cur ? { ...cur, panel: d as RunnerPanel } : cur)),
         }}
       />
+      <ChannelSubscriber
+        url={view === "queue" ? "/control/events" : null}
+        handlers={{
+          workflow: (d) => {
+            const frame = d as ControlWorkflowFrame;
+            setQueueLive((prev) => [frame, ...prev.filter((p) => p.id !== frame.id)]);
+          },
+        }}
+      />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error.message}</div> : null}
       <nav className="view-nav">
@@ -229,6 +250,13 @@ export function App() {
           onClick={() => setView("dashboard")}
         >
           dashboard
+        </button>
+        <button
+          type="button"
+          className={view === "queue" ? "active" : ""}
+          onClick={() => setView("queue")}
+        >
+          queue
         </button>
         <button
           type="button"
@@ -253,6 +281,8 @@ export function App() {
             <p className="empty">Loading settings…</p>
           )}
         </main>
+      ) : view === "queue" ? (
+        <Queue metrics={queueMetrics} live={queueLive} />
       ) : (
         <main>
           <NeedsYou
