@@ -142,17 +142,11 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
     return row?.state_issue_number ?? null;
   }
 
-  /**
-   * Read + parse a repo's state issue; null on any failure (no gateway, parse
-   * error, GitHub error). When no state-issue number is configured (e.g. a test
-   * that doesn't seed `repo_config`), falls back to `readBody(repo, 0)` so
-   * gateway implementations that don't need the number (test stubs, filesystem
-   * readers) still work.
-   */
+  /** Read + parse a repo's state issue; null on any failure (no gateway, parse error, GitHub error). */
   async function readParsedState(repo: string): Promise<ParsedState | null> {
     const gw = opts.stateGateway;
-    if (!gw) return null;
-    const number = stateIssueNumber(repo) ?? 0;
+    const number = stateIssueNumber(repo);
+    if (!gw || number === null) return null;
     try {
       const parsed = parseStateIssue(await gw.readBody(repo, number));
       return isParseError(parsed) ? null : parsed;

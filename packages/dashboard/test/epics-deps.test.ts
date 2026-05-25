@@ -62,6 +62,7 @@ const STATE_BODY = [
 describe("createDbDeps.listEpics", () => {
   test("joins cache progress + state-issue decision/recommendation + free slots", async () => {
     seedEpic("o/r", 247, "OAuth", 4, 2, ["epic"]);
+    db.run("INSERT INTO repo_config (repo, config_json, state_issue_number, last_synced_at) VALUES (?, ?, ?, ?)", ["o/r", "{}", 1, 0]);
     const deps = createDbDeps({
       db, config: makeConfig(),
       stateGateway: { readBody: async () => STATE_BODY },

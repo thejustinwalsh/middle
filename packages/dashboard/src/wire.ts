@@ -156,7 +156,11 @@ export type EpicCard = {
     session: string;
     prNumber: number | null;
   } | null;
-  /** A high-value decision callout from the state issue (needs-human / blocked). */
+  /**
+   * A high-value decision callout from the state issue (needs-human / blocked).
+   * `link` is a bare URL (extracted from the state-issue's `[text](url)` markdown)
+   * — the SPA renders it directly as an `href`.
+   */
   decision: { label: string; oneLiner: string; link?: string } | null;
   /** Force-dispatch affordance state. */
   dispatch: {
