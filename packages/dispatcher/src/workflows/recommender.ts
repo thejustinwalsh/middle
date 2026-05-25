@@ -294,7 +294,14 @@ export function buildRecommenderContext(opts: {
 }
 
 type PrepareResult = { handle: WorktreeHandle };
-type BuildPromptResult = { priorBody: string; promptText: string };
+// `settings` is resolved ONCE here and threaded to the later steps (spawn,
+// verify, trigger) via ctx — so a live config edit mid-run can't mix different
+// schemaPath/config/repoConfig/agentTimeoutMs values within one execution.
+type BuildPromptResult = {
+  priorBody: string;
+  promptText: string;
+  settings: RecommenderRunSettings;
+};
 type VerifyResult = { ok: boolean; errors: string[] };
 
 /**
@@ -400,16 +407,17 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     const middleDir = join(handle.path, ".middle");
     mkdirSync(middleDir, { recursive: true });
     writeFileSync(join(middleDir, "prompt.md"), promptText);
-    return { priorBody, promptText };
+    return { priorBody, promptText, settings };
   }
 
   async function spawnRecommenderAgent(ctx: StepContext<RecommenderInput>): Promise<void> {
     const { handle } = ctx.steps["prepare-shallow-worktree"] as PrepareResult;
+    const { settings } = ctx.steps["build-prompt"] as BuildPromptResult;
     const adapter = deps.getAdapter(ctx.input.adapter);
     // Clamp the per-repo timeout to the ceiling the step backstop is sized for,
     // so the internal (specific-error) Stop-await always fires before the step's.
     const agentTimeout = Math.min(
-      runSettings(ctx.input.repo).agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+      settings.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
       MAX_AGENT_TIMEOUT_MS,
     );
     const sessionName = sessionNameFor(ctx.input);
@@ -471,7 +479,8 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
       await surface(ctx, problem);
       return { ok: false, errors: [parsed.message] };
     }
-    const result = validate(parsed, runSettings(ctx.input.repo).repoConfig);
+    const { settings } = ctx.steps["build-prompt"] as BuildPromptResult;
+    const result = validate(parsed, settings.repoConfig);
     if (!result.ok) {
       const problem = `state issue #${ctx.input.stateIssue} failed validation: ${result.errors.join("; ")}`;
       await surface(ctx, problem);
@@ -497,10 +506,9 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
 
   async function triggerAutoDispatch(ctx: StepContext<RecommenderInput>): Promise<void> {
     const verify = ctx.steps["verify-state-issue-parses"] as VerifyResult;
-    // Gate on a clean parse. Phase 7 is read-only: the runner leaves
-    // `triggerAutoDispatch` unwired, so nothing dispatches regardless of config.
-    if (!verify.ok || !runSettings(ctx.input.repo).config.autoDispatch || !deps.triggerAutoDispatch)
-      return;
+    const { settings } = ctx.steps["build-prompt"] as BuildPromptResult;
+    // Gate on a clean parse + the frozen per-run auto_dispatch setting.
+    if (!verify.ok || !settings.config.autoDispatch || !deps.triggerAutoDispatch) return;
     await deps.triggerAutoDispatch({ repo: ctx.input.repo, stateIssue: ctx.input.stateIssue });
   }
 
