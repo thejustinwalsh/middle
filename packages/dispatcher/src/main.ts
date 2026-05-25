@@ -174,10 +174,8 @@ async function main(): Promise<void> {
     };
   }
 
-  /** Load a repo's merged config from its registered checkout, or null if unavailable. */
-  function loadRepoConfig(repo: string): ReturnType<typeof loadConfig> | null {
-    const repoPath = repoPaths.get(repo);
-    if (repoPath === undefined) return null;
+  /** Load a repo's merged config from a checkout path, or null if it can't be read. */
+  function loadConfigAt(repoPath: string): ReturnType<typeof loadConfig> | null {
     try {
       return loadConfig({
         globalPath: process.env.MIDDLE_CONFIG,
@@ -188,15 +186,23 @@ async function main(): Promise<void> {
     }
   }
 
+  /** Load a repo's merged config from its registered checkout, or null if unavailable. */
+  function loadRepoConfig(repo: string): ReturnType<typeof loadConfig> | null {
+    const repoPath = repoPaths.get(repo);
+    return repoPath === undefined ? null : loadConfigAt(repoPath);
+  }
+
   /**
-   * Whether a repo has a free slot for an adapter right now (manual `mm dispatch`
-   * respects slot limits — build spec → "Auto-dispatch loop"). Conservative: an
-   * unknown repo/config reports a free slot rather than blocking a manual dispatch.
+   * Whether a manual dispatch has a free slot right now (manual `mm dispatch`
+   * respects slot limits — build spec → "Auto-dispatch loop"). Resolves caps from
+   * the request's own `repoPath`, so the gate holds even on a repo the daemon
+   * hasn't dispatched yet this lifetime (cold `repoPaths`). Conservative: an
+   * unreadable config reports a free slot rather than blocking a manual dispatch.
    */
-  function slotAvailable(repo: string, adapter: string): boolean {
-    const repoConfig = loadRepoConfig(repo);
+  function slotAvailable(input: ControlDispatchInput): boolean {
+    const repoConfig = loadConfigAt(input.repoPath);
     if (!repoConfig) return true;
-    return hasFreeSlot(getSlotState(db, repo, resolveSlotLimits(repoConfig)), adapter);
+    return hasFreeSlot(getSlotState(db, input.repo, resolveSlotLimits(repoConfig)), input.adapter);
   }
 
   /** The adapter names currently RATE_LIMITED with a reset still in the future. */

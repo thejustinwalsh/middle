@@ -28,7 +28,10 @@ const SETTABLE: Record<string, { section: string; normalize: (raw: string) => st
 function setTomlKey(source: string, section: string, key: string, value: string): string {
   const lines = source.split("\n");
   const headerRe = /^\s*\[([^\]]+)\]\s*$/;
-  const keyRe = new RegExp(`^(\\s*)${key}\\s*=`);
+  // Escape the key — `SETTABLE` is the extension point, and a future key with
+  // regex metacharacters must match literally, not as a pattern.
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const keyRe = new RegExp(`^(\\s*)${escapedKey}\\s*=`);
   let sectionStart = -1;
   for (let i = 0; i < lines.length; i += 1) {
     const m = headerRe.exec(lines[i]!);

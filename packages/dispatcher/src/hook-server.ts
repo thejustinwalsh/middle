@@ -51,12 +51,14 @@ export type ControlPlane = {
    */
   startDispatch: (input: ControlDispatchInput) => Promise<string | null>;
   /**
-   * Whether a repo has a free slot for an adapter right now. The route consults
-   * it before a manual dispatch so `mm dispatch` respects slot limits (a full
-   * queue → 429). Absent → no slot gate (the dispatch proceeds). The auto-dispatch
-   * loop does its own slot accounting and bypasses this route entirely.
+   * Whether this dispatch has a free slot right now. The route consults it before
+   * a manual dispatch so `mm dispatch` respects slot limits (a full queue → 429).
+   * Receives the full {@link ControlDispatchInput} — notably `repoPath` — so the
+   * slot caps resolve even for a repo the daemon hasn't dispatched yet this
+   * lifetime (a cold `repoPaths`). Absent → no slot gate. The auto-dispatch loop
+   * does its own slot accounting and bypasses this route entirely.
    */
-  slotAvailable?: (repo: string, adapter: string) => boolean;
+  slotAvailable?: (input: ControlDispatchInput) => boolean;
   /** Init-replay events for a fresh `/control/events` subscriber (in-flight rows). */
   initEvents?: () => Event[];
   /**
@@ -374,22 +376,19 @@ export class HookServer implements SessionGate {
       );
     }
 
+    const dispatchInput = { repo: normalizedRepo, repoPath, epicNumber, adapter };
+
     // Manual dispatch respects slot limits — refuse with 429 when the repo/adapter
     // has no free slot (build spec → "Auto-dispatch loop": manual force-dispatch
     // "still respects slot limits"). Checked before the collision reservation.
-    if (control.slotAvailable && !control.slotAvailable(normalizedRepo, adapter)) {
+    if (control.slotAvailable && !control.slotAvailable(dispatchInput)) {
       return Response.json(
         { error: `no free slot for ${adapter} in ${normalizedRepo}` },
         { status: 429 },
       );
     }
 
-    const workflowId = await control.startDispatch({
-      repo: normalizedRepo,
-      repoPath,
-      epicNumber,
-      adapter,
-    });
+    const workflowId = await control.startDispatch(dispatchInput);
     if (workflowId === null) {
       return Response.json(
         { error: `Epic #${epicNumber} in ${normalizedRepo} already has an active workflow` },
