@@ -49,8 +49,13 @@ const HEARTBEAT_FRAME = ": heartbeat\n\n";
 /** Default per-subscriber buffer depth before a slow consumer is dropped. */
 const DEFAULT_MAX_BUFFER = 256;
 
-/** Default heartbeat cadence — matches `restruct`'s 15s hub ticker. */
-const DEFAULT_HEARTBEAT_MS = 15_000;
+/**
+ * Default heartbeat cadence — matches `restruct`'s 15s hub ticker. Exported so
+ * the server hosting the SSE can size its connection idle-timeout above it (a
+ * heartbeat that fires *after* the socket idle-timeout is useless — the socket
+ * is already closed).
+ */
+export const DEFAULT_HEARTBEAT_MS = 15_000;
 
 /** Encode an {@link Event} as a single SSE frame. */
 function encodeEvent(event: Event): string {
