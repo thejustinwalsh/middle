@@ -10,7 +10,7 @@ import { ago } from "../format.ts";
 /** A coarse health class for the state pill. */
 function tone(run: RunSummary): "active" | "ok" | "bad" {
   if (run.active) return "active";
-  return run.state === "completed" || run.state === "compensated" ? "ok" : "bad";
+  return run.state === "completed" ? "ok" : "bad";
 }
 
 function RunRow({
@@ -28,7 +28,7 @@ function RunRow({
         <span className={`run-state ${tone(run)}`}>{run.state}</span>
         <span className="run-repo">{run.repo}</span>
         <span className="run-when">
-          {ago(run.startedAt, now)} ago · {Math.round(run.durationMs / 1000)}s
+          {ago(run.startedAt, now)} ago · {Math.max(0, Math.round(run.durationMs / 1000))}s
         </span>
       </button>
       {run.outputLink ? (
@@ -53,9 +53,10 @@ function Section({
   now?: number;
   onOpenInspector?: (session: string) => void;
 }) {
+  const headingId = `run-section-${title.toLowerCase()}`;
   return (
-    <section className="run-section">
-      <h3>{title}</h3>
+    <section className="run-section" aria-labelledby={headingId}>
+      <h3 id={headingId}>{title}</h3>
       {runs.length === 0 ? (
         <p className="empty">{emptyLabel}</p>
       ) : (

@@ -36,4 +36,10 @@ describe("Activity", () => {
     const out = html([run({ state: "failed", active: false })]);
     expect(out).toContain("failed");
   });
+
+  test("state pill tone: completed is ok, compensated/failed are bad", () => {
+    expect(html([run({ state: "completed", active: false })])).toContain('class="run-state ok"');
+    expect(html([run({ state: "compensated", active: false })])).toContain('class="run-state bad"');
+    expect(html([run({ state: "running", active: true })])).toContain('class="run-state active"');
+  });
 });
