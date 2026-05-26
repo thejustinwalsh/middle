@@ -87,3 +87,42 @@ genuinely wedged agent (notably on first observation after a daemon restart).
 dashboard's terminal-run duration calc, which reads `updated_at` for terminal
 rows.)
 **Evidence:** `watchdog.ts:206`; `packages/dashboard/src/db-deps.ts` duration calc.
+
+## Review round 1 (PR #156): poller cadence is doc-drift, not a code bug
+**File(s):** `packages/dispatcher/src/main.ts:600`, `packages/dispatcher/CLAUDE.md`
+**Date:** 2026-05-26
+
+**Decision:** CodeRabbit flagged the `main.ts` `startPoller` call as inheriting a
+default and asked to pin `intervalMs: 60_000` per a guideline citing
+`POLLER_INTERVAL_MS = 60_000`. Declined the bump; fixed the stale docs instead.
+**Why:** The guideline (the dispatcher CLAUDE.md) was itself stale. Commit
+`8db12e8` deliberately tuned the poller 60s→120s for real-world rate-limit safety
+(one `gh` call per parked workflow per tick, no backoff yet — #122) and made the
+interval injectable. The 120s default *is* the intended production cadence;
+bumping main.ts to 60s would undo that fix and walk the deployment back toward the
+5000/hr ceiling. The watchdog (30s) is likewise a constant inherited via
+`startWatchdog`, not pinned at the call site — so pinning only the poller would be
+inconsistent. Real defect: CLAUDE.md said `60_000` and main.ts's comment said
+"every 60s". Corrected both to 120s with the rationale + commit ref.
+**Evidence:** `8db12e8` ("tune recommender + poller timing defaults for real-world
+use"); `poller-cron.ts:16` (`POLLER_INTERVAL_MS = 120_000`); `watchdog-cron.ts:5`
+(`WATCHDOG_INTERVAL_MS = 30_000`, not injectable).
+
+## Review round 1 (PR #156): sanitize the nested `checkboxReconcile` read
+**File(s):** `packages/dispatcher/src/workflow-record.ts` (`getCheckboxReconcileState`)
+**Date:** 2026-05-26
+
+**Decision:** `getCheckboxReconcileState` now sanitizes `meta_json.checkboxReconcile`
+back to its `CheckboxReconcileState` contract instead of trusting the nested shape
+(non-object/array → default; non-string `headSha` → null; `state` rebuilt keeping
+only boolean-valued entries).
+**Why:** `readWorkflowMeta` only guards the *top-level* JSON shape, so the nested
+value could still violate the declared return type at runtime (version skew, a
+hand-edited row). This matches the validate-don't-trust posture the sibling
+`getWorkflowSource` already used — resolving the class (untrusted nested reads),
+not just the one line. A clean-eyes pass confirmed prototype-pollution is a
+non-issue here (`Object.fromEntries` writes own properties; the only consumer
+indexes by parsed sub-issue number) and that the two accessors are now the
+complete set of nested-meta readers.
+**Evidence:** `getWorkflowSource` (same file) prior art; `checkbox-revert.ts:145`
+consumer indexes `previous[box.subIssue]` by number.
