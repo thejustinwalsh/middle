@@ -66,12 +66,20 @@ describe("commitDocs", () => {
     expect(await git(repo, ["rev-parse", "HEAD"])).toBe(headBefore);
   });
 
-  test("does not commit gitignored scratch (.middle/)", async () => {
+  test("excludes middle's .middle/ scratch even when the repo does not gitignore it", async () => {
+    // Neutralize the fixture's .gitignore so .middle/ is NOT ignored — the
+    // explicit `:(exclude).middle` pathspec, not gitignore, must keep it out.
+    writeFileSync(join(repo, ".gitignore"), "");
     writeDoc(".middle/prompt.md", "scratch");
+    writeDoc(".middle/hooks/hook.sh", "#!/bin/sh\n");
     writeDoc("docs/index.md");
     const result = await commitDocs({ repo: "owner/name", worktreePath: repo });
-    expect(result!.files).toEqual(["docs/index.md"]);
     expect(result!.files).not.toContain(".middle/prompt.md");
+    expect(result!.files).not.toContain(".middle/hooks/hook.sh");
+    expect(result!.files).toContain("docs/index.md");
+    // The neutralized .gitignore is a real working-tree change, so it is committed
+    // alongside the docs — but nothing under .middle/ is.
+    expect(result!.files.some((f) => f.startsWith(".middle/"))).toBe(false);
   });
 
   test("honors a custom commit message", async () => {
