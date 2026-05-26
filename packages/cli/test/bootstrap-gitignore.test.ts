@@ -81,6 +81,13 @@ describe("removeMiddleIgnore", () => {
     expect(await removeMiddleIgnore(repo)).toBe(false);
   });
 
+  test("no-op leaves a file without a trailing newline untouched", async () => {
+    // must not rewrite purely to normalize the missing newline
+    writeFileSync(path, "node_modules/");
+    expect(await removeMiddleIgnore(repo)).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe("node_modules/");
+  });
+
   test("no file at all is a no-op", async () => {
     expect(await removeMiddleIgnore(repo)).toBe(false);
   });

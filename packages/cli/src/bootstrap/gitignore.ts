@@ -52,10 +52,12 @@ export async function removeMiddleIgnore(repo: string): Promise<boolean> {
   const path = join(repo, ".gitignore");
   if (!existsSync(path)) return false;
   const original = readFileSync(path, "utf8");
+  // Only act when a middle-owned line is actually present — otherwise this is a
+  // genuine no-op and must not rewrite the file (e.g. to normalize a missing
+  // trailing newline), which would mislead callers keying off the return value.
+  if (!original.split("\n").some((l) => isMiddleLine(l.trim()))) return false;
   const body = stripMiddleLines(original);
-  const rebuilt = body === "" ? "" : `${body}\n`;
-  if (rebuilt === original) return false;
-  if (rebuilt === "") await rm(path, { force: true });
-  else await Bun.write(path, rebuilt);
+  if (body === "") await rm(path, { force: true });
+  else await Bun.write(path, `${body}\n`);
   return true;
 }
