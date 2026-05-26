@@ -204,7 +204,7 @@ export const ghPushAndOpenPr: DocsPushSeam = async ({ repo, worktreePath, branch
   }
   if (Number(existing.stdout.trim()) > 0) return;
 
-  const bodyFile = join(tmpdir(), `middle-docs-pr-${Date.now()}.md`);
+  const bodyFile = join(tmpdir(), `middle-docs-pr-${crypto.randomUUID()}.md`);
   await writeFile(bodyFile, docsPrBody(repo, commit));
   try {
     const pr = await run(
