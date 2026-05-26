@@ -45,6 +45,30 @@ describe("classifyNotification — idle/unknown", () => {
     },
   );
 
+  test("a long whitespace-laden 'allow …' message classifies fast (no catastrophic backtracking)", () => {
+    // The `allow … to` arm must be bounded — a `.+` between whitespace anchors
+    // backtracks catastrophically on these, stalling the single-threaded daemon.
+    const inputs = [
+      `allow ${" ".repeat(6000)}`,
+      `Please allow the operation ${"x ".repeat(2000)}`,
+      `allow\n${"\n".repeat(4000)}`,
+    ];
+    for (const message of inputs) {
+      const start = performance.now();
+      classifyNotification({ message, pane: "" });
+      expect(performance.now() - start).toBeLessThan(100);
+    }
+  });
+
+  test("still matches a legitimate 'allow … to' permission request", () => {
+    expect(classifyNotification({ message: "Allow Claude to run `chmod +x`?", pane: "" })).toBe(
+      "permission",
+    );
+    expect(classifyNotification({ message: "allow the agent to use Bash", pane: "" })).toBe(
+      "permission",
+    );
+  });
+
   test("tolerates missing message/pane (undefined-safe)", () => {
     expect(
       classifyNotification({

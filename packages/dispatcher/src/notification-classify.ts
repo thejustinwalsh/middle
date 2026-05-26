@@ -22,9 +22,15 @@
  */
 export type NotificationKind = "permission" | "input" | "idle-unknown";
 
-/** A permission/approval request — the message or the on-screen dialog asks to run something. */
+/**
+ * A permission/approval request — the message or the on-screen dialog asks to run
+ * something. The `allow … to` arm is bounded (`\S+(?:\s+\S+){0,8}?`, not `.+`)
+ * deliberately: this runs on the untrusted, persisted Notification `message`, and
+ * a `.+` between whitespace anchors backtracks catastrophically on a long
+ * whitespace-laden input (a single-threaded daemon-wide stall). Keep it bounded.
+ */
 const PERMISSION_MESSAGE_RE =
-  /needs?\s+(?:your\s+)?permission|permission\s+to\s+(?:use|run)|requires?\s+(?:your\s+)?approval|wants?\s+to\s+(?:use|run)|allow\s+.+\s+to\b/i;
+  /needs?\s+(?:your\s+)?permission|permission\s+to\s+(?:use|run)|requires?\s+(?:your\s+)?approval|wants?\s+to\s+(?:use|run)|allow\s+\S+(?:\s+\S+){0,8}?\s+to\b/i;
 
 /** A Claude permission dialog as it renders in the pane (the boxed yes/no prompt). */
 const PERMISSION_PANE_RE =
@@ -39,10 +45,16 @@ const INPUT_MESSAGE_RE =
  * field) and the captured pane text. Permission outranks input: a pane showing an
  * approval dialog is a permission block even if the message reads generically.
  * Anything unrecognized is `idle-unknown` — still a block, just unattributed.
+ *
+ * Inputs are clipped before matching: both come from untrusted sources (a hook
+ * payload, a raw pane capture), and the relevant signal is always near the top —
+ * a defense-in-depth bound on regex work no matter how the patterns evolve.
  */
+const CLASSIFY_INPUT_MAX = 4096;
+
 export function classifyNotification(opts: { message: string; pane: string }): NotificationKind {
-  const message = opts.message ?? "";
-  const pane = opts.pane ?? "";
+  const message = (opts.message ?? "").slice(0, CLASSIFY_INPUT_MAX);
+  const pane = (opts.pane ?? "").slice(0, CLASSIFY_INPUT_MAX);
   if (PERMISSION_MESSAGE_RE.test(message) || PERMISSION_PANE_RE.test(pane)) return "permission";
   if (INPUT_MESSAGE_RE.test(message)) return "input";
   return "idle-unknown";

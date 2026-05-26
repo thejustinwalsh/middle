@@ -692,14 +692,49 @@ describe("notification failsafe — fast-fail backstop", () => {
     expect(tmux.killed).toHaveLength(0);
   });
 
-  test("a fresh notification after a handled one re-arms the failsafe (re-captures)", async () => {
-    // captured/intervened are OLD relative to a NEW notification → handled=false again.
-    const id = seedHandled({ kind: "input", notifAt: NOW - 10 * MIN, intervenedAt: NOW - 9 * MIN });
+  test("a repeat notification with no activity does NOT reset the kill clock — still fast-fails", async () => {
+    // The infinite-re-arm trap: a stuck agent re-emitting the same "waiting"
+    // notification must not push the deadline out. Old nudge at NOW-3min, a fresh
+    // notification at NOW-10s, but NO activity since NOW-10min → handled stays true
+    // (anchored on activity, not the notification), so the kill clock runs.
+    const id = seedHandled({ kind: "input", notifAt: NOW - 3 * MIN, intervenedAt: NOW - 3 * MIN });
+    seedNotification(id, NOW - 10_000, "Claude is waiting for your input");
+    const tmux = makeNotifTmux();
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(1);
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("notification-block:input");
+    // it escalated rather than re-capturing on the repeat notification
+    expect(tmux.sent).toHaveLength(0);
+  });
+
+  test("a fresh notification AFTER genuine activity re-arms the failsafe (re-captures)", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      // activity (NOW-4min) is newer than the old capture (NOW-9min): the agent
+      // resumed and then got stuck again → a genuinely new stall.
+      lastHeartbeat: NOW - 4 * MIN,
+      updatedAt: NOW - 4 * MIN,
+    });
+    seedNotification(id, NOW - 9 * MIN, "Claude is waiting for your input");
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 9 * MIN,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: "input", message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 9 * MIN,
+      type: NOTIFICATION_INTERVENED_EVENT,
+      payloadJson: JSON.stringify({ kind: "input" }),
+    });
     seedNotification(id, NOW - 2 * MIN, "Claude needs your permission to use Bash");
     const tmux = makeNotifTmux({ pane: "idle" });
     const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
     expect(acted).toBe(1);
-    // re-captured for the new notification rather than escalating on the stale one
+    // re-captured for the new stall rather than escalating on the stale one
     expect(getWorkflow(db, id)!.state).toBe("running");
     expect(capturedPayload(id)?.kind).toBe("permission");
     expect(tmux.sent).toHaveLength(1);
