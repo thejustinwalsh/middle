@@ -75,6 +75,10 @@ export async function handleApi(req: Request, deps: DashboardDeps): Promise<Resp
     return notFound(`no such rate-limits route: ${url.pathname}`);
   }
 
+  if (resource === "runs" && tail.length === 0 && method === "GET") {
+    return Response.json(await deps.listRuns());
+  }
+
   if (resource === "epics") {
     return handleEpics(req, deps, tail, method);
   }
