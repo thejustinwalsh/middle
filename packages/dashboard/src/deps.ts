@@ -16,6 +16,7 @@ import type {
   RepoDetail,
   RepoSummary,
   RunnerPanel,
+  RunSummary,
   SessionEvent,
   SettingsWire,
 } from "./wire.ts";
@@ -85,6 +86,9 @@ export type DashboardDeps = {
 
   /** The repo's open Epics for the browse view (cache + workflows + state-issue join). */
   listEpics(repo: string): Promise<EpicCard[]>;
+
+  /** Recent non-implementation runs (recommender + documentation) for the Activity view. */
+  listRuns(): Promise<RunSummary[]>;
 
   /**
    * Force-dispatch an Epic with a chosen adapter. `null` → no dispatch is wired

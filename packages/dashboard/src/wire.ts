@@ -173,6 +173,24 @@ export type EpicCard = {
   };
 };
 
+/** One non-implementation run (recommender / documentation) in the Activity view. */
+export type RunSummary = {
+  workflowId: string;
+  kind: "recommender" | "documentation";
+  repo: string;
+  state: string;
+  /** `session_name ?? workflowId` — always set, so the row drills into the Inspector. */
+  session: string;
+  startedAt: number;
+  updatedAt: number;
+  /** `updatedAt - startedAt` for terminal runs; `now - startedAt` while active. */
+  durationMs: number;
+  active: boolean;
+  hasTranscript: boolean;
+  /** recommender → state-issue URL; documentation → PR URL; else null. */
+  outputLink: string | null;
+};
+
 /** Per-repo config the Settings view edits. */
 export type RepoConfigWire = {
   repo: string;

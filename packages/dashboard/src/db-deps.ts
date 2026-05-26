@@ -38,6 +38,7 @@ import type {
   RepoSummary,
   RunnerPanel,
   RunnerSummary,
+  RunSummary,
   SessionEvent,
   SettingsWire,
 } from "./wire.ts";
@@ -98,6 +99,11 @@ const WORKFLOW_COLUMNS =
 /** Lifecycle states a workflow has finished in — excluded from "in flight". */
 const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as const;
 
+/** The non-implementation workflow kinds surfaced by the Activity view. */
+const NON_IMPL_KINDS = ["recommender", "documentation"] as const;
+/** Columns the Activity read projects (a subset distinct from WORKFLOW_COLUMNS). */
+const RUN_COLUMNS = "id, repo, state, session_name, created_at, updated_at, transcript_path, pr_number";
+
 /** A runner's progress string: `sub-issue m/n` when known, else the state. */
 function progressOf(row: WorkflowRow): string {
   if (row.current_sub_issue !== null) return `sub-issue ${row.current_sub_issue}`;
@@ -144,6 +150,19 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       state_issue_number: number | null;
     } | null;
     return row?.state_issue_number ?? null;
+  }
+
+  /** "See the result" link: recommender → its state issue, documentation → its PR. */
+  function runOutputLink(
+    kind: (typeof NON_IMPL_KINDS)[number],
+    repo: string,
+    prNumber: number | null,
+  ): string | null {
+    if (kind === "recommender") {
+      const n = stateIssueNumber(repo);
+      return n === null ? null : `https://github.com/${repo}/issues/${n}`;
+    }
+    return prNumber === null ? null : `https://github.com/${repo}/pull/${prNumber}`;
   }
 
   /** Read + parse a repo's state issue; null on any failure (no gateway, parse error, GitHub error). */
@@ -348,6 +367,42 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
           },
         };
       });
+    },
+
+    async listRuns(): Promise<RunSummary[]> {
+      const now = Date.now();
+      const out: RunSummary[] = [];
+      for (const kind of NON_IMPL_KINDS) {
+        const rows = db
+          .query(`SELECT ${RUN_COLUMNS} FROM workflows WHERE kind = ? ORDER BY created_at DESC LIMIT 20`)
+          .all(kind) as {
+          id: string;
+          repo: string;
+          state: string;
+          session_name: string | null;
+          created_at: number;
+          updated_at: number;
+          transcript_path: string | null;
+          pr_number: number | null;
+        }[];
+        for (const r of rows) {
+          const active = !(TERMINAL_STATES as readonly string[]).includes(r.state);
+          out.push({
+            workflowId: r.id,
+            kind,
+            repo: r.repo,
+            state: r.state,
+            session: r.session_name ?? r.id,
+            startedAt: r.created_at,
+            updatedAt: r.updated_at,
+            durationMs: active ? now - r.created_at : r.updated_at - r.created_at,
+            active,
+            hasTranscript: r.transcript_path !== null,
+            outputLink: runOutputLink(kind, r.repo, r.pr_number),
+          });
+        }
+      }
+      return out;
     },
 
     dispatchEpic: opts.dispatch,
