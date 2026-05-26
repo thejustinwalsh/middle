@@ -18,6 +18,7 @@ Closes #27
 ## Acceptance criteria
 - [ ] All sub-issues closed (#28, #29, #30, #80)
 - [x] Plan-comment guard catches a skipped plan (https://github.com/o/r/pull/86/files#diff-abc)
+- [ ] \`mm start\` serves the gate; a smoke test boots the daemon and GETs \`/gates/pr-ready\` (packages/dispatcher/test/hook-server-gates.test.ts)
 - [ ] Deferred one (deferred: https://github.com/o/r/issues/27#issuecomment-999)
 
 ## Verification
@@ -29,6 +30,7 @@ describe("parseAcceptanceCriteria", () => {
     expect(parseAcceptanceCriteria(BODY)).toEqual([
       "All sub-issues closed (#28, #29, #30, #80)",
       "Plan-comment guard catches a skipped plan (https://github.com/o/r/pull/86/files#diff-abc)",
+      "`mm start` serves the gate; a smoke test boots the daemon and GETs `/gates/pr-ready` (packages/dispatcher/test/hook-server-gates.test.ts)",
       "Deferred one (deferred: https://github.com/o/r/issues/27#issuecomment-999)",
     ]);
   });
@@ -79,15 +81,16 @@ describe("evaluatePrReady", () => {
     }
   });
 
+  const INTEGRATION = "`mm foo` serves it; a smoke test boots the daemon and GETs `/foo` (#90)";
+
   test("a `#N` reference counts as an evidence link", async () => {
-    const body = "## Acceptance criteria\n- [ ] All sub-issues closed: #28 #29\n";
+    const body = `## Acceptance criteria\n- [ ] All sub-issues closed: #28 #29\n- [ ] ${INTEGRATION}\n`;
     const result = await evaluatePrReady({ body, resolveCommentAuthor: noResolve });
     expect(result).toEqual({ decision: "allow" });
   });
 
   test("a stakeholder-deferred criterion (non-bot comment) is allowed", async () => {
-    const body =
-      "## Acceptance criteria\n- [ ] Punted (deferred: https://github.com/o/r/issues/27#issuecomment-1)\n";
+    const body = `## Acceptance criteria\n- [ ] Punted (deferred: https://github.com/o/r/issues/27#issuecomment-1)\n- [ ] ${INTEGRATION}\n`;
     const resolve: CommentAuthorResolver = async () => ({ login: "maintainer", isBot: false });
     const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
     expect(result).toEqual({ decision: "allow" });
@@ -112,5 +115,57 @@ describe("evaluatePrReady", () => {
     });
     expect(result.decision).toBe("deny");
     if (result.decision === "deny") expect(result.reason).toContain("no acceptance criteria");
+  });
+});
+
+// Integration-verified definition of done (#145): the gate blocks a feature whose
+// criteria are all evidenced but none proves an integration test, and allows one
+// that does (or that carries a human-authored exemption).
+describe("evaluatePrReady — integration evidence", () => {
+  test("denies a unit-only PR: every criterion evidenced, none an integration test", async () => {
+    const body = [
+      "## Acceptance criteria",
+      "- [ ] `parseFoo` returns a Foo (#90)",
+      "- [ ] unit tests pass (https://github.com/o/r/actions/runs/1)",
+    ].join("\n");
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: noResolve });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") expect(result.reason).toContain("integration test");
+  });
+
+  test("allows when an integration criterion is evidenced by a named test file", async () => {
+    const body = [
+      "## Acceptance criteria",
+      "- [ ] `parseFoo` returns a Foo (#90)",
+      "- [ ] `mm start` serves the SPA; a smoke test boots the daemon and GETs `/` — packages/cli/test/daemon-entry.test.ts",
+    ].join("\n");
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: noResolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
+  test("a human-authored integration-exempt annotation allows", async () => {
+    const body =
+      "## Acceptance criteria\n- [ ] pure types only (#90) (integration-exempt: https://github.com/o/r/issues/27#issuecomment-7)";
+    const resolve: CommentAuthorResolver = async () => ({ login: "maintainer", isBot: false });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
+  test("a bot-authored integration-exempt annotation is denied", async () => {
+    const body =
+      "## Acceptance criteria\n- [ ] pure types only (#90) (integration-exempt: https://github.com/o/r/issues/27#issuecomment-7)";
+    const resolve: CommentAuthorResolver = async () => ({ login: "middle[bot]", isBot: true });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") expect(result.reason).toContain("non-bot human");
+  });
+
+  test("a deferred integration criterion does not count as integration evidence", async () => {
+    const body =
+      "## Acceptance criteria\n- [ ] `mm start` serves it; a smoke test boots the daemon and GETs `/` (deferred: https://github.com/o/r/issues/27#issuecomment-1)";
+    const resolve: CommentAuthorResolver = async () => ({ login: "maintainer", isBot: false });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") expect(result.reason).toContain("integration test");
   });
 });
