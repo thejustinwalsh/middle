@@ -9,6 +9,7 @@ import { openAndMigrate } from "../src/db.ts";
 import {
   createDurableEngine,
   type OrphanedSignal,
+  type ReconcileOrphanedSignalsDeps,
   recoverEngine,
   reconcileOrphanedSignals,
 } from "../src/recovery.ts";
@@ -178,6 +179,66 @@ describe("reconcileOrphanedSignals", () => {
     expect(orphans).toHaveLength(0);
     expect(getWorkflow(db, id)?.state).toBe("completed");
   });
+
+  test("finalState is typed to terminal states only (compile-time guard)", () => {
+    // A non-terminal state must be a type error: finalizing to it would consume the
+    // wait row yet leave the workflow stuck with no recovery path. `tsc --noEmit` (the
+    // typecheck gate) enforces this — the @ts-expect-error fails the build if the type
+    // ever widens back to `WorkflowState`.
+    type FinalState = ReconcileOrphanedSignalsDeps["finalState"];
+    // @ts-expect-error — "running" is not a TerminalWorkflowState
+    const bad: FinalState = "running";
+    // @ts-expect-error — "waiting-human" is not a TerminalWorkflowState
+    const alsoBad: FinalState = "waiting-human";
+    // Every terminal state is accepted.
+    const ok: FinalState[] = ["completed", "compensated", "failed", "cancelled"];
+    void bad;
+    void alsoBad;
+    expect(ok).toHaveLength(4);
+  });
+});
+
+describe("createDurableEngine (transient-queue env guard)", () => {
+  // Exactly the vars bunqueue's `getDataPath()` coalesces (client/manager.js). Any one set
+  // would make the throwaway in-memory `Queue` persistent — the guard must reject all four.
+  const PERSISTENT_VARS = ["BUNQUEUE_DATA_PATH", "BQ_DATA_PATH", "DATA_PATH", "SQLITE_PATH"];
+
+  /** Set an env var for the duration of `fn`, restoring its prior value (or absence). */
+  function withEnv(name: string, value: string, fn: () => void): void {
+    const prev = process.env[name];
+    process.env[name] = value;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env[name];
+      else process.env[name] = prev;
+    }
+  }
+
+  for (const name of PERSISTENT_VARS) {
+    test(`throws (naming ${name}) when it is set`, () => {
+      withEnv(name, "/tmp/should-not-persist.sqlite3", () => {
+        expect(() => createDurableEngine("/tmp/ignored.sqlite3")).toThrow(name);
+      });
+    });
+  }
+
+  test("an empty-string env var still trips the guard (bunqueue coalesces with ??)", () => {
+    // `getDataPath()` uses `??`, so "" is a *set* dataPath, not a fallback — must throw.
+    withEnv("DATA_PATH", "", () => {
+      expect(() => createDurableEngine("/tmp/ignored.sqlite3")).toThrow("DATA_PATH");
+    });
+  });
+
+  test("names every offending var when several are set at once", () => {
+    withEnv("DATA_PATH", "/tmp/a", () => {
+      withEnv("SQLITE_PATH", "/tmp/b", () => {
+        expect(() => createDurableEngine("/tmp/ignored.sqlite3")).toThrow(
+          /DATA_PATH.*SQLITE_PATH/,
+        );
+      });
+    });
+  });
 });
 
 /**
@@ -190,13 +251,32 @@ describe("reconcileOrphanedSignals", () => {
 describe("recoverEngine (durable engine across restart)", () => {
   let dir: string;
   let dataPath: string;
+  const opened: Engine[] = [];
+
+  /** Track a durable engine so teardown closes it even if an assertion throws first. */
+  function durable(path: string): Engine {
+    const e = createDurableEngine(path);
+    opened.push(e);
+    return e;
+  }
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "middle-engine-"));
     dataPath = join(dir, "queue.sqlite3");
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Close every engine we opened — idempotent, so the happy-path closes above are a
+    // no-op here, while a mid-test assertion failure can't leak a durable engine + its
+    // SQLite handle into the next case.
+    for (const e of opened) {
+      try {
+        await e.close(true);
+      } catch {
+        /* already closed on the happy path */
+      }
+    }
+    opened.length = 0;
     shutdownManager();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -223,7 +303,7 @@ describe("recoverEngine (durable engine across restart)", () => {
   }
 
   test("re-arms a parked waiting execution so a later signal resumes it", async () => {
-    const e1 = createDurableEngine(dataPath);
+    const e1 = durable(dataPath);
     e1.register(parkingFlow(() => {}));
     const { id } = await e1.start("parker", { n: 1 });
     await awaitState(e1, id, "waiting");
@@ -231,7 +311,7 @@ describe("recoverEngine (durable engine across restart)", () => {
     shutdownManager(); // simulate a separate-process restart
 
     let resumePayload: unknown;
-    const e2 = createDurableEngine(dataPath);
+    const e2 = durable(dataPath);
     e2.register(
       parkingFlow((p) => {
         resumePayload = p;
@@ -266,7 +346,7 @@ describe("recoverEngine (durable engine across restart)", () => {
         await gate;
       });
 
-    const e1 = createDurableEngine(dataPath);
+    const e1 = durable(dataPath);
     e1.register(blockingFlow());
     const { id } = await e1.start("runner", { n: 1 });
     await awaitState(e1, id, "running");
@@ -274,7 +354,7 @@ describe("recoverEngine (durable engine across restart)", () => {
     shutdownManager();
 
     released = true; // would flip if the step re-ran after restart
-    const e2 = createDurableEngine(dataPath);
+    const e2 = durable(dataPath);
     e2.register(blockingFlow());
     const result = await recoverEngine(e2);
 

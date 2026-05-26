@@ -1095,6 +1095,32 @@ describe("implementation workflow — verify-on-stop gate", () => {
  * `db` persists across the restart (it survives a daemon restart in production too).
  */
 describe("implementation workflow — durable recovery across daemon restart (#116)", () => {
+  // Durable engines this describe opens. Closing them is a per-test safety net: the bodies
+  // close on the happy path, but a mid-test assertion failure must not leak a durable engine
+  // + its SQLite handle, nor leave bunqueue's singleton claimed for the next test.
+  const openedDurable: Engine[] = [];
+
+  /** Track a durable engine so teardown closes it even if an assertion throws first. */
+  function durable(path: string): Engine {
+    const e = createDurableEngine(path);
+    openedDurable.push(e);
+    return e;
+  }
+
+  afterEach(async () => {
+    for (const e of openedDurable) {
+      try {
+        await e.close(true);
+      } catch {
+        /* already closed on the happy path */
+      }
+    }
+    openedDurable.length = 0;
+    shutdownManager(); // reset the singleton the durable engines claimed
+    // Hand the file-level afterEach a fresh, valid in-memory engine to close.
+    engine = new Engine({ embedded: true });
+  });
+
   /** Wait until `id` is parked on the `waitFor` (`waiting`) on the given engine. */
   async function awaitParkedOn(e: Engine, id: string, timeoutMs = 5000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
@@ -1143,7 +1169,7 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     });
 
     // ── Engine 1: dispatch, drive to a `done` review-park, then "crash". ──
-    const e1 = createDurableEngine(queuePath);
+    const e1 = durable(queuePath);
     currentEngine = e1;
     e1.register(createImplementationWorkflow(deps));
     const { id: id0 } = await e1.start("implementation", INPUT);
@@ -1157,7 +1183,7 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     shutdownManager(); // simulate a separate-process daemon restart
 
     // ── Engine 2: fresh boot on the same store; recover, then resume. ──
-    const e2 = createDurableEngine(queuePath);
+    const e2 = durable(queuePath);
     currentEngine = e2;
     e2.register(createImplementationWorkflow(deps));
     // The durable workflow store survived: the fresh engine sees the parked exec
@@ -1180,6 +1206,10 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     const id1 = await awaitContinuation(continuationIds, 0);
     await awaitParkedOn(e2, id1);
     expect(prompts).toEqual(["initial", "resume"]); // continuation drove post-restart
+    // The continuation inherits the parked worktree (same recorded path), mirroring the
+    // in-process resume test. (That the checkout itself is reused, not recreated, is held
+    // by the single-worktree + teardown-once assertions below.)
+    expect(getWorkflow(db, id1)?.worktreePath).toBe(getWorkflow(db, id0)?.worktreePath);
     expect(readPromptBrief(id1)).toContain("address review — round 1 of 5");
 
     // Approve the continuation to end the loop cleanly; worktree torn down once.
@@ -1188,10 +1218,7 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     expectNoSessionLeak(tmux);
 
-    await e2.close(true);
-    shutdownManager();
-    // Hand the shared afterEach a fresh, valid engine to close.
-    engine = new Engine({ embedded: true });
+    await e2.close(true); // teardown re-closes idempotently if an assertion above threw
   });
 
   test("an orphaned parked signal (store lost the execution) is reconciled, not left for the poller", async () => {
@@ -1206,7 +1233,7 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     // Park a workflow, then "lose" the bunqueue store (a wiped queue db / a park
     // from before persistence shipped) by removing the dataPath before the second
     // boot — the middle `workflows` + `waitfor_signals` rows survive, the exec does not.
-    const e1 = createDurableEngine(queuePath);
+    const e1 = durable(queuePath);
     e1.register(createImplementationWorkflow(deps));
     const { id } = await e1.start("implementation", INPUT);
     await awaitParkedOn(e1, id);
@@ -1216,7 +1243,7 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     rmSync(`${queuePath}-wal`, { force: true });
     rmSync(`${queuePath}-shm`, { force: true });
 
-    const e2 = createDurableEngine(queuePath);
+    const e2 = durable(queuePath);
     e2.register(createImplementationWorkflow(deps));
     expect(e2.getExecution(id)).toBeNull(); // the store no longer has it
     await recoverEngine(e2);
@@ -1228,8 +1255,6 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     expect(getWorkflow(db, id)?.state).toBe("failed");
     expect(getWaitForSignal(db, id)).toBeNull();
 
-    await e2.close(true);
-    shutdownManager();
-    engine = new Engine({ embedded: true });
+    await e2.close(true); // teardown re-closes idempotently if an assertion above threw
   });
 });
