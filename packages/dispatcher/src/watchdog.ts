@@ -108,7 +108,7 @@ export const BLOCKED_HANDOFF_EVENT = "watchdog.blocked-handoff";
  * message, and the clipped pane snapshot. This is AC1's "record it on the workflow".
  */
 export const NOTIFICATION_CAPTURED_EVENT = "notification.captured";
-/** Event written when the failsafe nudges the agent. Payload: `{ kind, nudge }`. */
+/** Event written when the failsafe nudges the agent. Payload: `{ kind }`. */
 export const NOTIFICATION_INTERVENED_EVENT = "notification.intervened";
 
 type ReconcilableRow = {
@@ -441,8 +441,10 @@ async function safeNudge(tmux: WatchdogTmux, sessionName: string, text: string):
  *
  * Skipped while `controlled_by = 'human'` (a human will answer the notification)
  * and a no-op when the tmux surface lacks `capturePane`/`sendText`/`sendEnter`.
- * State is derived from the event rows (handled-ts ≥ notification-ts), so each
- * fresh notification re-arms the failsafe with no per-row columns.
+ * State is derived from event rows (no per-row columns): a stall is "handled"
+ * once a `notification.captured` row is newer than the last real activity, so a
+ * stuck agent re-emitting the same notification can't reset the kill clock — only
+ * genuine activity, then a fresh stall, re-arms capture.
  */
 export async function reconcileNotifications(deps: WatchdogDeps): Promise<number> {
   const tmux = deps.tmux;
@@ -459,15 +461,23 @@ export async function reconcileNotifications(deps: WatchdogDeps): Promise<number
     const notifTs = lastEventTs(deps.db, row.id, "agent.notification");
     if (notifTs === null) continue;
 
-    // "Idle since the notification": no activity newer than it. The same baseline
-    // rule 3 uses — a notification bumps neither heartbeat nor the transcript, so
-    // a quiet agent reads as `activity ≤ notifTs`; one that resumed reads newer.
+    // Anchor on real agent activity: heartbeat (tool.pre/post, and drift-corrected
+    // from the transcript) and the transcript itself. NOT `updated_at` — drift
+    // bookkeeping bumps that to wall-clock `now`, which would mask a genuine
+    // notification-idle. A notification bumps neither, so a quiet agent's activity
+    // stays older than the notification; one that resumed reads newer.
     const transcriptMs = transcriptActivityMs(deps, row.adapter, row.transcript_path);
-    const activityMs = Math.max(row.last_heartbeat ?? 0, transcriptMs ?? 0, row.updated_at);
-    if (activityMs > notifTs) continue;
+    const activityMs = Math.max(row.last_heartbeat ?? 0, transcriptMs ?? 0);
+    // No notification since the agent was last active → not stuck on one.
+    if (notifTs <= activityMs) continue;
 
+    // "Handled this streak" is anchored on activity, not on `notifTs`: a stuck
+    // agent that keeps re-emitting the *same* "waiting" notification must NOT
+    // re-arm capture each time (that would reset the kill clock forever and the
+    // run would never fast-fail). Only real activity since the capture (a genuine
+    // resume, then a fresh stall) re-arms it.
     const capturedTs = lastEventTs(deps.db, row.id, NOTIFICATION_CAPTURED_EVENT);
-    const handled = capturedTs !== null && capturedTs >= notifTs;
+    const handled = capturedTs !== null && capturedTs > activityMs;
 
     if (!handled) {
       if (now - notifTs < grace) continue; // within the grace window — let it settle.
@@ -492,8 +502,9 @@ export async function reconcileNotifications(deps: WatchdogDeps): Promise<number
       continue;
     }
 
-    // Captured + nudged for this notification, and still idle: if the nudge hasn't
-    // taken within the kill-grace, fast-fail with the captured classification.
+    // Captured + nudged this stall, and still idle: if the nudge hasn't taken
+    // within the kill-grace, fast-fail with the captured classification. Anchored
+    // on the intervention ts, so repeat notifications don't push the deadline out.
     const intervenedTs = lastEventTs(deps.db, row.id, NOTIFICATION_INTERVENED_EVENT);
     if (now - (intervenedTs ?? capturedTs!) >= killGrace) {
       await safeKillSession(tmux, row.session_name);

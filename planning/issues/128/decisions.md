@@ -31,3 +31,11 @@
 **Decision:** Track the per-notification handling ("captured at", "intervened at", kind) via `notification.captured` / `notification.intervened` event rows, compared against the latest `agent.notification` ts — no schema change.
 **Why:** Mirrors how the watchdog already marks `watchdog.idle` once per idle period via `latestEventType`. Comparing handled-ts ≥ notification-ts re-arms the failsafe naturally for each *new* notification without per-row state. Added `lastEventTs(db, id, type)` to read the latest ts of a given event type (the `firstEventTs` sibling).
 **Evidence:** `watchdog.ts` rule 3 idle-once guard; `workflow-record.ts:firstEventTs`.
+
+## Anchor idle + "handled" on real activity, not `updated_at` or `notifTs`
+**File(s):** `packages/dispatcher/src/watchdog.ts`
+**Date:** 2026-05-26
+
+**Decision:** `activityMs = max(last_heartbeat, transcriptMs)` (no `updated_at`); a stall is "handled" once `capturedTs > activityMs` (not `capturedTs >= notifTs`).
+**Why:** Two bugs the obvious formulation hides. (1) `reconcileTranscriptDrift` sets `updated_at = now` on a heartbeat correction — including `updated_at` in the activity baseline would let that bookkeeping write mask a genuine notification-idle. `last_heartbeat`/`transcriptMs` are the real activity signals. (2) Anchoring "handled" on the notification ts means a stuck agent re-emitting the *same* "waiting for input" notification every ~60s re-arms capture forever and the run never fast-fails — the exact "never hang headless" failure this issue exists to kill. Anchoring on activity instead: repeat notifications without real progress keep `handled = true`, so the kill clock runs; only genuine activity (then a fresh stall) re-arms. Each is covered by a regression test (`repeat notification ... does NOT reset the kill clock`, `fresh notification AFTER genuine activity re-arms`).
+**Evidence:** `reconcileTranscriptDrift` sets `updated_at = now`; `watchdog.test.ts` notification-failsafe suite.
