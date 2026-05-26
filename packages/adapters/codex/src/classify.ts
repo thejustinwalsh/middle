@@ -1,0 +1,105 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type {
+  BlockedSentinel,
+  HookPayload,
+  RateLimitDetection,
+  StopClassification,
+} from "@middle/core";
+
+/**
+ * Codex's rate-limit signal. The spec's deliberately generous starting pattern
+ * (`/rate.?limit|429|too many requests/i`), to be tightened as Codex's real
+ * usage-limit messages are observed on live runs. Unlike Claude's, it carries no
+ * reset timestamp — Codex's message format hasn't surfaced one, so the
+ * classification defaults `resetAt` to "unknown" rather than inventing a time.
+ */
+const RATE_LIMIT_RE = /rate.?limit|429|too many requests/i;
+
+/**
+ * Classify the agent's state at a turn-end (`Stop`) hook. The sentinel logic is
+ * identical to Claude's — the `.middle/{blocked,done,failed}.json` files are
+ * written by the universal skill, not the CLI, so their resolution is
+ * adapter-agnostic. Only the rate-limit detection differs (Codex's pattern).
+ * All sentinel paths anchor at `<worktree>/.middle/`, never `payload.cwd` (the
+ * agent may have `cd`'d into a subdirectory).
+ */
+export function classifyStop(opts: {
+  payload: HookPayload;
+  transcriptPath: string;
+  sentinelPresent: boolean;
+  worktree: string;
+}): StopClassification {
+  const middleDir = join(opts.worktree, ".middle");
+
+  if (opts.sentinelPresent) {
+    const sentinelPath = join(middleDir, "blocked.json");
+    return { kind: "asked-question", sentinelPath, sentinel: readBlockedSentinel(sentinelPath) };
+  }
+
+  if (RATE_LIMIT_RE.test(readTail(opts.transcriptPath))) {
+    return { kind: "rate-limited", resetAt: "unknown" };
+  }
+
+  if (existsSync(join(middleDir, "done.json"))) return { kind: "done" };
+
+  const failedPath = join(middleDir, "failed.json");
+  if (existsSync(failedPath)) {
+    return { kind: "failed", reason: readFailedReason(failedPath) };
+  }
+
+  return { kind: "bare-stop" };
+}
+
+/**
+ * The turn-end rate-limit detector: the same Codex pattern applied to the
+ * transcript tail, independent of `classifyStop`'s ordering so the dispatcher
+ * can update `rate_limit_state` on every stop even when the classification is a
+ * higher-priority kind. Returns null when no rate-limit signal is present.
+ */
+export function detectRateLimit(opts: {
+  payload: HookPayload;
+  transcriptPath: string;
+}): RateLimitDetection | null {
+  if (!RATE_LIMIT_RE.test(readTail(opts.transcriptPath))) return null;
+  return { resetAt: "unknown", source: "stop-hook" };
+}
+
+function readTail(path: string): string {
+  try {
+    const raw = readFileSync(path, "utf8");
+    return raw.length > 8192 ? raw.slice(-8192) : raw;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Read and tolerantly parse the `.middle/blocked.json` question sentinel. Returns
+ * `null` when the file is missing, unreadable, not JSON, or carries no string
+ * `question`; the Stop is still classified `asked-question` (the sentinel's
+ * presence is the signal), the contents are best-effort.
+ */
+function readBlockedSentinel(path: string): BlockedSentinel | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (typeof parsed.question !== "string" || parsed.question.length === 0) return null;
+    const context = typeof parsed.context === "string" ? parsed.context : undefined;
+    const kind = parsed.kind === "complexity" ? "complexity" : undefined;
+    const out: BlockedSentinel = { question: parsed.question };
+    if (context !== undefined) out.context = context;
+    if (kind !== undefined) out.kind = kind;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function readFailedReason(path: string): string {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { reason?: unknown };
+    return typeof parsed.reason === "string" ? parsed.reason : "agent reported failure";
+  } catch {
+    return "agent reported failure";
+  }
+}
