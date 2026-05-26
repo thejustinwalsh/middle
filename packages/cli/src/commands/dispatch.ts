@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { loadConfig, selectAdapter } from "@middle/core";
+import { knownAdapters } from "@middle/dispatcher/src/adapters.ts";
 import { type StartOptions, runStart } from "./start.ts";
 
 export type DispatchOptions = {
@@ -283,7 +284,14 @@ export async function runDispatch(
   // (selectAdapter rules 1–2). The rate-limit switch (rules 3–4) is the
   // recommender/auto-dispatch path's concern — a force-dispatch is an explicit
   // human act, so it doesn't second-guess a rate-limited choice here.
-  const available = Object.keys(config.adapters);
+  //
+  // "Available" = configured AND enabled AND implemented (in the registry) — the
+  // same set the daemon validates against, so a disabled or unimplemented adapter
+  // is rejected here with a clear message instead of as a late daemon 400.
+  const known = new Set(knownAdapters());
+  const available = Object.entries(config.adapters)
+    .filter(([name, a]) => a.enabled && known.has(name))
+    .map(([name]) => name);
   let adapterName: string;
   if (opts.adapter !== undefined) {
     if (!available.includes(opts.adapter)) {

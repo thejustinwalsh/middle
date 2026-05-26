@@ -333,6 +333,40 @@ describe("runDispatch — control client", () => {
     }
   });
 
+  test("a disabled adapter is rejected (exit 1), even via --adapter, before any dispatch", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
+    // Disable codex in config; --adapter codex must not dispatch.
+    const configPath = join(dir, "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        "[global]",
+        `dispatcher_port = ${server.port}`,
+        `db_path = "${join(dir, "db.sqlite3")}"`,
+        `worktree_root = "${join(dir, "worktrees")}"`,
+        `log_dir = "${join(dir, "logs")}"`,
+        "",
+        "[adapters.codex]",
+        "enabled = false",
+        "",
+      ].join("\n"),
+    );
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        adapter: "codex",
+      });
+      expect(code).toBe(1);
+      expect(dispatchBodies).toEqual([]); // never reached the daemon
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
   test("an unconfigured --adapter is rejected (exit 1) before any dispatch", async () => {
     const repoPath = makeRepo();
     const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
