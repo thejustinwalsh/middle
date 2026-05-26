@@ -11,6 +11,7 @@
  * - normalized hook events: `NormalizedEvent`, `HookEnvelope`, `isNormalizedEvent`
  * - `HOOK_SH`, `PR_READY_GATE_SH` — the hook shell-script payloads
  * - tmux-TUI helpers: `capturePane`, `sendText`, `sendKeys`, `pollPaneFor`
+ * - integration rubric: `auditIssueBody`, `isIntegrationCriterion`, `parseAcceptanceCriteria`
  *
  * Where things live:
  * - `config.ts` — config schema + `loadConfig`
@@ -18,6 +19,7 @@
  * - `events.ts` — the normalized hook-event vocabulary
  * - `hook-script.ts` — the hook shell scripts adapters install
  * - `tmux-tui.ts` — low-level tmux pane capture / key sending
+ * - `integration-rubric.ts` — the shared "integration criterion" predicate (Epic #143)
  *
  * Gotchas:
  * - None. Pure types plus small helpers; no process-level side effects.
@@ -58,3 +60,13 @@ export type {
 
 export { capturePane, sendText, sendKeys, pollPaneFor } from "./tmux-tui.ts";
 export type { SendKeysOpts, PollPaneOpts } from "./tmux-tui.ts";
+
+export {
+  auditIssueBody,
+  isIntegrationCriterion,
+  isFeatureIssue,
+  parseAcceptanceCriteria,
+  detectExemption,
+  NON_FEATURE_LABELS,
+} from "./integration-rubric.ts";
+export type { RubricFinding } from "./integration-rubric.ts";
