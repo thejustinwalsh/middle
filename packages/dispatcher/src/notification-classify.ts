@@ -27,7 +27,8 @@ const PERMISSION_MESSAGE_RE =
   /needs?\s+(?:your\s+)?permission|permission\s+to\s+(?:use|run)|requires?\s+(?:your\s+)?approval|wants?\s+to\s+(?:use|run)|allow\s+.+\s+to\b/i;
 
 /** A Claude permission dialog as it renders in the pane (the boxed yes/no prompt). */
-const PERMISSION_PANE_RE = /\bdo\s+you\s+want\s+to\s+(?:proceed|allow)\b|❯\s*\d+\.\s*(?:yes|allow)/i;
+const PERMISSION_PANE_RE =
+  /\bdo\s+you\s+want\s+to\s+(?:proceed|allow)\b|❯\s*\d+\.\s*(?:yes|allow)/i;
 
 /** An explicit "waiting for human input" notification — a genuine question. */
 const INPUT_MESSAGE_RE =
