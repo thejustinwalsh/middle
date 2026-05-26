@@ -597,10 +597,12 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     getAdapter,
   });
 
-  // GitHub poller: every 60s, for each parked workflow with an armed wait, fire
-  // its resume signal when the unblocking event appears (a human reply, or a PR
-  // review verdict). `fireSignal` delivers it to this engine — the one that now
-  // hosts the parked executions, so review-resume actually fires.
+  // GitHub poller: every POLLER_INTERVAL_MS (120s default — tuned up from 60s in
+  // 8db12e8 to stay clear of GitHub rate limits; backoff is #122), for each parked
+  // workflow with an armed wait, fire its resume signal when the unblocking event
+  // appears (a human reply, or a PR review verdict). `fireSignal` delivers it to
+  // this engine — the one that now hosts the parked executions, so review-resume
+  // actually fires. The checkbox-revert trigger (below) rides the same cadence.
   const stopPoller = await startPoller(
     {
       db,
