@@ -4,9 +4,17 @@ import { Activity } from "../src/app/components/Activity.tsx";
 import type { RunSummary } from "../src/wire.ts";
 
 const run = (over: Partial<RunSummary> = {}): RunSummary => ({
-  workflowId: "rec1", kind: "recommender", repo: "o/r", state: "completed",
-  session: "s-rec", startedAt: 1000, updatedAt: 4000, durationMs: 3000,
-  active: false, hasTranscript: true, outputLink: "https://github.com/o/r/issues/84",
+  workflowId: "rec1",
+  kind: "recommender",
+  repo: "o/r",
+  state: "completed",
+  session: "s-rec",
+  startedAt: 1000,
+  updatedAt: 4000,
+  durationMs: 3000,
+  active: false,
+  hasTranscript: true,
+  outputLink: "https://github.com/o/r/issues/84",
   ...over,
 });
 const html = (runs: RunSummary[]) =>

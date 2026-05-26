@@ -28,8 +28,15 @@ function seedRun(o: {
     `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at, session_name, transcript_path, pr_number)
      VALUES (?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?)`,
     [
-      o.id, o.kind, o.repo, o.state ?? "completed", o.createdAt, o.updatedAt ?? o.createdAt,
-      o.sessionName ?? null, o.transcriptPath ?? null, o.prNumber ?? null,
+      o.id,
+      o.kind,
+      o.repo,
+      o.state ?? "completed",
+      o.createdAt,
+      o.updatedAt ?? o.createdAt,
+      o.sessionName ?? null,
+      o.transcriptPath ?? null,
+      o.prNumber ?? null,
     ],
   );
 }
@@ -47,14 +54,34 @@ describe("createDbDeps.listRuns", () => {
   });
 
   test("projects duration, active, transcript, and session fallback", async () => {
-    seedRun({ id: "rec-active", kind: "recommender", repo: "o/r", state: "running", createdAt: Date.now() - 5000, sessionName: "s-rec" });
-    seedRun({ id: "doc-done", kind: "documentation", repo: "o/r", state: "completed", createdAt: 1000, updatedAt: 4000, transcriptPath: "/t/x.jsonl" });
+    seedRun({
+      id: "rec-active",
+      kind: "recommender",
+      repo: "o/r",
+      state: "running",
+      createdAt: Date.now() - 5000,
+      sessionName: "s-rec",
+    });
+    seedRun({
+      id: "doc-done",
+      kind: "documentation",
+      repo: "o/r",
+      state: "completed",
+      createdAt: 1000,
+      updatedAt: 4000,
+      transcriptPath: "/t/x.jsonl",
+    });
     const runs = await createDbDeps({ db, config: makeConfig() }).listRuns();
     const rec = runs.find((r) => r.workflowId === "rec-active")!;
     expect(rec).toMatchObject({ active: true, session: "s-rec", hasTranscript: false });
     expect(rec.durationMs).toBeGreaterThanOrEqual(5000);
     const doc = runs.find((r) => r.workflowId === "doc-done")!;
-    expect(doc).toMatchObject({ active: false, durationMs: 3000, hasTranscript: true, session: "doc-done" }); // session falls back to id
+    expect(doc).toMatchObject({
+      active: false,
+      durationMs: 3000,
+      hasTranscript: true,
+      session: "doc-done",
+    }); // session falls back to id
   });
 
   test("outputLink: recommender → state issue, documentation → PR, else null", async () => {
@@ -66,13 +93,18 @@ describe("createDbDeps.listRuns", () => {
     seedRun({ id: "doc-pr", kind: "documentation", repo: "o/r", createdAt: 20, prNumber: 251 });
     seedRun({ id: "doc-nopr", kind: "documentation", repo: "o/r", createdAt: 10 });
     const runs = await createDbDeps({ db, config: makeConfig() }).listRuns();
-    expect(runs.find((r) => r.workflowId === "rec")!.outputLink).toBe("https://github.com/o/r/issues/84");
-    expect(runs.find((r) => r.workflowId === "doc-pr")!.outputLink).toBe("https://github.com/o/r/pull/251");
+    expect(runs.find((r) => r.workflowId === "rec")!.outputLink).toBe(
+      "https://github.com/o/r/issues/84",
+    );
+    expect(runs.find((r) => r.workflowId === "doc-pr")!.outputLink).toBe(
+      "https://github.com/o/r/pull/251",
+    );
     expect(runs.find((r) => r.workflowId === "doc-nopr")!.outputLink).toBeNull();
   });
 
   test("caps at 20 per kind", async () => {
-    for (let i = 0; i < 25; i++) seedRun({ id: `rec${i}`, kind: "recommender", repo: "o/r", createdAt: i });
+    for (let i = 0; i < 25; i++)
+      seedRun({ id: `rec${i}`, kind: "recommender", repo: "o/r", createdAt: i });
     const runs = await createDbDeps({ db, config: makeConfig() }).listRuns();
     expect(runs.filter((r) => r.kind === "recommender")).toHaveLength(20);
   });

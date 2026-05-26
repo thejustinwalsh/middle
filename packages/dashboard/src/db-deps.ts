@@ -102,7 +102,8 @@ const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as c
 /** The non-implementation workflow kinds surfaced by the Activity view. */
 const NON_IMPL_KINDS = ["recommender", "documentation"] as const;
 /** Columns the Activity read projects (a subset distinct from WORKFLOW_COLUMNS). */
-const RUN_COLUMNS = "id, repo, state, session_name, created_at, updated_at, transcript_path, pr_number";
+const RUN_COLUMNS =
+  "id, repo, state, session_name, created_at, updated_at, transcript_path, pr_number";
 
 /** A runner's progress string: `sub-issue m/n` when known, else the state. */
 function progressOf(row: WorkflowRow): string {
@@ -374,7 +375,9 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       const out: RunSummary[] = [];
       for (const kind of NON_IMPL_KINDS) {
         const rows = db
-          .query(`SELECT ${RUN_COLUMNS} FROM workflows WHERE kind = ? ORDER BY created_at DESC LIMIT 20`)
+          .query(
+            `SELECT ${RUN_COLUMNS} FROM workflows WHERE kind = ? ORDER BY created_at DESC LIMIT 20`,
+          )
           .all(kind) as {
           id: string;
           repo: string;
