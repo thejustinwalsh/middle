@@ -28,7 +28,11 @@ function tryParseToml(path: string): Record<string, unknown> {
 function readRepoInfo(table: unknown): RepoInfo | null {
   const t = (table ?? {}) as Record<string, unknown>;
   if (typeof t.owner !== "string" || typeof t.name !== "string") return null;
-  return { owner: t.owner, name: t.name, defaultBranch: (t.default_branch as string) ?? "main" };
+  // Guard each field: malformed policy (a number, a table, etc.) must never
+  // leak a non-string into RepoInfo. owner/name being non-string disqualifies
+  // the block entirely; a bad default_branch just falls back to "main".
+  const defaultBranch = typeof t.default_branch === "string" ? t.default_branch : "main";
+  return { owner: t.owner, name: t.name, defaultBranch };
 }
 
 /**

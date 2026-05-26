@@ -14,12 +14,12 @@ import { isParseError, parseStateIssue, validate } from "@middle/state-issue";
 import { loadConfig } from "@middle/core";
 import { initRepo } from "../src/bootstrap/init.ts";
 import { uninitRepo } from "../src/bootstrap/uninit.ts";
-import { BOOTSTRAP_VERSION, type BootstrapDeps } from "../src/bootstrap/types.ts";
+import { BOOTSTRAP_VERSION, type BootstrapDeps, type RepoInfo } from "../src/bootstrap/types.ts";
 
 type Calls = {
   ensureLabel: number;
   created: Array<{ title: string; body: string }>;
-  closed: Array<{ issue: number; comment: string }>;
+  closed: Array<{ issue: number; comment: string; info: RepoInfo }>;
 };
 
 function makeFakeDeps(): { deps: BootstrapDeps; calls: Calls } {
@@ -37,8 +37,8 @@ function makeFakeDeps(): { deps: BootstrapDeps; calls: Calls } {
         calls.created.push({ title, body });
         return 142;
       },
-      closeStateIssue: async (_info, issue, comment) => {
-        calls.closed.push({ issue, comment });
+      closeStateIssue: async (info, issue, comment) => {
+        calls.closed.push({ issue, comment, info });
       },
       findStateIssues: async () => [],
     },
@@ -331,6 +331,27 @@ describe("mm uninit", () => {
     expect(result.stateIssue).toBe(142);
     expect(calls.closed).toHaveLength(1);
     expect(calls.closed[0]!.issue).toBe(142);
+  });
+
+  test("falls back to default_branch 'main' when committed policy has a non-string value (#103)", async () => {
+    // Malformed policy: default_branch is a non-string (here a number). owner/name
+    // are still valid strings, so [repo] resolves — but the bad default_branch
+    // must never leak a non-string into RepoInfo.defaultBranch.
+    const { deps, calls } = makeFakeDeps();
+    deps.resolveRepoInfo = async () => {
+      throw new Error("no remote");
+    };
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    writeFileSync(
+      join(repo, ".middle/policy.toml"),
+      '[repo]\nowner = "acme"\nname = "widget"\ndefault_branch = 123\n',
+    );
+    writeFileSync(join(repo, ".middle/config.toml"), "[state_issue]\nnumber = 142\n");
+
+    const result = await uninitRepo(repo, deps, { dryRun: false });
+    expect(result.stateIssue).toBe(142);
+    expect(calls.closed).toHaveLength(1);
+    expect(calls.closed[0]!.info).toEqual({ owner: "acme", name: "widget", defaultBranch: "main" });
   });
 
   test("dry run removes nothing", async () => {
