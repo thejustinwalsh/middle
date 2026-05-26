@@ -64,12 +64,13 @@ export type DocumentationDeps = {
   /** Hard cap on the agent run — the spec's 5-minute ceiling. */
   agentTimeoutMs?: number;
   /**
-   * The write/persist seam (commit/push/PR of generated docs). Read-only/dry-run
-   * first (like the recommender's first phase): the runner leaves this UNWIRED,
-   * so `persist-docs` persists nothing by construction even when `config.write`
-   * is true. Wiring it is the next increment.
+   * The write/persist seam: commit the docs the agent authored into the worktree,
+   * push the branch, and open a draft PR. The runner wires this to the `gh`-backed
+   * `makeGhPersistDocs`; `config.write` is the gate — an audit run (`write:false`)
+   * leaves it unrun even though it is wired. A test injects a stub here. When the
+   * worktree authored nothing, the seam is a no-op (no empty commit/PR).
    */
-  persistDocs?: (opts: { repo: string; worktreePath: string }) => Promise<void>;
+  persistDocs?: (opts: { repo: string; worktreePath: string; branch: string }) => Promise<void>;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
@@ -181,9 +182,10 @@ ${llmsTxtLine}`;
  *
  * Linear (no park/resume — a short one-shot). Records its `workflows` row with
  * `kind:"documentation"`, so it runs on its own dedicated slot and is never
- * counted against `maxConcurrent` (same as the recommender). Read-only/dry-run
- * first: `persist-docs` is the write seam, left UNWIRED by the runner. Built as
- * a factory so the dispatcher injects real collaborators and tests inject stubs.
+ * counted against `maxConcurrent` (same as the recommender). `persist-docs` is the
+ * write seam — commit the authored docs, push, open a draft PR — gated on
+ * `config.write` (an audit run never persists). Built as a factory so the
+ * dispatcher injects real collaborators and tests inject stubs.
  */
 export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<DocumentationInput> {
   const launchTimeout = deps.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
@@ -300,11 +302,15 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
 
   async function persistDocs(ctx: StepContext<DocumentationInput>): Promise<void> {
     const { handle } = ctx.steps["prepare-docs-worktree"] as PrepareResult;
-    // Read-only/dry-run first: the runner leaves `persistDocs` unwired, so this
-    // persists nothing regardless of `config.write`. Wiring it (commit/PR of the
-    // maintained surface) is the next increment.
+    // `config.write` gates writing: an audit run never persists. When write is on
+    // and the seam is wired, commit + push + open the draft PR (a clean worktree
+    // is a no-op inside the seam — no empty commit/PR).
     if (!deps.config.write || !deps.persistDocs) return;
-    await deps.persistDocs({ repo: ctx.input.repo, worktreePath: handle.path });
+    await deps.persistDocs({
+      repo: ctx.input.repo,
+      worktreePath: handle.path,
+      branch: handle.branch,
+    });
   }
 
   async function cleanupWorktree(ctx: StepContext<DocumentationInput>): Promise<void> {
