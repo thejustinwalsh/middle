@@ -318,6 +318,39 @@ describe("implementation workflow — terminal stops fall through the waitFor", 
   });
 });
 
+describe("implementation workflow — prepare-worktree survives a step retry (#108)", () => {
+  test("a transient createWorktree failure retries to success — the re-INSERT is a no-op, not a masking UNIQUE", async () => {
+    // prepare-worktree runs createWorkflowRecord (INSERT) then createWorktree,
+    // under bunqueue's default retry: 3. Make createWorktree throw once so the
+    // step retries from the top, re-running the INSERT for the same execution id.
+    let calls = 0;
+    const failingWorktree = {
+      async createWorktree(opts: Parameters<typeof createWorktree>[0]) {
+        calls += 1;
+        if (calls === 1) throw new Error("transient git failure");
+        return createWorktree(opts);
+      },
+      destroyWorktree,
+    };
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: failingWorktree,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+    });
+    const id = await start(deps);
+
+    // With INSERT OR IGNORE the retry's createWorkflowRecord no-ops, the second
+    // createWorktree succeeds, and the run reaches completed. A plain INSERT
+    // would throw `UNIQUE constraint failed: workflows.id` on the retry, masking
+    // the transient error and failing the run.
+    expect(await awaitSettled(id)).toBe("completed");
+    expect(calls).toBe(2); // it actually retried — the retry path was exercised
+    expect(getWorkflow(db, id)?.worktreePath).not.toBeNull(); // attempt 2 ran fully
+    expectNoSessionLeak(tmux);
+  });
+});
+
 /** The `.middle/prompt.md` written into the (shared) worktree, by workflow id. */
 function readPromptBrief(workflowId: string): string {
   const path = getWorkflow(db, workflowId)?.worktreePath;

@@ -80,6 +80,43 @@ describe("createWorkflowRecord", () => {
     expect(row!.bunqueueExecutionId).toBe("exec-1");
     expect(row!.controlledBy).toBe("middle");
   });
+
+  // #108: the step that calls this runs under bunqueue's default retry. A
+  // retried record-creating step re-runs the INSERT for the same execution id;
+  // a plain INSERT would throw UNIQUE and mask the real (downstream) error. The
+  // INSERT must be idempotent so the second call is a no-op.
+  test("a second create with the same id is a no-op (idempotent on retry), not a UNIQUE error", () => {
+    createWorkflowRecord(db, {
+      id: "exec-retry",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 6,
+      adapter: "claude",
+    });
+    // Advance the row the way prepare-worktree does after the INSERT, so we can
+    // prove the retry doesn't reset it.
+    updateWorkflow(db, "exec-retry", { worktreePath: "/wt/exec-retry", state: "launching" });
+
+    // The retry: same id, but with fields that WOULD differ if the INSERT ran.
+    expect(() =>
+      createWorkflowRecord(db, {
+        id: "exec-retry",
+        kind: "recommender",
+        repo: "other/repo",
+        epicNumber: 99,
+        adapter: "codex",
+      }),
+    ).not.toThrow();
+
+    // The original row is untouched — the second INSERT was ignored, not applied.
+    const row = getWorkflow(db, "exec-retry");
+    expect(row!.kind).toBe("implementation");
+    expect(row!.repo).toBe("o/r");
+    expect(row!.epicNumber).toBe(6);
+    expect(row!.adapter).toBe("claude");
+    expect(row!.state).toBe("launching");
+    expect(row!.worktreePath).toBe("/wt/exec-retry");
+  });
 });
 
 describe("countActiveImplementationSlots", () => {
