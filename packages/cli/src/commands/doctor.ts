@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { loadConfig } from "@middle/core";
 import {
   getTmuxVersion,
   MIN_TMUX_VERSION,
@@ -117,6 +118,43 @@ async function runBunPathFix(): Promise<void> {
   }
 }
 
+/**
+ * Check the binary of every configured + enabled adapter (not just `claude`).
+ * A missing binary is a **warning**, not a failure: middle can still dispatch
+ * with whichever adapters are installed — the recommender / `mm dispatch` simply
+ * won't pick the absent one. When the config file is absent, `loadConfig`'s
+ * defaults still describe both `claude` and `codex`, so a default environment is
+ * checked for both. The check `name` is the adapter name so each gets its own row.
+ */
+async function checkAdapterBinaries(): Promise<Check[]> {
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
+  } catch (error) {
+    return [
+      {
+        name: "adapters",
+        status: "warn",
+        detail: `config unreadable: ${(error as Error).message}`,
+      },
+    ];
+  }
+  const enabled = Object.entries(config.adapters).filter(([, a]) => a.enabled);
+  if (enabled.length === 0) {
+    return [{ name: "adapters", status: "warn", detail: "no adapters enabled in config" }];
+  }
+  return enabled.map(([name, adapter]) => {
+    if (!Bun.which(adapter.binary)) {
+      return {
+        name,
+        status: "warn",
+        detail: `${adapter.binary} not installed — the ${name} adapter is unavailable`,
+      };
+    }
+    return { name, status: "pass", detail: `${adapter.binary} on PATH` };
+  });
+}
+
 async function checkGhAuth(): Promise<Check> {
   if (!Bun.which("gh")) {
     return { name: "gh auth", status: "fail", detail: "gh not installed" };
@@ -200,16 +238,17 @@ function checkTsdocCoverageWarn(): Check {
 
 /**
  * `mm doctor` — run a system check for every external tool the dispatcher
- * shells out to: `bun`, `tmux` (≥ 3.5), `claude`, `git`, `gh`, and `gh` auth.
- * Exits 0 when no check fails; 1 if anything is missing or broken. Warnings
- * (degraded but functional) do not fail the run.
+ * shells out to: `bun`, `tmux` (≥ 3.5), each configured adapter's binary (e.g.
+ * `claude`, `codex`), `git`, `gh`, and `gh` auth. Exits 0 when no check fails;
+ * 1 if anything is missing or broken. Warnings (degraded but functional — a
+ * missing adapter binary among others present) do not fail the run.
  */
 export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number> {
   const checks: Check[] = [
     await checkBinary("bun", ["bun", "--version"]),
     await checkBunPath(),
     await checkTmux(),
-    await checkBinary("claude", ["claude", "--version"]),
+    ...(await checkAdapterBinaries()),
     await checkBinary("git", ["git", "--version"]),
     await checkBinary("gh", ["gh", "--version"]),
     await checkGhAuth(),
