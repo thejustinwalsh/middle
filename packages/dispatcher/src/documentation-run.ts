@@ -83,11 +83,10 @@ export async function resolveDocumentationOptions(
   getAdapter: (name: string) => AgentAdapter,
 ): Promise<ResolveDocumentationResult> {
   const adapterName = config.docs?.adapter ?? config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    return {
-      ok: false,
-      error: `only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
-    };
+  try {
+    getAdapter(adapterName);
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
   }
 
   let target: DocsTargetSummary;

@@ -113,11 +113,10 @@ export async function resolveRecommenderOptions(
     return { ok: false, error: `no state issue configured for this repo (run \`mm init\` first)` };
   }
   const adapterName = config.recommender?.adapter ?? config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    return {
-      ok: false,
-      error: `only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
-    };
+  try {
+    getAdapter(adapterName);
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
   }
   const schemaPath = join(repoPath, "schemas", "state-issue.v1.md");
   if (!existsSync(schemaPath)) {

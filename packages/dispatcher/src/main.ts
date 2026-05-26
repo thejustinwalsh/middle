@@ -8,11 +8,11 @@
 // drive it over the HTTP control plane. `mm stop` sends it SIGTERM.
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { claudeAdapter } from "@middle/adapter-claude";
-import type { AgentAdapter, MiddleConfig } from "@middle/core";
+import type { MiddleConfig } from "@middle/core";
 import { loadConfig } from "@middle/core";
 import type { Database } from "bun:sqlite";
 import { Engine } from "bunqueue/workflow";
+import { getAdapter, isKnownAdapter } from "./adapters.ts";
 import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
@@ -84,12 +84,6 @@ const SLOT_FREEING_STATES = new Set(["completed", "compensated", "failed", "canc
 const AUTO_DISPATCH_DEBOUNCE_MS = 250;
 /** Epic-cache refresh cadence (constant, like POLLER/WATCHDOG; config-ification deferred). */
 const EPICS_REFRESH_INTERVAL_MS = 60_000;
-
-/** Adapter registry — only `claude` is implemented. */
-function getAdapter(name: string): AgentAdapter {
-  if (name !== "claude") throw new Error(`unknown adapter: ${name}`);
-  return claudeAdapter;
-}
 
 /** The dispatcher's own version, reported by `GET /health`. */
 function readVersion(): string {
@@ -350,7 +344,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (repoPath === undefined) {
       return { status: 400, body: JSON.stringify({ error: `unknown repo: ${normalizedRepo}` }) };
     }
-    if (adapter !== "claude") {
+    if (!isKnownAdapter(adapter)) {
       return { status: 400, body: JSON.stringify({ error: `unknown adapter: ${adapter}` }) };
     }
     const input = { repo: normalizedRepo, repoPath, epicNumber, adapter };
@@ -481,7 +475,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       const control: ControlPlane = {
         hub,
         version,
-        knownAdapter: (name) => name === "claude",
+        knownAdapter: isKnownAdapter,
         // A route dispatch is a manual `mm dispatch` — recorded `source: 'manual'`.
         startDispatch: (input) => startDispatchImpl(input, "manual"),
         // Manual dispatch respects slot limits (the loop does its own accounting).
