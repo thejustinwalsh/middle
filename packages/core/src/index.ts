@@ -6,7 +6,7 @@
  * foundation every other middle package imports from.
  *
  * Public surface:
- * - `loadConfig` — resolve + validate middle config (`MiddleConfig`)
+ * - `loadConfig` — merge the config layers into a typed `MiddleConfig`
  * - `AgentAdapter` — the interface each agent adapter implements
  * - normalized hook events: `NormalizedEvent`, `HookEnvelope`, `isNormalizedEvent`
  * - `HOOK_SH`, `PR_READY_GATE_SH` — the hook shell-script payloads
@@ -20,7 +20,9 @@
  * - `tmux-tui.ts` — low-level tmux pane capture / key sending
  *
  * Gotchas:
- * - None. Pure types plus small helpers; no process-level side effects.
+ * - `loadConfig` merges four layers, lowest→highest precedence: documented
+ *   defaults < global file < committed `policy.toml` < local `config.toml`
+ *   (issue #103). Policy is derived as the sibling of the `repoPath` callers pass.
  *
  * claude-md: false
  */
