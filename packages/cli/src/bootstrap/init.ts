@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { stageHookScript, stageSkills } from "./assets.ts";
-import { renderRepoConfig } from "./config-template.ts";
+import { renderLocalConfig, renderRepoPolicy } from "./config-template.ts";
 import { addMiddleIgnore } from "./gitignore.ts";
 import { writeClaudeHookSettings, writeCodexHookConfig } from "./hook-config.ts";
 import { buildInitialStateIssueBody } from "./state-issue-body.ts";
@@ -125,23 +125,38 @@ export async function initRepo(
     note(`keep existing state issue #${stateIssue}`);
   }
 
-  // Write config. Fresh/migrate rewrite it; a matching re-init keeps it as-is —
-  // unless we just minted a state issue for it, whose number must be persisted.
+  // Committed repo policy (issue #103). Written ONLY when absent — a re-init or
+  // migrate must never clobber a team's committed edits (e.g. complexity_ceiling).
+  // A fresh install (or one whose policy.toml was deleted) gets the spec defaults.
+  const policyPath = join(repo, ".middle", "policy.toml");
+  if (!existsSync(policyPath)) {
+    note("write .middle/policy.toml (committed shared policy)");
+    if (!dry) {
+      await mkdir(join(repo, ".middle"), { recursive: true });
+      await Bun.write(policyPath, renderRepoPolicy(info));
+    }
+  } else {
+    note("keep existing .middle/policy.toml (committed policy preserved)");
+  }
+
+  // Local operational cache (gitignored, volatile). Fresh/migrate rewrite it; a
+  // matching re-init keeps it as-is — unless we just minted a state issue for it,
+  // whose number must be persisted.
   if (mode !== "reinit" || needsStateIssue) {
-    note("write .middle/config.toml");
+    note("write .middle/config.toml (local cache)");
     if (!dry) {
       const installedAt = deps.now().toISOString();
       await mkdir(join(repo, ".middle"), { recursive: true });
       await Bun.write(
         join(repo, ".middle", "config.toml"),
-        renderRepoConfig({ info, stateIssueNumber: stateIssue, installedAt }),
+        renderLocalConfig({ stateIssueNumber: stateIssue, installedAt }),
       );
     }
   } else {
     note("keep existing .middle/config.toml");
   }
 
-  // Step 7: gitignore the per-repo middle dir.
+  // Step 7: gitignore the per-repo middle dir (except committed policy/gate files).
   note("add .middle/ to .gitignore");
   if (!dry) await addMiddleIgnore(repo);
 
