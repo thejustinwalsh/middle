@@ -16,6 +16,8 @@ End-to-end workflow for taking a planning artifact (spec, brainstorm, build doc)
 
 **Acceptance criteria are mandatory.** The recommender classifies issues without acceptance criteria as `needs-human`. An issue filed without explicit criteria lands in human-review purgatory until someone fixes it. Always include them, even when obvious.
 
+**Every feature issue passes the integration rubric before it's filed.** Acceptance criteria that stop at "unit tests pass" let work ship unit-tested but unwired — middle's recurring failure mode. A feature issue must carry ≥1 criterion that wires the feature into the running product *and* proves it with an integration/smoke/e2e test. The `verifying-requirements` skill is the authority; `mm audit-issues --body-file` is the gate you run on each drafted body (Phase 8.5). Don't file a feature issue that fails the rubric without a declared `integration-exempt:` reason.
+
 **The title is the most-read line.** It shows up in issue lists, PR cross-references, the state issue's Ready-to-dispatch table, and notifications. Verb-led, scoped, ≤72 chars. The title locates; the body explains. Titles must be self-sufficient enough that a phase-estimating recommender can rank them without re-reading the source.
 
 **Hierarchy by default, standalone by exception.** If you're filing more than one issue from the same source, they almost always have a natural parent. Create the parent first, file children as sub-issues. Standalone issues are reserved for genuinely cross-workstream work.
@@ -54,13 +56,14 @@ digraph workflow {
   parents [label="6. File parent issues"];
   children [label="7. File child issues,\nattach as sub-issues"];
   standalone [label="8. File standalone\nissues (rare)"];
+  audit [label="8.5. Audit feature bodies\nvs. integration rubric\n(mm audit-issues)"];
   verify [label="9. Verify the set:\nlinks, labels, parents"];
   report [label="10. Report to user:\ncount, links, follow-ups"];
 
   read -> vocab -> inventory -> hierarchy -> triage -> blocker;
   blocker -> ask [label="yes"];
   blocker -> parents [label="no"];
-  parents -> children -> standalone -> verify -> report;
+  parents -> children -> standalone -> audit -> verify -> report;
 }
 ```
 
@@ -268,6 +271,40 @@ Same body template, but skip the sub-issue attachment step. Standalone bodies mu
 feature work" or "Housekeeping, not on the build path">
 ```
 
+## Phase 8.5 — Audit acceptance criteria against the integration rubric
+
+Before the issues go live for the implementer, run the **requirements auditor** over every
+feature issue — the second pass that fixes weak criteria at the source. This is the
+`verifying-requirements` skill's gate; invoke it for the rubric details.
+
+Audit each drafted **feature** body *before* you file it (parents and docs/chore/housekeeping
+issues are out of scope — the tool excludes them by label):
+
+```bash
+# Draft the body to a temp file, then audit it before `gh issue create`.
+mm audit-issues <repo> --body-file /tmp/body-<n>.md --title "<the issue title>"
+```
+
+- **Pass** (exit 0): the body carries an integration criterion (or a declared exemption) —
+  file it.
+- **Fail** (exit 1): the tool prints the missing-criterion diagnosis and a concrete
+  suggested rewrite anchored to the title. **Harden the body** — add a criterion that wires
+  the feature into the running product and proves it with an integration/smoke/e2e test
+  (adapt the suggestion; name the real surface and observable) — then re-audit and file.
+
+If a feature genuinely has no integration path, declare it explicitly in the body
+(`<!-- integration-exempt: <reason> -->`) rather than filing weak criteria silently. If you
+can't articulate the reason, it isn't exempt.
+
+For issues already filed (a re-audit of the existing backlog), sweep them and label the
+failures `needs-design`:
+
+```bash
+mm audit-issues <repo> --label
+```
+
+The skill **suggests and flags** — it never silently rewrites an issue body.
+
 ## Phase 9 — Verify the set, then second-pass the cross-references
 
 ### 9a. Verify
@@ -472,6 +509,7 @@ Middle's controlled labels (applied manually by the user, NOT by this skill — 
 
 ## Related skills
 
+- `verifying-requirements` — the Phase 8.5 second pass. Defines the integration rubric and drives `mm audit-issues`; this skill calls it so weak acceptance criteria are caught before filing, not after work ships unwired.
 - `implementing-github-issues` — the downstream consumer. An implementer agent picks up an issue this skill filed and takes it to a verified PR. Issue bodies should give that agent what it needs (clear acceptance criteria, suggested skills) and nothing it doesn't (no pre-baked implementation).
 - `recommending-github-issues` — the other downstream consumer. Ranks the filed issues for dispatch. It depends on self-sufficient titles and present acceptance criteria.
 
