@@ -112,6 +112,22 @@ describe("workflow meta_json accessors", () => {
     });
   });
 
+  test("patchWorkflowMeta does not bump updated_at — meta is scratch, not an activity signal", () => {
+    // The watchdog folds updated_at into its idle-freshness baseline; a meta
+    // write (the poller's checkbox-revert persist) must not reset that clock.
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    const before = getWorkflow(db, "w")!.updatedAt;
+    db.run("UPDATE workflows SET updated_at = ? WHERE id = ?", [before - 60_000, "w"]); // age it
+    patchWorkflowMeta(db, "w", { checkboxReconcile: { headSha: "abc", state: {} } });
+    expect(getWorkflow(db, "w")!.updatedAt).toBe(before - 60_000); // untouched
+  });
+
   test("checkbox-reconcile state round-trips; defaults when unset", () => {
     createWorkflowRecord(db, {
       id: "w",
