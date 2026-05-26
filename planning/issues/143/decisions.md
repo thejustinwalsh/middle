@@ -67,3 +67,33 @@ predicate.
 runs the real path, not a unit stub. The auditing systems must hold themselves to it.
 
 **Evidence:** Each sub-issue's "Integration-verified itself" acceptance criterion.
+
+## A deferral can't satisfy the integration requirement; an evidenced criterion beats a waiver
+**File(s):** `packages/dispatcher/src/gates/pr-ready.ts`
+**Date:** 2026-05-26
+
+**Decision:** In the PR-ready integration check: (1) a `(deferred: …)` integration criterion does
+**not** count as integration evidence — the test must be evidenced or explicitly exempted, never
+punted; (2) a genuinely-evidenced integration criterion is checked **before** the exemption
+annotation, so a real test always wins over a (possibly stray/bot-authored) `(integration-exempt:)`.
+
+**Why:** Deferral is the channel for *non-integration* acceptance items; letting it also waive the
+integration test would reopen the exact "unit-green-but-unwired" hole #145 closes. Ordering the
+evidenced-criterion check first avoids a false deny when a PR both has a real integration test and
+happens to carry an exemption annotation. Surfaced by the internal review pass (Phase 10b).
+
+**Evidence:** `pr-ready.test.ts` — "a deferred integration criterion does not count" + "an evidenced
+integration criterion allows even if a stray bot exemption is present".
+
+## `DRIFT_RE` matches verb-less "planned for phase N"
+**File(s):** `packages/dispatcher/src/staleness.ts`
+**Date:** 2026-05-26
+
+**Decision:** The drift regex matches two shapes: `<future-verb> in phase N` *and* the verb-less
+`planned for phase N` (no "in").
+
+**Why:** The first draft put `planned for` in the verb alternation, which then required a following
+`in phase` — so "planned for phase 3" silently failed to match (a false negative the review pass
+caught). Splitting the two shapes fixes it.
+
+**Evidence:** `staleness.test.ts` — "matches the verb-less 'planned for phase N' phrasing".

@@ -112,6 +112,17 @@ async function evaluateIntegrationEvidence(
   criteria: string[],
   resolveCommentAuthor: CommentAuthorResolver,
 ): Promise<PrReadyDecision> {
+  // A genuinely-evidenced integration criterion satisfies the gate outright — it
+  // takes precedence over any exemption annotation (a real test beats a waiver).
+  // A *deferred* integration criterion does NOT count: the integration test can't
+  // be punted, only evidenced or (explicitly) exempted.
+  const evidenced = criteria.some(
+    (c) => isIntegrationCriterion(c) && namesEvidence(c) && !DEFERRED_RE.test(c),
+  );
+  if (evidenced) return { decision: "allow" };
+
+  // No evidenced integration criterion → the escape hatch is the only way through,
+  // and it must be human-authored (an agent can't waive its own integration test).
   const exempt = INTEGRATION_EXEMPT_RE.exec(body);
   if (exempt) {
     const author = await resolveCommentAuthor(exempt[1]!);
@@ -124,11 +135,6 @@ async function evaluateIntegrationEvidence(
       ].join("\n"),
     };
   }
-
-  const evidenced = criteria.some(
-    (c) => isIntegrationCriterion(c) && namesEvidence(c) && !DEFERRED_RE.test(c),
-  );
-  if (evidenced) return { decision: "allow" };
 
   return {
     decision: "deny",
