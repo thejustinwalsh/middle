@@ -1,5 +1,14 @@
 import { BOOTSTRAP_VERSION, STATE_LABEL, type RepoInfo } from "./types.ts";
 
+/**
+ * Volatile values {@link renderLocalConfig} writes into the gitignored
+ * `<repo>/.middle/config.toml` cache (issue #103).
+ *
+ * - `stateIssueNumber` — the GitHub issue number tracking this repo's dispatch
+ *   state (a positive integer; GitHub remains its source of truth, per #102).
+ * - `installedAt` — an ISO-8601 timestamp (`YYYY-MM-DDTHH:MM:SSZ`) of when
+ *   `mm init` stamped the install.
+ */
 export type LocalConfigValues = {
   stateIssueNumber: number;
   installedAt: string;
