@@ -340,10 +340,10 @@ describe("implementation workflow — prepare-worktree survives a step retry (#1
     });
     const id = await start(deps);
 
-    // With INSERT OR IGNORE the retry's createWorkflowRecord no-ops, the second
-    // createWorktree succeeds, and the run reaches completed. A plain INSERT
-    // would throw `UNIQUE constraint failed: workflows.id` on the retry, masking
-    // the transient error and failing the run.
+    // With ON CONFLICT(id) DO NOTHING the retry's createWorkflowRecord no-ops,
+    // the second createWorktree succeeds, and the run reaches completed. A plain
+    // INSERT would throw `UNIQUE constraint failed: workflows.id` on the retry,
+    // masking the transient error and failing the run.
     expect(await awaitSettled(id)).toBe("completed");
     expect(calls).toBe(2); // it actually retried — the retry path was exercised
     expect(getWorkflow(db, id)?.worktreePath).not.toBeNull(); // attempt 2 ran fully
