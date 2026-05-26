@@ -8,7 +8,8 @@
  *
  * Public surface:
  * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
- *   `dispatch`, `pause`, `resume`, `config`, `run-recommender`, `docs`, `version`
+ *   `dispatch`, `pause`, `resume`, `config`, `run-recommender`, `docs`,
+ *   `audit-issues`, `version`
  *
  * Where things live:
  * - `commands/` — one `run*` function per subcommand
@@ -23,6 +24,7 @@
  * claude-md: false
  */
 import { Command } from "commander";
+import { runAuditIssues } from "./commands/audit-issues.ts";
 import { runConfig } from "./commands/config.ts";
 import { runDispatch } from "./commands/dispatch.ts";
 import { runDocs } from "./commands/docs.ts";
@@ -150,6 +152,39 @@ program
   )
   .argument("<repo>", "path to the local repo checkout")
   .action(async (repo: string) => process.exit(await runDocs(repo)));
+
+program
+  .command("audit-issues")
+  .description(
+    "Audit issue acceptance criteria against the integration rubric (Epic #143 requirements auditor)",
+  )
+  .argument("<repo>", "path to the local repo checkout")
+  .option("--issue <n>", "audit a single GitHub issue by number")
+  .option("--body-file <path>", "audit a local draft body before filing (no GitHub access)")
+  .option("--title <title>", "title to pair with --body-file (anchors the suggested rewrite)")
+  .option("--label", "apply the `needs-design` label to failing issues (GitHub modes)")
+  .option("--json", "emit machine-readable JSON")
+  .action(
+    async (
+      repo: string,
+      options: {
+        issue?: string;
+        bodyFile?: string;
+        title?: string;
+        label?: boolean;
+        json?: boolean;
+      },
+    ) =>
+      process.exit(
+        await runAuditIssues(repo, {
+          issue: options.issue === undefined ? undefined : Number(options.issue),
+          bodyFile: options.bodyFile,
+          title: options.title,
+          label: options.label,
+          json: options.json,
+        }),
+      ),
+  );
 
 program
   .command("version")
