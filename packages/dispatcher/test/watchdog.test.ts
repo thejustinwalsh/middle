@@ -520,7 +520,7 @@ function seedNotification(id: string, ts: number, message?: string): void {
 function capturedPayload(id: string): { kind?: string; message?: string; pane?: string } | null {
   const row = db
     .query(
-      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC LIMIT 1",
+      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC, id DESC LIMIT 1",
     )
     .get(id, NOTIFICATION_CAPTURED_EVENT) as { payload_json: string | null } | null;
   return row?.payload_json ? JSON.parse(row.payload_json) : null;
@@ -681,6 +681,44 @@ describe("notification failsafe — fast-fail backstop", () => {
     expect(failureReason(id)).toBe("notification-block:permission");
     expect(tmux.killed).toContain("middle-14");
     expect(compensated).toEqual([id]);
+  });
+
+  test("two captures sharing a ts → the latest-by-id kind wins (contract lock)", async () => {
+    // Same-ts tie: the failsafe can write captures sharing a ts. Pins the
+    // latest-row-wins contract of `latestEventPayload` — the fail reason must use
+    // the later-inserted capture's kind ("permission"), not the earlier ("input").
+    // (Today `idx_events_workflow_ts` already orders the tie latest-first, so this
+    // guards the contract against a future index/plan change rather than a live
+    // bug; the explicit `ORDER BY … id DESC` is what makes it plan-independent.)
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 10 * MIN,
+      updatedAt: NOW - 10 * MIN,
+    });
+    seedNotification(id, NOW - 5 * MIN, "Claude is waiting for your input");
+    const capturedAt = NOW - 3 * MIN;
+    recordEvent(db, {
+      workflowId: id,
+      ts: capturedAt,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: "input", message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: capturedAt,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: "permission", message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: capturedAt,
+      type: NOTIFICATION_INTERVENED_EVENT,
+      payloadJson: JSON.stringify({ kind: "permission" }),
+    });
+    const acted = await reconcileNotifications(baseDeps({ tmux: makeNotifTmux().ops }));
+    expect(acted).toBe(1);
+    expect(failureReason(id)).toBe("notification-block:permission");
   });
 
   test("within the kill-grace → not yet failed (the nudge still has time to take)", async () => {
