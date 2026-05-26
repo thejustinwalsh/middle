@@ -1,7 +1,6 @@
 import {
   CLOSE_MARKER,
   DISPATCHER_TICK_RE,
-  IN_FLIGHT_EMPTY,
   OPEN_MARKER,
   OWNERS_LINE,
   READY_EMPTY_ROW,
@@ -152,9 +151,26 @@ function parseReady(content: string[]): ReadyRow[] {
   });
 }
 
+// An empty list section may be represented canonically (no bullet for Needs/
+// Blocked/Excluded; "- _no agents in flight_" for In-flight) OR, since agents
+// author these bodies and don't always adhere, by a generic italic placeholder
+// bullet like "- _none_". Match any bullet whose payload is wrapped in matching
+// emphasis delimiters — a real item always starts "- **#<n>" (bold) and ends in
+// content, so it can never match. This loosens only the *empty-state* shape; the
+// per-item regexes below stay strict. See #84.
+const EMPTY_SENTINEL_RE = /^- ([_*]).*\1$/;
+
+/** Whether a list section's content represents an empty list (no items). An
+ *  empty section (`[]`) is vacuously empty; otherwise every line must be a
+ *  placeholder sentinel. */
+function isEmptyList(content: string[]): boolean {
+  return content.every((line) => EMPTY_SENTINEL_RE.test(line));
+}
+
 const NEEDS_RE = /^- \*\*#(\d+) (.+?)\*\* — (.+) · (.+)$/;
 
 function parseNeeds(content: string[]): NeedsHumanItem[] {
+  if (isEmptyList(content)) return [];
   return content.map((line) => {
     const m = NEEDS_RE.exec(line);
     if (!m) fail(`malformed "Needs human input" item: "${line}"`);
@@ -165,6 +181,7 @@ function parseNeeds(content: string[]): NeedsHumanItem[] {
 const BLOCKED_RE = /^- \*\*#(\d+)\*\* waiting on (.+) · (.+)$/;
 
 function parseBlocked(content: string[]): BlockedItem[] {
+  if (isEmptyList(content)) return [];
   return content.map((line) => {
     const m = BLOCKED_RE.exec(line);
     if (!m) fail(`malformed "Blocked" item: "${line}"`);
@@ -175,12 +192,9 @@ function parseBlocked(content: string[]): BlockedItem[] {
 const IN_FLIGHT_RE = /^- \*\*#(\d+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
 
 function parseInFlight(content: string[]): InFlightItem[] {
-  if (content.length === 1 && content[0] === IN_FLIGHT_EMPTY) return [];
-  if (content.length === 0) {
-    fail(
-      'In-flight section is empty — an empty section must use the documented "- _no agents in flight_" state',
-    );
-  }
+  // Accepts the canonical "- _no agents in flight_", a generic placeholder, or an
+  // empty section — all read as no in-flight agents (see {@link isEmptyList}).
+  if (isEmptyList(content)) return [];
   return content.map((line) => {
     const m = IN_FLIGHT_RE.exec(line);
     if (!m) fail(`malformed "In-flight" item: "${line}"`);
@@ -197,6 +211,7 @@ function parseInFlight(content: string[]): InFlightItem[] {
 const EXCLUDED_RE = /^- \*\*#(\d+)\*\* (.+) — (.+)$/;
 
 function parseExcluded(content: string[]): ExcludedItem[] {
+  if (isEmptyList(content)) return [];
   return content.map((line) => {
     const m = EXCLUDED_RE.exec(line);
     if (!m) fail(`malformed "Excluded" item: "${line}"`);

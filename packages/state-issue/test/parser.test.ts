@@ -109,9 +109,13 @@ describe("parseStateIssue", () => {
     expect(isParseError(parseStateIssue(body))).toBe(true);
   });
 
-  test("returns ParseError when the In-flight section omits the documented empty state", () => {
-    const body = renderStateIssue(emptyState).replace("\n- _no agents in flight_", "");
-    expect(isParseError(parseStateIssue(body))).toBe(true);
+  test("an In-flight section with no bullet reads as empty (lenient empty-state)", () => {
+    // Previously an error; now accepted — an absent sentinel and an empty section
+    // both mean "no agents in flight". See the lenient empty-state handling (#84).
+    const body = renderStateIssue(emptyState).replace("\n\n- _no agents in flight_", "");
+    const parsed = parseStateIssue(body);
+    expect(isParseError(parsed)).toBe(false);
+    expect((parsed as ParsedState).inFlight).toEqual([]);
   });
 
   test("returns ParseError when a Ready row rank is below 1", () => {
@@ -136,5 +140,68 @@ describe("round-trip", () => {
       expect(isParseError(parsed)).toBe(false);
       expect(renderStateIssue(parsed as ParsedState)).toBe(once);
     }
+  });
+});
+
+describe("lenient empty-state sentinels (agent-produced placeholders)", () => {
+  // Agents don't always emit the canonical empty (no bullet for Needs/Blocked/
+  // Excluded; "- _no agents in flight_" for In-flight). They may write a generic
+  // italic placeholder like "- _none_". The parser accepts any italic-only bullet
+  // as "empty list" without loosening item validation. See #84.
+  const base = renderStateIssue(emptyState);
+
+  function parsedOk(body: string): ParsedState {
+    const r = parseStateIssue(body);
+    expect(isParseError(r)).toBe(false);
+    return r as ParsedState;
+  }
+
+  test('Needs human input accepts "- _none_" (the #84 failure)', () => {
+    const body = base.replace(
+      "## Needs human input\n\n## Blocked",
+      "## Needs human input\n\n- _none_\n\n## Blocked",
+    );
+    expect(parsedOk(body).needsHumanInput).toEqual([]);
+  });
+
+  test('Blocked accepts "- _none_"', () => {
+    const body = base.replace(
+      "## Blocked\n\n## In-flight",
+      "## Blocked\n\n- _none_\n\n## In-flight",
+    );
+    expect(parsedOk(body).blocked).toEqual([]);
+  });
+
+  test('Excluded accepts "- _none_"', () => {
+    const body = base.replace(
+      "## Excluded\n\n## Rate limits",
+      "## Excluded\n\n- _none_\n\n## Rate limits",
+    );
+    expect(parsedOk(body).excluded).toEqual([]);
+  });
+
+  test('In-flight accepts a "- _none_" variant and an empty section', () => {
+    const variant = base.replace("- _no agents in flight_", "- _none_");
+    expect(parsedOk(variant).inFlight).toEqual([]);
+    const emptySection = base.replace("## In-flight\n\n- _no agents in flight_", "## In-flight");
+    expect(parsedOk(emptySection).inFlight).toEqual([]);
+  });
+
+  test("a real item alongside no sentinel still parses strictly (no over-loosening)", () => {
+    const body = base.replace(
+      "## Needs human input\n\n## Blocked",
+      "## Needs human input\n\n- **#7 fork tied** — pick a winner · [link](http://x/7)\n\n## Blocked",
+    );
+    expect(parsedOk(body).needsHumanInput).toEqual([
+      { issue: 7, label: "fork tied", oneLiner: "pick a winner", link: "[link](http://x/7)" },
+    ]);
+  });
+
+  test("a genuinely malformed item (not a sentinel) still fails", () => {
+    const body = base.replace(
+      "## Needs human input\n\n## Blocked",
+      "## Needs human input\n\n- garbage line\n\n## Blocked",
+    );
+    expect(isParseError(parseStateIssue(body))).toBe(true);
   });
 });
