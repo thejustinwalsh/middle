@@ -71,3 +71,19 @@ workflow (don't revert, don't persist).
 nothing to revert — tracking state would be dead work. Mirrors verify-on-stop's
 "missing/malformed verify.toml → skip (ok)" in `build-deps.ts`.
 **Evidence:** `build-deps.ts` `runVerifyGates` skip-on-missing-config behavior.
+
+## `patchWorkflowMeta` must not bump `updated_at`
+**File(s):** `packages/dispatcher/src/workflow-record.ts`
+**Date:** 2026-05-26
+
+**Decision:** `patchWorkflowMeta` writes only `meta_json`, never `updated_at`.
+**Why:** Caught in internal review. The watchdog folds `updated_at` into its
+idle-freshness baseline (`watchdog.ts` — `Math.max(last_heartbeat, transcriptMs,
+updated_at)`). Both the watchdog and the checkbox-revert pass run over the same
+`state = 'running'` set. Had the poller's `setCheckboxReconcileState` bumped
+`updated_at`, it would reset a running agent's idle-timeout clock — masking a
+genuinely wedged agent (notably on first observation after a daemon restart).
+`meta_json` is scratch, not an activity signal. (Bonus: it's also safer for the
+dashboard's terminal-run duration calc, which reads `updated_at` for terminal
+rows.)
+**Evidence:** `watchdog.ts:206`; `packages/dashboard/src/db-deps.ts` duration calc.
