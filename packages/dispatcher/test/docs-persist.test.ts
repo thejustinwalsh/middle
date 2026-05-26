@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   commitDocs,
+  docsPrBody,
   makeGhPersistDocs,
+  pushDocsBranch,
   type CommitResult,
   type DocsPersistInput,
 } from "../src/docs-persist.ts";
 
 let repo: string;
+let bares: string[] = [];
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -36,7 +39,18 @@ beforeEach(async () => {
 
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
+  for (const b of bares) rmSync(b, { recursive: true, force: true });
+  bares = [];
 });
+
+/** Give `repo` a local bare `origin` so the push path can run without GitHub. */
+async function withBareRemote(): Promise<string> {
+  const bare = realpathSync(mkdtempSync(join(tmpdir(), "middle-docsremote-")));
+  bares.push(bare);
+  await git(bare, ["init", "--bare", "-q"]);
+  await git(repo, ["remote", "add", "origin", bare]);
+  return bare;
+}
 
 function writeDoc(rel: string, body = "# doc\n"): void {
   const abs = join(repo, rel);
@@ -118,5 +132,55 @@ describe("makeGhPersistDocs", () => {
     });
     await persist({ repo: "owner/name", worktreePath: repo, branch: "middle-docs" });
     expect(pushes).toBe(0);
+  });
+});
+
+describe("pushDocsBranch", () => {
+  test("first run creates the branch on origin at the authored commit", async () => {
+    const bare = await withBareRemote();
+    writeDoc("docs/index.md");
+    const c = await commitDocs({ repo: "owner/name", worktreePath: repo });
+    await pushDocsBranch({ worktreePath: repo, branch: "middle-docs" });
+    expect(await git(bare, ["rev-parse", "middle-docs"])).toBe(c!.sha);
+  });
+
+  test("re-run force-pushes a divergent commit (rebuilt branch is non-fast-forward)", async () => {
+    const bare = await withBareRemote();
+    // Run 1: author v1, commit, push → remote middle-docs = c1.
+    writeDoc("docs/index.md", "v1\n");
+    const c1 = await commitDocs({ repo: "owner/name", worktreePath: repo });
+    await pushDocsBranch({ worktreePath: repo, branch: "middle-docs" });
+    expect(await git(bare, ["rev-parse", "middle-docs"])).toBe(c1!.sha);
+
+    // Run 2 mirrors the runner rebuilding the branch from the default HEAD: reset
+    // to the pre-docs commit and author different content. The new commit shares
+    // c1's parent, so it is NOT a descendant of c1 → a plain push would be rejected.
+    await git(repo, ["reset", "--hard", "HEAD~1"]);
+    writeDoc("docs/index.md", "v2 — different\n");
+    const c2 = await commitDocs({ repo: "owner/name", worktreePath: repo });
+    await pushDocsBranch({ worktreePath: repo, branch: "middle-docs" });
+
+    const remote = await git(bare, ["rev-parse", "middle-docs"]);
+    expect(remote).toBe(c2!.sha);
+    expect(remote).not.toBe(c1!.sha);
+  });
+
+  test("surfaces a push failure rather than swallowing it (no origin configured)", async () => {
+    writeDoc("docs/index.md");
+    await commitDocs({ repo: "owner/name", worktreePath: repo });
+    await expect(pushDocsBranch({ worktreePath: repo, branch: "middle-docs" })).rejects.toThrow(
+      /git push middle-docs failed/,
+    );
+  });
+});
+
+describe("docsPrBody", () => {
+  test("lists the committed files, the commit sha, and the draft notice", () => {
+    const body = docsPrBody("owner/name", { sha: "abc123", files: ["docs/index.md", "docs/x.md"] });
+    expect(body).toContain("owner/name");
+    expect(body).toContain("abc123");
+    expect(body).toContain("- `docs/index.md`");
+    expect(body).toContain("- `docs/x.md`");
+    expect(body).toContain("does not auto-merge");
   });
 });

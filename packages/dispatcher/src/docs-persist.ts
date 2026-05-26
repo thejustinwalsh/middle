@@ -85,7 +85,15 @@ export async function commitDocs(opts: {
   }
 
   // Nothing staged → the agent authored no change. Skip the commit entirely.
-  const staged = await runGit(worktreePath, ["diff", "--cached", "--name-only"]);
+  // `-c core.quotePath=false` keeps non-ASCII paths literal (git otherwise emits
+  // octal-escaped, dquoted names that would land verbatim in the file list + PR body).
+  const staged = await runGit(worktreePath, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "--cached",
+    "--name-only",
+  ]);
   if (staged.exitCode !== 0) {
     throw new Error(`docs persist: git diff --cached failed: ${staged.stderr.trim()}`);
   }
@@ -108,28 +116,50 @@ export async function commitDocs(opts: {
   return { sha: rev.stdout.trim(), files };
 }
 
-async function run(argv: string[], cwd?: string): Promise<{ stderr: string; exitCode: number }> {
-  const proc = Bun.spawn(argv, { cwd, stdout: "ignore", stderr: "pipe", stdin: "ignore" });
-  const stderr = await new Response(proc.stderr).text();
-  return { stderr, exitCode: await proc.exited };
+async function run(
+  argv: string[],
+  cwd?: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const proc = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { stdout, stderr, exitCode: await proc.exited };
 }
 
 /**
- * The production push/PR step: push the worktree's branch to `origin` and open a
- * **draft** PR for the authored docs. Force-with-lease is deliberately NOT used —
- * the docs branch is the bot's own and a plain push is expected to fast-forward;
- * a rejected push surfaces rather than clobbering. The PR is left draft so a human
- * does the final review and merge (auto-merge is out of scope per the spec).
+ * Push the worktree's docs branch to `origin`, **force**. The docs branch
+ * (`middle-docs`) is single-purpose and entirely bot-owned: the runner rebuilds it
+ * from the default branch every run (the worktree + local branch are torn down at
+ * cleanup), so the freshly-authored commit deliberately diverges from a prior run's
+ * remote commit — a fast-forward is impossible by construction. Force replaces the
+ * prior run's docs with this run's; the open draft PR then re-points to the new
+ * commit. (Force is bounded to this throwaway branch — it never touches `main`.)
+ * Split out from {@link ghPushAndOpenPr} so the push itself is testable against a
+ * local bare remote without invoking `gh`.
  */
-export const ghPushAndOpenPr: DocsPushSeam = async ({ repo, worktreePath, branch, commit }) => {
-  const push = await run(["git", "-C", worktreePath, "push", "-u", "origin", branch]);
+export async function pushDocsBranch(opts: {
+  worktreePath: string;
+  branch: string;
+}): Promise<void> {
+  const push = await run([
+    "git",
+    "-C",
+    opts.worktreePath,
+    "push",
+    "--force",
+    "origin",
+    `HEAD:refs/heads/${opts.branch}`,
+  ]);
   if (push.exitCode !== 0) {
-    throw new Error(`docs persist: git push ${branch} failed: ${push.stderr.trim()}`);
+    throw new Error(`docs persist: git push ${opts.branch} failed: ${push.stderr.trim()}`);
   }
+}
 
-  const title = `docs: update documentation surface`;
-  const bodyFile = join(tmpdir(), `middle-docs-pr-${Date.now()}.md`);
-  const body = [
+/** The PR body for an authored/maintained docs surface. Exported for assertion in tests. */
+export function docsPrBody(repo: string, commit: CommitResult): string {
+  return [
     `Automated docs harvester run for \`${repo}\`.`,
     "",
     `Authored/maintained the documentation surface in commit ${commit.sha}.`,
@@ -139,7 +169,43 @@ export const ghPushAndOpenPr: DocsPushSeam = async ({ repo, worktreePath, branch
     "",
     "Draft for human review — middle does not auto-merge docs PRs.",
   ].join("\n");
-  await writeFile(bodyFile, body);
+}
+
+/**
+ * The production push/PR step: force-push the docs branch (see {@link pushDocsBranch}),
+ * then open a **draft** PR for the authored docs — but only if one is not already
+ * open for the branch. Re-runs force-push onto the same branch, so the existing
+ * draft PR simply updates; create-vs-skip is decided by querying open PRs for the
+ * head (not by parsing a create error), so a re-run is idempotent. The PR stays
+ * draft: a human does the final review and merge (auto-merge is out of scope).
+ */
+export const ghPushAndOpenPr: DocsPushSeam = async ({ repo, worktreePath, branch, commit }) => {
+  await pushDocsBranch({ worktreePath, branch });
+
+  // A force-push onto an existing branch already updated its open PR — don't open
+  // a second. Decide on the live PR list for the head, not on a create-error string.
+  const existing = await run([
+    "gh",
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--head",
+    branch,
+    "--state",
+    "open",
+    "--json",
+    "number",
+    "--jq",
+    "length",
+  ]);
+  if (existing.exitCode !== 0) {
+    throw new Error(`docs persist: gh pr list --head ${branch} failed: ${existing.stderr.trim()}`);
+  }
+  if (Number(existing.stdout.trim()) > 0) return;
+
+  const bodyFile = join(tmpdir(), `middle-docs-pr-${Date.now()}.md`);
+  await writeFile(bodyFile, docsPrBody(repo, commit));
   try {
     const pr = await run(
       [
@@ -152,15 +218,13 @@ export const ghPushAndOpenPr: DocsPushSeam = async ({ repo, worktreePath, branch
         "--head",
         branch,
         "--title",
-        title,
+        "docs: update documentation surface",
         "--body-file",
         bodyFile,
       ],
       worktreePath,
     );
-    // A PR may already exist for this branch from a prior run — that's not a
-    // failure; the push above updated it. Only an unexpected error surfaces.
-    if (pr.exitCode !== 0 && !/already exists/i.test(pr.stderr)) {
+    if (pr.exitCode !== 0) {
       throw new Error(`docs persist: gh pr create failed: ${pr.stderr.trim()}`);
     }
   } finally {
