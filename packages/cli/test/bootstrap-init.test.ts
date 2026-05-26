@@ -312,6 +312,27 @@ describe("mm uninit", () => {
     expect(calls.closed[0]!.issue).toBe(142);
   });
 
+  test("closes the state issue offline by reading [repo] from committed policy (#103)", async () => {
+    // Post-split, [repo] lives in policy.toml and the number in config.toml. If
+    // the remote can't be resolved (offline / origin removed), uninit must still
+    // close the issue using the locally-committed identity — never orphan it.
+    const { deps, calls } = makeFakeDeps();
+    deps.resolveRepoInfo = async () => {
+      throw new Error("no remote");
+    };
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    writeFileSync(
+      join(repo, ".middle/policy.toml"),
+      '[repo]\nowner = "acme"\nname = "widget"\ndefault_branch = "main"\n',
+    );
+    writeFileSync(join(repo, ".middle/config.toml"), "[state_issue]\nnumber = 142\n");
+
+    const result = await uninitRepo(repo, deps, { dryRun: false });
+    expect(result.stateIssue).toBe(142);
+    expect(calls.closed).toHaveLength(1);
+    expect(calls.closed[0]!.issue).toBe(142);
+  });
+
   test("dry run removes nothing", async () => {
     const { deps, calls } = makeFakeDeps();
     await initRepo(repo, deps, { dryRun: false });
