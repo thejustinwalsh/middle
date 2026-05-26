@@ -67,18 +67,79 @@ export function createWorkflowRecord(db: Database, input: CreateWorkflowRecordIn
   );
 }
 
-/** Read a workflow's `meta_json.source` (`'manual'`/`'auto'`), or null if unset. */
-export function getWorkflowSource(db: Database, id: string): "manual" | "auto" | null {
+/** Per-pass state the checkbox-revert reconciler persists between poller ticks. */
+export type CheckboxReconcileState = {
+  /** The Epic PR head SHA observed at the last reconcile; null until first seen. */
+  headSha: string | null;
+  /** The Status checkboxes' checked-state map after the last pass (the diff base). */
+  state: Record<number, boolean>;
+};
+
+/**
+ * The typed shape of a workflow row's `meta_json` scratch. Every key is optional:
+ * different subsystems own different keys (`source` at creation, `checkboxReconcile`
+ * on the poller), so reads tolerate any subset and writes merge rather than clobber.
+ */
+export type WorkflowMeta = {
+  source?: "manual" | "auto";
+  checkboxReconcile?: CheckboxReconcileState;
+};
+
+/**
+ * Parse a workflow's `meta_json` into {@link WorkflowMeta}. A null/absent/malformed
+ * value reads as `{}` — the column is best-effort scratch, never load-bearing for
+ * a row's existence, so an unparseable blob must not throw into a caller.
+ */
+export function readWorkflowMeta(db: Database, id: string): WorkflowMeta {
   const row = db.query("SELECT meta_json FROM workflows WHERE id = ?").get(id) as {
     meta_json: string | null;
   } | null;
-  if (!row?.meta_json) return null;
+  if (!row?.meta_json) return {};
   try {
-    const source = (JSON.parse(row.meta_json) as { source?: unknown }).source;
-    return source === "manual" || source === "auto" ? source : null;
+    const parsed = JSON.parse(row.meta_json) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as WorkflowMeta) : {};
   } catch {
-    return null;
+    return {};
   }
+}
+
+/**
+ * Merge `patch` into a workflow's `meta_json`, preserving keys it doesn't set
+ * (read-merge-write). Single-writer-per-key in practice — `source` is written
+ * once at creation, `checkboxReconcile` only by the (single-worker) poller pass —
+ * so the read-modify-write needs no cross-key locking.
+ */
+export function patchWorkflowMeta(db: Database, id: string, patch: Partial<WorkflowMeta>): void {
+  const merged = { ...readWorkflowMeta(db, id), ...patch };
+  db.run("UPDATE workflows SET meta_json = ?, updated_at = ? WHERE id = ?", [
+    JSON.stringify(merged),
+    Date.now(),
+    id,
+  ]);
+}
+
+/** Read a workflow's `meta_json.source` (`'manual'`/`'auto'`), or null if unset. */
+export function getWorkflowSource(db: Database, id: string): "manual" | "auto" | null {
+  const source = readWorkflowMeta(db, id).source;
+  return source === "manual" || source === "auto" ? source : null;
+}
+
+/**
+ * The checkbox-revert pass's persisted diff base for a workflow. Defaults to
+ * `{ headSha: null, state: {} }` when unset, so a first observation always treats
+ * the PR as advanced and every checkbox as a fresh transition.
+ */
+export function getCheckboxReconcileState(db: Database, id: string): CheckboxReconcileState {
+  return readWorkflowMeta(db, id).checkboxReconcile ?? { headSha: null, state: {} };
+}
+
+/** Persist the checkbox-revert pass's diff base for the next tick (merges into `meta_json`). */
+export function setCheckboxReconcileState(
+  db: Database,
+  id: string,
+  value: CheckboxReconcileState,
+): void {
+  patchWorkflowMeta(db, id, { checkboxReconcile: value });
 }
 
 export type WorkflowPatch = {
@@ -558,6 +619,43 @@ export function listParkedImplementationWorkflows(db: Database): ParkedWorkflow[
     repo: string;
     epic_number: number;
     worktree_path: string | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    repo: r.repo,
+    epicNumber: r.epic_number,
+    worktreePath: r.worktree_path,
+  }));
+}
+
+/** A running `implementation` workflow the checkbox-revert pass considers. */
+export type RunningWorkflow = {
+  id: string;
+  repo: string;
+  epicNumber: number;
+  worktreePath: string;
+};
+
+/**
+ * Running `kind = 'implementation'` workflows that own both an Epic and a worktree
+ * — the set the checkbox-revert pass walks after a push. An Epic is required to
+ * find the PR; a worktree is required to run the gates, so rows missing either are
+ * excluded (the pass would have nothing to act on). Ordered oldest-first so the
+ * burst cap services the longest-running rows first.
+ */
+export function listRunningImplementationWorkflows(db: Database): RunningWorkflow[] {
+  const rows = db
+    .query(
+      `SELECT id, repo, epic_number, worktree_path FROM workflows
+        WHERE kind = 'implementation' AND state = 'running'
+          AND epic_number IS NOT NULL AND worktree_path IS NOT NULL
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all() as {
+    id: string;
+    repo: string;
+    epic_number: number;
+    worktree_path: string;
   }[];
   return rows.map((r) => ({
     id: r.id,
