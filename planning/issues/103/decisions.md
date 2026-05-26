@@ -29,3 +29,13 @@
 **Why:** All 8+ call sites already pass `repoPath: join(checkout, ".middle", "config.toml")`. The sibling derivation makes them pick up policy with zero churn, and a fresh clone (committed `policy.toml`, no local `config.toml` yet) reads policy correctly because the absent local file just contributes `{}`.
 
 **Evidence:** Call sites in `packages/dispatcher/src/main.ts`, `packages/cli/src/commands/docs.ts`, etc.
+
+## uninit reads [repo] from policy.toml to keep its offline close (self-review)
+**File(s):** `packages/cli/src/bootstrap/uninit.ts`
+**Date:** 2026-05-26
+
+**Decision:** `mm uninit`'s `readConfig` reads `[repo]` from the committed `policy.toml` (its new home), falling back to `config.toml` for legacy single-file installs, then to the remote.
+
+**Why:** A clean-eyes review pass flagged that moving `[repo]` into `policy.toml` left `readConfig` reading identity from `config.toml`, so `info` was always null and uninit leaned entirely on `resolveRepoInfo` — orphaning the state issue when offline / after `origin` is gone. Reading the committed identity locally restores the "never orphan the issue" guarantee. Also tightened `removeMiddleIgnore` to only rewrite when a middle-owned line is actually present (no spurious trailing-newline normalization). Each fix shipped with a regression test.
+
+**Evidence:** Tests `closes the state issue offline by reading [repo] from committed policy` and `no-op leaves a file without a trailing newline untouched`.
