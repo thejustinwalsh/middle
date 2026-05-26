@@ -16,6 +16,7 @@ import type {
   RepoDetail,
   RepoSummary,
   RunnerPanel,
+  RunSummary,
   SessionEvent,
   SettingsWire,
 } from "../wire.ts";
@@ -26,6 +27,7 @@ import {
   type ControlMetrics,
   type ControlWorkflowFrame,
 } from "./control-client.ts";
+import { Activity } from "./components/Activity.tsx";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
@@ -62,12 +64,15 @@ export function App() {
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
   );
-  const [view, setView] = useState<"epics" | "dashboard" | "queue" | "settings">("epics");
+  const [view, setView] = useState<"epics" | "dashboard" | "queue" | "activity" | "settings">(
+    "epics",
+  );
   const [epics, setEpics] = useState<EpicCard[]>([]);
   const [epicRepo, setEpicRepo] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsWire | null>(null);
   const [queueMetrics, setQueueMetrics] = useState<ControlMetrics | null>(null);
   const [queueLive, setQueueLive] = useState<ControlWorkflowFrame[]>([]);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
   const [error, setError] = useState<GuardError | null>(null);
 
   // The uniform async-error funnel for every fire-and-forget API call below —
@@ -225,6 +230,19 @@ export function App() {
     void guard("queue", async () => setQueueMetrics(await fetchControlMetrics()));
   }, [view, guard]);
 
+  const refreshRuns = useCallback(
+    () => guard("activity", async () => setRuns(await api.runs())),
+    [guard],
+  );
+
+  // Load + poll the run history while the Activity view is open.
+  useEffect(() => {
+    if (view !== "activity") return;
+    void refreshRuns();
+    const id = setInterval(() => void refreshRuns(), POLL_MS);
+    return () => clearInterval(id);
+  }, [view, refreshRuns]);
+
   // Default the Epic-view repo filter to the first tracked repo once repos arrive.
   useEffect(() => {
     if (epicRepo === null && repos.length > 0) setEpicRepo(repos[0]!.repo);
@@ -312,6 +330,10 @@ export function App() {
         url={view === "epics" && epicRepo ? `/events/repos/${encodeURIComponent(epicRepo)}` : null}
         handlers={{ workflow: () => epicRepo && void refreshEpics(epicRepo) }}
       />
+      <ChannelSubscriber
+        url={view === "activity" ? "/control/events" : null}
+        handlers={{ workflow: () => void refreshRuns() }}
+      />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error.message}</div> : null}
       <nav className="view-nav">
@@ -335,6 +357,13 @@ export function App() {
           onClick={() => setView("queue")}
         >
           queue
+        </button>
+        <button
+          type="button"
+          className={view === "activity" ? "active" : ""}
+          onClick={() => setView("activity")}
+        >
+          activity
         </button>
         <button
           type="button"
@@ -398,6 +427,8 @@ export function App() {
         </main>
       ) : view === "queue" ? (
         <Queue metrics={queueMetrics} live={queueLive} />
+      ) : view === "activity" ? (
+        <Activity runs={runs} onOpenInspector={openInspector} />
       ) : (
         <main>
           <NeedsYou
