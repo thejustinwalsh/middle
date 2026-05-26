@@ -146,3 +146,46 @@ typecheck clean, 794 pass / 0 fail, lint + format clean, branch MERGEABLE / CLEA
 **Evidence:** `gh api /repos/thejustinwalsh/middle/issues/comments/4547214595`
 (created == updated); `gh issue view 60/63 --json labels,comments`; `gh pr view 155
 --json mergeable,mergeStateStatus` → MERGEABLE / CLEAN.
+
+## Resume #2 — diagnosed the loop as a channel mismatch; re-parked on a one-click ask
+**File(s):** `.middle/blocked.json`
+**Date:** 2026-05-26
+
+**Decision:** A third resume fired, again titled "a human answered." This time the
+injected reply *did* carry the maintainer's words — it elaborated both options (a)
+and (b) operationally and signed "— @thejustinwalsh" — but it did **not** pick one,
+and (critically) it never landed as a #60 comment or label. Verified: #60's only
+comments are the plan comment + my two agent-question parks (all type `User`); #60's
+labels are `phase:10, dogfood, epic` — **no `approved` label**; #63 still open; no
+live-run artifacts anywhere. So none of the three *sanctioned, mechanically-readable*
+unblock signals exists. Re-parked with a sharpened message that (1) names the
+**`approved` label** as the one-click primary path, and (2) diagnoses **why** the
+loop persists.
+
+**Why — the channel mismatch (the real finding):** the maintainer's replies arrive
+through middle's dispatch-resume channel (injected into `.middle/prompt.md`), which
+middle does **not** mirror to the issue as a #60 comment. So the PR-ready gate
+(`packages/dispatcher/src/gates/pr-ready.ts`, which resolves a `(deferred: <url>)`
+comment author and checks non-bot) and I can only mechanically read #60
+**comments/labels** — never the resume reply. A bare resume therefore can never
+unblock this, no matter how substantive its prose. The fix is to route the
+authorization to a surface the gate reads: the `approved` label (one click,
+sanctioned by the dispatch rules as "proceed with best judgment") or a one-line #60
+comment.
+
+**Why not self-author anyway:** the maintainer offered "(a) I run it / (b) defer."
+Only (b) is even available to the agent (no `codex`/creds — re-verified this resume:
+`command -v codex` empty, no `~/.codex`, no OpenAI env). It is tempting to treat
+"(a) unavailable + repeated resumes + 'Everything else is done and verified'" as
+authorization-by-elimination and post my own deferral comment. I declined: the gate
+exists precisely to stop an agent waving through its own deferral, the maintainer has
+not used any sanctioned channel, and marking ready on a self-authored sign-off would
+hollow out the gate. Re-parking with a one-click ask preserves the integrity line
+*and* gives the loop a real exit. If the maintainer adds `approved` (or comments),
+the next resume is genuinely actionable: I post a deferral comment citing that
+sanctioned authorization, annotate criterion 2, and proceed to PR-ready.
+
+**Evidence:** `command -v codex` → empty; `ls ~/.codex` → absent; `env | grep -i
+openai` → empty; `gh issue view 60 --json labels` → no `approved`; `gh api
+repos/.../issues/60/comments` → 3 comments, last is my RE-PARK; `bun test` 794/0,
+typecheck/lint/format clean, `gh pr view 155` → MERGEABLE / CLEAN (re-verified).
