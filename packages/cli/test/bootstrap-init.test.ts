@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isParseError, parseStateIssue, validate } from "@middle/state-issue";
+import { loadConfig } from "@middle/core";
 import { initRepo } from "../src/bootstrap/init.ts";
 import { uninitRepo } from "../src/bootstrap/uninit.ts";
 import { BOOTSTRAP_VERSION, type BootstrapDeps } from "../src/bootstrap/types.ts";
@@ -168,6 +169,22 @@ describe("mm init — idempotent re-init", () => {
     // committed policy untouched; local cache minted with the reused number
     expect(readFileSync(join(repo, ".middle/policy.toml"), "utf8")).toBe(committed);
     expect(readFileSync(join(repo, ".middle/config.toml"), "utf8")).toContain("number = 77");
+  });
+
+  test("loadConfig reads init's two files via sibling derivation and merges them", async () => {
+    // End-to-end seam: the path loadConfig derives for policy.toml must match
+    // where initRepo actually writes it (the sibling of the config.toml path).
+    const { deps } = makeFakeDeps();
+    await initRepo(repo, deps, { dryRun: false });
+
+    const config = loadConfig({ repoPath: join(repo, ".middle", "config.toml") });
+    // from policy.toml (committed)
+    expect(config.repo!.owner).toBe("acme");
+    expect(config.limits!.complexityCeiling).toBe(3);
+    expect(config.recommender!.autoDispatch).toBe(false);
+    // from config.toml (local cache)
+    expect(config.stateIssue!.number).toBe(142);
+    expect(config.bootstrap!.version).toBe(BOOTSTRAP_VERSION);
   });
 });
 
