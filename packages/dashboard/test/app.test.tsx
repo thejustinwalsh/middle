@@ -21,6 +21,33 @@ test("App nav includes a queue tab", () => {
   expect(html).toContain(">queue<");
 });
 
+test("App nav includes an activity tab", () => {
+  const html = renderToStaticMarkup(<App />);
+  expect(html).toContain(">activity<");
+});
+
+test("api.runs reads runs from a live server", async () => {
+  const { db, cleanup } = makeDb();
+  try {
+    db.run(
+      `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
+       VALUES ('rec1', 'recommender', 'o/r', 'claude', 'completed', 1000, 4000)`,
+    );
+    const deps = createDbDeps({ db, config: makeConfig() });
+    const server = await createDashboardServer({ deps, port: 0, serveSpa: false });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`);
+      expect(res.status).toBe(200);
+      const runs = (await res.json()) as { workflowId: string; kind: string }[];
+      expect(runs[0]).toMatchObject({ workflowId: "rec1", kind: "recommender" });
+    } finally {
+      server.stop(true);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test("App defaults to the Epics view (nav tab + empty state render)", () => {
   const html = renderToStaticMarkup(<App />);
   expect(html).toContain(">epics<");
