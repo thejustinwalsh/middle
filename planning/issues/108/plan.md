@@ -15,12 +15,13 @@ Make the record-creating workflow steps survive a bunqueue retry: a retried step
 - The recommender/documentation `check-rate-limit` steps dodged this with `retry: 1`,
   but that's a per-step workaround, not a fix — and `prepare-worktree` legitimately
   *wants* to retry the worktree creation.
-- **Fix at the source:** make `createWorkflowRecord` idempotent with `INSERT OR IGNORE`.
-  The only way the same `id` (= bunqueue `executionId`, unique per execution) collides
-  is the same execution retrying — exactly the case we want to no-op. A retried
-  record-creating step becomes a no-op on the INSERT and the real downstream error
-  surfaces. Hardens all three workflows (implementation, recommender, documentation)
-  at one point.
+- **Fix at the source:** make `createWorkflowRecord` idempotent on the `id` PK with
+  `INSERT ... ON CONFLICT(id) DO NOTHING`. The only way the same `id` (= bunqueue
+  `executionId`, unique per execution) collides is the same execution retrying — exactly
+  the case we want to no-op. A retried record-creating step becomes a no-op on the INSERT
+  and the real downstream error surfaces. Scoped to the PK conflict (not a blanket
+  `INSERT OR IGNORE`) so a genuine CHECK/NOT-NULL violation still throws. Hardens all
+  three workflows (implementation, recommender, documentation) at one point.
 - Leave the existing `retry: 1` annotations in place — they have an independent
   rationale (a deterministic db-state check has nothing to gain from retrying) and
   are now belt-and-suspenders, not load-bearing.
@@ -31,7 +32,7 @@ Make the record-creating workflow steps survive a bunqueue retry: a retried step
    surfaces the real error instead of UNIQUE.
 
 ## Files likely to change
-- `packages/dispatcher/src/workflow-record.ts` — `INSERT` → `INSERT OR IGNORE` in `createWorkflowRecord`, with a doc note on the idempotency contract.
+- `packages/dispatcher/src/workflow-record.ts` — `INSERT` → `INSERT ... ON CONFLICT(id) DO NOTHING` in `createWorkflowRecord`, with a doc note on the idempotency contract.
 - `packages/dispatcher/test/workflow-record.test.ts` — unit test: second create with same id is a no-op (no throw, first row preserved).
 - `packages/dispatcher/test/implementation-workflow.test.ts` — retry test: `prepare-worktree` whose `createWorktree` throws once retries and surfaces that error, never a UNIQUE.
 
