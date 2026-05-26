@@ -24,6 +24,9 @@
       "dependencies": {
         "@middle/core": "workspace:*",
       },
+      "devDependencies": {
+        "smol-toml": "^1.6.1",
+      },
     },
     "packages/cli": {
       "name": "@middle/cli",
@@ -71,6 +74,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@middle/adapter-claude": "workspace:*",
+        "@middle/adapter-codex": "workspace:*",
         "@middle/core": "workspace:*",
         "@middle/docs": "workspace:*",
         "@middle/state-issue": "workspace:*",

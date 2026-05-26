@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { claudeAdapter } from "@middle/adapter-claude";
-import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
+import { getAdapter } from "@middle/dispatcher/src/adapters.ts";
 import {
   dispatchDocumentation,
   resolveDocumentationOptions,
@@ -14,12 +13,6 @@ export type RunDocsOptions = {
   /** Injected dispatch seam — defaults to the real runner. Tests override it. */
   dispatch?: typeof dispatchDocumentation;
 };
-
-/** Phase 7 adapter registry — only `claude` is implemented. */
-function getAdapter(name: string): AgentAdapter {
-  if (name !== "claude") throw new Error(`unknown adapter: ${name}`);
-  return claudeAdapter;
-}
 
 /**
  * `mm docs <repo>` — trigger a documentation run for the given repo. Resolves

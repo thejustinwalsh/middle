@@ -159,14 +159,27 @@ describe("dispatchDocumentation — enqueues a documentation workflow (read-only
 });
 
 describe("resolveDocumentationOptions", () => {
-  test("rejects a non-claude adapter in Phase 1", async () => {
+  test("accepts a configured non-default adapter (e.g. codex)", async () => {
     const result = await resolveDocumentationOptions(
       repoPath,
       configWith({ enabled: true, intervalMinutes: 60, adapter: "codex", write: false }),
       stubAdapter,
     );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects an adapter the registry doesn't know", async () => {
+    const knownOnly = (name: string): AgentAdapter => {
+      if (name !== "claude" && name !== "codex") throw new Error(`unknown adapter: ${name}`);
+      return stubAdapter();
+    };
+    const result = await resolveDocumentationOptions(
+      repoPath,
+      configWith({ enabled: true, intervalMinutes: 60, adapter: "ghost", write: false }),
+      knownOnly,
+    );
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("only the 'claude' adapter");
+    if (!result.ok) expect(result.error).toContain("unknown adapter: ghost");
   });
 
   test("resolves the markdown fallback target for a plain repo", async () => {
