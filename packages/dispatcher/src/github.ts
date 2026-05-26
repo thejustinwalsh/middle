@@ -216,14 +216,19 @@ export const ghGitHub: GitHubGateway = {
       throw new Error(`gh pr list failed: ${result.stderr.trim()}`);
     }
     // `gh` returns `headRefOid`; map it onto the `headSha` field the gateway exposes.
-    const prs = (
+    const prs: PullRequest[] = (
       JSON.parse(result.stdout) as Array<{
         number: number;
         body: string;
         isDraft: boolean;
         headRefOid?: string;
       }>
-    ).map((pr) => ({ ...pr, headSha: pr.headRefOid }));
+    ).map((pr) => ({
+      number: pr.number,
+      body: pr.body,
+      isDraft: pr.isDraft,
+      headSha: pr.headRefOid,
+    }));
     // The Epic PR is the one that closes the Epic. Match a GitHub closing
     // keyword referencing the exact Epic number (word-boundaried so #27 doesn't
     // match #270).
