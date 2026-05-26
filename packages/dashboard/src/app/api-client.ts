@@ -13,6 +13,7 @@ import type {
   RepoDetail,
   RepoSummary,
   RunnerPanel,
+  RunSummary,
   SessionEvent,
   SettingsWire,
 } from "../wire.ts";
@@ -106,4 +107,5 @@ export const api = {
   },
   dispatchEpic: (repo: string, epicNumber: number, adapter: string) =>
     postJson<{ workflowId: string }>(`/api/epics/${enc(repo)}/${epicNumber}/dispatch`, { adapter }),
+  runs: () => getJson<RunSummary[]>("/api/runs"),
 };
