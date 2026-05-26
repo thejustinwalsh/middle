@@ -1,0 +1,24 @@
+# middle repo policy — COMMITTED and shared across contributors (issue #103).
+# Volatile/per-machine fields live in the gitignored .middle/config.toml cache.
+[repo]
+owner = "thejustinwalsh"
+name = "middle"
+default_branch = "main"
+pr_mode = "single"
+
+[limits]
+max_concurrent = 3
+max_concurrent_per_adapter = { claude = 2, codex = 1 }
+complexity_ceiling = 3
+
+[recommender]
+enabled = true
+interval_minutes = 15
+adapter = "claude"
+auto_dispatch = false
+
+[docs]
+enabled = true
+interval_minutes = 1440
+adapter = "claude"
+write = false
