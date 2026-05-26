@@ -12,7 +12,7 @@ function scratch(): { dir: string; cleanup: () => void } {
 }
 
 function gate(over: Partial<Gate> & Pick<Gate, "name" | "command">): Gate {
-  return { timeoutSeconds: 30, ...over };
+  return { timeoutSeconds: 30, category: "unit", ...over };
 }
 
 describe("runGate", () => {
