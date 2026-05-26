@@ -8,13 +8,15 @@ import type {
 } from "@middle/core";
 
 /**
- * Codex's rate-limit signal. The spec's deliberately generous starting pattern
- * (`/rate.?limit|429|too many requests/i`), to be tightened as Codex's real
- * usage-limit messages are observed on live runs. Unlike Claude's, it carries no
- * reset timestamp — Codex's message format hasn't surfaced one, so the
- * classification defaults `resetAt` to "unknown" rather than inventing a time.
+ * Codex's rate-limit signal. The spec's deliberately generous starting pattern,
+ * to be tightened as Codex's real usage-limit messages are observed on live runs.
+ * `429` is word-boundaried (`\b429\b`) so it matches the HTTP status, not an
+ * incidental substring — a transcript tail is full of line numbers, hashes, and
+ * byte counts ("line 4290", "commit 4291ab"), and a false `rate-limited` would
+ * halt a healthy agent. Unlike Claude's, the pattern carries no reset timestamp
+ * (Codex's format hasn't surfaced one), so `resetAt` defaults to "unknown".
  */
-const RATE_LIMIT_RE = /rate.?limit|429|too many requests/i;
+const RATE_LIMIT_RE = /rate.?limit|\b429\b|too many requests/i;
 
 /**
  * Classify the agent's state at a turn-end (`Stop`) hook. The sentinel logic is

@@ -281,6 +281,30 @@ describe("classifyStop", () => {
     expect(result.kind).toBe("rate-limited");
   });
 
+  test.each([
+    ["line 4290 of the file", "4290 — a line number"],
+    ["commit 4291abcdef", "4291 in a hash"],
+    ["listening on port 14290", "embedded 4290"],
+    ["processed 42900 rows", "42900"],
+  ])("a bare %p is NOT a rate-limit signal → bare-stop (%s)", (text) => {
+    const { cwd, transcript } = writeMiddleDir();
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        timestamp: "2026-05-14T12:30:00.000Z",
+        type: "response_item",
+        payload: { type: "message", role: "assistant", content: [{ type: "text", text }] },
+      }),
+    );
+    const result = codexAdapter.classifyStop({
+      payload: { cwd },
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("bare-stop");
+  });
+
   test("done.json sentinel → done", () => {
     const { cwd, middle, transcript } = writeMiddleDir();
     writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 155 }));

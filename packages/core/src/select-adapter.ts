@@ -22,7 +22,11 @@ export type AdapterSelectionInput = {
   labels: readonly string[];
   /** `config.global.default_adapter`. */
   defaultAdapter: string;
-  /** Configured + implemented adapter names a choice is validated against. */
+  /**
+   * The dispatchable adapter names a choice is validated against — the caller's
+   * already-filtered set of configured, enabled, and implemented adapters. A
+   * label/default outside this set throws.
+   */
   available: readonly string[];
   /** Adapters whose rate limit has not yet reset. Defaults to none. */
   rateLimited?: ReadonlySet<string>;
