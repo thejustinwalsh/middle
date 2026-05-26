@@ -77,6 +77,15 @@ Body PASSES iff:
 6. Empty sections use documented empty state
 7. Metadata `generated` parses as ISO 8601
 
+**Empty-state leniency (parser).** The renderer emits the canonical empty form
+(no bullet for Needs human input / Blocked / Excluded; `- _no agents in flight_`
+for In-flight). The parser is deliberately lenient on *input*, since agents
+author these bodies: a list section is read as empty when it has no bullets **or**
+when every bullet is an italic placeholder sentinel (`- _…_` / `- *…*`, e.g.
+`- _none_`). This relaxes only the empty-state shape — per-item parsing stays
+strict (a real item is always `- **#<n> …**`), and round-trip byte-identity is
+unaffected (the canonical forms still parse and re-render verbatim).
+
 ## Diff semantics
 
 Dispatcher updates In-flight / Rate limits / Slot usage between recommender runs;
