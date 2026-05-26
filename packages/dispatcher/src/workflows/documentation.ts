@@ -35,10 +35,10 @@ export type DocsTargetSummary = {
 export type DocumentationRunConfig = {
   defaultAdapter: string;
   /**
-   * Whether writing is enabled in config. Read-only/dry-run first: even when
-   * true, the persist seam stays unwired in this phase, so the run is an audit
-   * regardless — `write` is reported to the agent so its audit notes whether a
-   * maintained surface would be in scope.
+   * Whether writing is enabled in config — the single gate for audit vs author.
+   * `false` (default): the run is a read-only audit (`mode: audit`) and persists
+   * nothing. `true`: the agent runs in `mode: write` — discover-or-author the docs
+   * surface — and the wired `persistDocs` seam commits the result and opens a PR.
    */
   write: boolean;
 };
@@ -89,11 +89,16 @@ export function sessionNameFor(input: DocumentationInput): string {
 
 /**
  * Assemble the documentation prompt. Reports the resolved docs target and the
- * run mode to the `documenting-the-repo` skill. The mode is **audit** — the
- * read-only/dry-run first pass: the agent audits the docs surface against the
- * resolved target and reports drift, and does not persist changes (the persist
- * seam is unwired). `config.write` is reported so the audit can note whether a
- * maintained surface is in scope. Pure so it is unit-testable without the engine.
+ * run mode to the `documenting-the-repo` skill. `config.write` selects the mode:
+ *
+ * - `write: false` → **audit** (read-only/dry-run): the agent audits the docs
+ *   surface against the resolved target and reports drift; it persists nothing.
+ * - `write: true` → **write**: the agent discovers-or-authors — maintaining an
+ *   existing surface or authoring the initial Diátaxis corpus when none exists —
+ *   and writes files to disk. The dispatcher's `persistDocs` seam commits the
+ *   result and opens a PR; the agent itself does not commit or push.
+ *
+ * Pure so it is unit-testable without the engine.
  */
 export function assembleDocumentationPrompt(parts: {
   repo: string;
@@ -102,6 +107,50 @@ export function assembleDocumentationPrompt(parts: {
 }): string {
   const { repo, target, config } = parts;
   const json = (value: unknown): string => JSON.stringify(value, null, 2);
+  const configBlock = `## config
+\`\`\`json
+${json({ default_adapter: config.defaultAdapter, write: config.write })}
+\`\`\``;
+  const targetBlock = `## docs_target
+The resolver detected this target; route any pages and sample paths through it.
+\`\`\`json
+${json(target)}
+\`\`\``;
+  const llmsTxtLine = target.supportsLlmsTxt
+    ? config.write
+      ? `- maintain the llms.txt surface under \`${target.docsRoot}\`, keeping it in sync with the docs\n`
+      : "- the llms.txt surface, where it has drifted from the docs\n"
+    : "";
+
+  if (config.write) {
+    return `# Documentation run — docs harvester context
+
+You are the docs harvester. Maintain this repo's documentation surface following
+the \`documenting-the-repo\` skill. This is a **write** pass: write your changes to
+disk. Do **not** commit, push, or open a PR — the dispatcher commits everything you
+write under the docs target and opens a draft PR for human review.
+
+- \`repo\`: ${repo}
+- \`mode\`: write
+
+${targetBlock}
+
+${configBlock}
+
+## what to do — discover or author
+Following the skill, work the docs surface rooted at \`${target.docsRoot}\`:
+- **Discover first.** If a docs surface already exists there, maintain and correct
+  it: fix code samples that drift from working source, prune stale/orphaned pages,
+  document public surfaces that are missing, and strip LLM-isms (the skill's blocklist).
+- **Author when none exists.** If \`${target.docsRoot}\` has no surface yet, author the
+  initial corpus per Diátaxis: the human-facing markdown docs (tutorial / how-to /
+  reference / explanation) under \`${target.docsRoot}\`, and the agent-facing surface the
+  skill prescribes (module-index frontmatter and per-folder \`CLAUDE.md\` where the skill's
+  predicate holds).
+- Keep code samples grounded in working source, and avoid LLM-isms.
+${llmsTxtLine}`;
+  }
+
   return `# Documentation run — docs harvester context
 
 You are the docs harvester. Audit this repo's documentation surface following
@@ -111,16 +160,9 @@ drift, do not persist changes. The dispatcher provides everything below.
 - \`repo\`: ${repo}
 - \`mode\`: audit
 
-## docs_target
-The resolver detected this target; route any sample paths through it.
-\`\`\`json
-${json(target)}
-\`\`\`
+${targetBlock}
 
-## config
-\`\`\`json
-${json({ default_adapter: config.defaultAdapter, write: config.write })}
-\`\`\`
+${configBlock}
 
 ## what to audit
 Following the skill's audit pass, flag and report (do not fix in this pass):
@@ -128,7 +170,7 @@ Following the skill's audit pass, flag and report (do not fix in this pass):
 - stale or orphaned pages under \`${target.docsRoot}\`
 - public surfaces missing documentation
 - LLM-isms (the skill's blocklist)
-${target.supportsLlmsTxt ? "- the llms.txt surface, where it has drifted from the docs\n" : ""}`;
+${llmsTxtLine}`;
 }
 
 /**
