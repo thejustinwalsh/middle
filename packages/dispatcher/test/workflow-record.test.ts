@@ -11,10 +11,15 @@ import {
   createWorkflowRecord,
   type CreateWorkflowRecordInput,
   finalizeParkedWorkflow,
+  getCheckboxReconcileState,
   getWorkflow,
   getWorkflowSource,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
+  listRunningImplementationWorkflows,
+  patchWorkflowMeta,
+  readWorkflowMeta,
+  setCheckboxReconcileState,
   updateWorkflow,
 } from "../src/workflow-record.ts";
 
@@ -61,6 +66,104 @@ describe("dispatch source (#53)", () => {
     expect(getWorkflowSource(db, "a")).toBe("auto");
     expect(getWorkflowSource(db, "none")).toBeNull();
     expect(getWorkflowSource(db, "missing")).toBeNull();
+  });
+});
+
+describe("workflow meta_json accessors", () => {
+  test("readWorkflowMeta returns {} for a missing row, a null meta, and malformed JSON", () => {
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "recommender",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
+    expect(readWorkflowMeta(db, "absent")).toEqual({});
+    expect(readWorkflowMeta(db, "w")).toEqual({}); // created without source → meta_json null
+    db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", ["{not json", "w"]);
+    expect(readWorkflowMeta(db, "w")).toEqual({});
+    // A non-object JSON value (e.g. a bare string) also degrades to {}.
+    db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", ['"a string"', "w"]);
+    expect(readWorkflowMeta(db, "w")).toEqual({});
+  });
+
+  test("patchWorkflowMeta merges, preserving keys it does not set", () => {
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+      source: "manual",
+    });
+    // Adding checkboxReconcile must not clobber the source written at creation.
+    patchWorkflowMeta(db, "w", { checkboxReconcile: { headSha: "abc", state: { 1: true } } });
+    expect(getWorkflowSource(db, "w")).toBe("manual");
+    expect(readWorkflowMeta(db, "w").checkboxReconcile).toEqual({
+      headSha: "abc",
+      state: { 1: true },
+    });
+    // And patching source back must not drop checkboxReconcile.
+    patchWorkflowMeta(db, "w", { source: "auto" });
+    expect(getWorkflowSource(db, "w")).toBe("auto");
+    expect(readWorkflowMeta(db, "w").checkboxReconcile).toEqual({
+      headSha: "abc",
+      state: { 1: true },
+    });
+  });
+
+  test("checkbox-reconcile state round-trips; defaults when unset", () => {
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    setCheckboxReconcileState(db, "w", { headSha: "deadbeef", state: { 7: true, 8: false } });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({
+      headSha: "deadbeef",
+      state: { 7: true, 8: false },
+    });
+  });
+});
+
+describe("listRunningImplementationWorkflows", () => {
+  const seed = (
+    id: string,
+    opts: {
+      kind?: "implementation" | "recommender" | "documentation";
+      state?: "running" | "waiting-human" | "pending";
+      epicNumber?: number | null;
+      worktreePath?: string | null;
+    } = {},
+  ) => {
+    createWorkflowRecord(db, {
+      id,
+      kind: opts.kind ?? "implementation",
+      repo: "o/r",
+      epicNumber: opts.epicNumber === undefined ? 1 : opts.epicNumber,
+      adapter: "claude",
+    });
+    const patch: Parameters<typeof updateWorkflow>[2] = { state: opts.state ?? "running" };
+    if (opts.worktreePath !== null) patch.worktreePath = opts.worktreePath ?? "/wt/x";
+    updateWorkflow(db, id, patch);
+  };
+
+  test("returns only running implementation rows that own both an epic and a worktree", () => {
+    seed("run-1", { worktreePath: "/wt/1" });
+    seed("run-2", { worktreePath: "/wt/2" });
+    seed("parked", { state: "waiting-human" });
+    seed("pending", { state: "pending" });
+    seed("recommender", { kind: "recommender", epicNumber: null });
+    seed("no-epic", { epicNumber: null });
+    seed("no-worktree", { worktreePath: null });
+
+    const ids = listRunningImplementationWorkflows(db).map((r) => r.id);
+    expect(ids).toEqual(["run-1", "run-2"]);
+    const first = listRunningImplementationWorkflows(db)[0]!;
+    expect(first).toEqual({ id: "run-1", repo: "o/r", epicNumber: 1, worktreePath: "/wt/1" });
   });
 });
 
