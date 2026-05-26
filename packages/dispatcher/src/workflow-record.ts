@@ -12,6 +12,17 @@ export type WorkflowState =
   | "failed"
   | "cancelled";
 
+/**
+ * The terminal workflow states — settled, owns no session, accepts no further transition.
+ * A strict subset of {@link WorkflowState}. Finalizers take this (not `WorkflowState`) so a
+ * non-terminal value (`"running"`, `"waiting-human"`, …) can't be written as a "final"
+ * state: that would consume the wait row yet strand the workflow with no recovery path.
+ */
+export type TerminalWorkflowState = Extract<
+  WorkflowState,
+  "completed" | "compensated" | "failed" | "cancelled"
+>;
+
 export type WorkflowRecord = {
   id: string;
   kind: "implementation" | "recommender" | "documentation";
@@ -197,7 +208,7 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
 export function finalizeParkedWorkflow(
   db: Database,
   id: string,
-  finalState: WorkflowState,
+  finalState: TerminalWorkflowState,
 ): boolean {
   const res = db.run(
     "UPDATE workflows SET state = ?, updated_at = ? WHERE id = ? AND state = 'waiting-human'",
@@ -214,7 +225,12 @@ export function finalizeParkedWorkflow(
  * for a *new* dispatch reusing a deterministic session name would otherwise
  * attach to the corpse.
  */
-const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as const;
+const TERMINAL_STATES = [
+  "completed",
+  "compensated",
+  "failed",
+  "cancelled",
+] as const satisfies readonly TerminalWorkflowState[];
 
 export type ActiveWorkflow = { id: string; sessionToken: string | null };
 
