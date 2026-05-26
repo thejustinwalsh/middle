@@ -29,6 +29,7 @@ import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.t
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
+import { startAuditCron } from "./audit-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
@@ -641,6 +642,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   };
   const stopRecommenderCron = await startRecommenderCron(recommenderCronDeps);
 
+  // Standing backlog audit (Epic #143): an hourly sweep that flags open feature
+  // issues whose acceptance criteria fail the integration rubric `needs-design`.
+  const stopAuditCron = await startAuditCron({ db, github: ghGitHub });
+
   // Startup kick: don't idle until the first cron tick / next interval. Run one
   // recommender due-check pass NOW — any overdue managed repo fires immediately
   // (then auto-dispatch on completion) instead of waiting up to the cron interval.
@@ -697,6 +702,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       await stopRecommenderCron();
     } catch (error) {
       console.error(`shutdown: stopRecommenderCron failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopAuditCron();
+    } catch (error) {
+      console.error(`shutdown: stopAuditCron failed — ${(error as Error).message}`);
     }
     try {
       hookServer.stop();
