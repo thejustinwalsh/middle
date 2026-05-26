@@ -1,5 +1,10 @@
 import { Bunqueue } from "bunqueue/client";
-import { reconcileTranscriptDrift, runWatchdog, type WatchdogDeps } from "./watchdog.ts";
+import {
+  reconcileNotifications,
+  reconcileTranscriptDrift,
+  runWatchdog,
+  type WatchdogDeps,
+} from "./watchdog.ts";
 
 /** How often the watchdog reconciles. The spec mandates 30s. */
 export const WATCHDOG_INTERVAL_MS = 30_000;
@@ -7,9 +12,13 @@ export const WATCHDOG_INTERVAL_MS = 30_000;
 /**
  * Stand up the watchdog as a bunqueue cron: every {@link WATCHDOG_INTERVAL_MS}
  * the worker runs the transcript-drift reconciler (correct heartbeats from the
- * source-of-truth transcript) and then a watchdog pass (launch-timeout, tmux
- * liveness, idle detection, sentinel re-arm). Drift runs first so freshness sees
- * corrected heartbeats. Returns a stop function that tears the cron down.
+ * source-of-truth transcript), the notification failsafe (rescue an agent stuck
+ * on a Notification before the idle ceiling — #128), and then a watchdog pass
+ * (launch-timeout, tmux liveness, idle detection, sentinel re-arm). Drift runs
+ * first so both later passes see corrected heartbeats; the notification pass runs
+ * before the watchdog so a Notification block is handled faster (and more
+ * informatively) than the generic idle-timeout. Returns a stop function that
+ * tears the cron down.
  *
  * The reconcile logic itself (`runWatchdog` / `reconcileTranscriptDrift`) is
  * pure and unit-tested; this wrapper is the thin scheduling glue.
@@ -20,6 +29,7 @@ export async function startWatchdog(deps: WatchdogDeps): Promise<() => Promise<v
     processor: async () => {
       try {
         reconcileTranscriptDrift(deps);
+        await reconcileNotifications(deps);
         await runWatchdog(deps);
       } catch (error) {
         console.error(`[watchdog] reconcile pass failed: ${(error as Error).message}`);

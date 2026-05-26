@@ -12,14 +12,12 @@ describe("classifyNotification — permission blocks", () => {
     expect(classifyNotification({ message, pane: "" })).toBe("permission");
   });
 
-  test.each([
-    "Do you want to proceed?",
-    "Do you want to allow this?",
-    "❯ 1. Yes",
-    "❯ 2. Allow",
-  ])("pane %p → permission even with a generic message", (pane) => {
-    expect(classifyNotification({ message: "Claude is notifying you", pane })).toBe("permission");
-  });
+  test.each(["Do you want to proceed?", "Do you want to allow this?", "❯ 1. Yes", "❯ 2. Allow"])(
+    "pane %p → permission even with a generic message",
+    (pane) => {
+      expect(classifyNotification({ message: "Claude is notifying you", pane })).toBe("permission");
+    },
+  );
 
   test("permission outranks an input-shaped message when the pane shows a dialog", () => {
     expect(
@@ -49,7 +47,10 @@ describe("classifyNotification — idle/unknown", () => {
 
   test("tolerates missing message/pane (undefined-safe)", () => {
     expect(
-      classifyNotification({ message: undefined as unknown as string, pane: undefined as unknown as string }),
+      classifyNotification({
+        message: undefined as unknown as string,
+        pane: undefined as unknown as string,
+      }),
     ).toBe("idle-unknown");
   });
 });

@@ -279,6 +279,14 @@ export function firstEventTs(db: Database, workflowId: string, type: string): nu
   return row?.ts ?? null;
 }
 
+/** Timestamp of the most recent `events` row of this type for the workflow, or null. */
+export function lastEventTs(db: Database, workflowId: string, type: string): number | null {
+  const row = db
+    .query("SELECT ts FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC LIMIT 1")
+    .get(workflowId, type) as { ts: number } | null;
+  return row?.ts ?? null;
+}
+
 /** The `type` of the most recent `events` row for a workflow, or null if none. */
 export function latestEventType(db: Database, workflowId: string): string | null {
   const row = db

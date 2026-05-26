@@ -35,7 +35,7 @@ import { startStalenessCron } from "./staleness-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
-import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
+import { capturePane, killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import { createWorktree, destroyWorktree, pruneWorktreeAt } from "./worktree.ts";
 import { buildRecommenderContext, createRecommenderWorkflow } from "./workflows/recommender.ts";
@@ -592,12 +592,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     }),
   );
 
-  // Watchdog cron: every 30s, correct transcript drift then reconcile every
-  // launching/running workflow (launch-timeout, tmux liveness, idle detection,
-  // sentinel re-arm). The reconcile logic is adapter-agnostic via getAdapter.
+  // Watchdog cron: every 30s, correct transcript drift, rescue an agent stuck on
+  // a Notification (#128), then reconcile every launching/running workflow
+  // (launch-timeout, tmux liveness, idle detection, sentinel re-arm). The
+  // reconcile logic is adapter-agnostic via getAdapter. capturePane/sendText/
+  // sendEnter back the notification failsafe's capture + nudge.
   const stopWatchdog = await startWatchdog({
     db,
-    tmux: { status, killSession },
+    tmux: { status, killSession, capturePane, sendText, sendEnter },
     getAdapter,
   });
 
