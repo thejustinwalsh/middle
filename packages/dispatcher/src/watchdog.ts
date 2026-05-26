@@ -345,9 +345,13 @@ function latestEventPayload(
   workflowId: string,
   type: string,
 ): Record<string, unknown> | null {
+  // `id DESC` breaks a `ts` tie deterministically (the failsafe can write events
+  // sharing a ts in one tick). Today `idx_events_workflow_ts` happens to return
+  // the highest id first within a ts group, but that's a query-plan accident — the
+  // explicit tie-breaker pins "latest row wins" independent of the index/plan.
   const row = db
     .query(
-      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC LIMIT 1",
+      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC, id DESC LIMIT 1",
     )
     .get(workflowId, type) as { payload_json: string | null } | null;
   if (!row?.payload_json) return null;
