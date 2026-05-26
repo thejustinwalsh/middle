@@ -53,3 +53,72 @@ resolution is the same for every adapter. Duplicating it now keeps #61 self-cont
 #63 is where cross-adapter shared logic gets factored.
 
 **Evidence:** Build spec line 795 (Codex rate-limit pattern); Claude `classify.ts`.
+
+## #63 abstraction-leak audit: findings and dispositions
+**File(s):** repo-wide
+**Date:** 2026-05-26
+
+**Decision:** Audited every adapter-name reference outside the adapter packages
+(`grep '"claude"|"codex"|=== "claude"' ... | grep /src/`). Dispositions:
+
+- **Primary leak — FIXED (#62):** the two hardcoded `getAdapter` registries
+  (`dispatcher/main.ts`, `cli/docs.ts`) and the four "only claude in Phase 1"
+  gates. Replaced by the shared registry (`dispatcher/adapters.ts`) + registry-
+  based validation. This was the real abstraction leak — adapter *dispatch* logic
+  hardcoded to one CLI.
+- **`mm doctor` — FIXED (this phase):** checked only the `claude` binary. Now
+  checks every configured+enabled adapter's binary; a missing one is a *warning*
+  (you can still dispatch with the installed adapter), not a blocking failure.
+- **Dashboard slot-pill fallback — FIXED (this phase):** `db-deps.ts` fell back to
+  `["claude"]` with a now-false comment ("codex is a later phase, would 400").
+  Updated to `["claude", "codex"]`, matching the banner.
+- **`state-issue/parser.ts` + `recommender.ts` rate-limit pair — DELIBERATE
+  EXCEPTION:** both hardcode the `{claude, codex}` pair when parsing/emitting the
+  state issue's Rate-limits section. This is *schema-bound*, not an abstraction
+  leak: `schemas/state-issue.v1.md` fixes the rate-limit lines to exactly those
+  two adapters. Generalizing to N adapters is a schema (v2) change, out of scope
+  here. Left as-is by design.
+
+**Why:** The criterion is "fixed, or documented as a deliberate exception." The
+dispatch-path leak is fixed; the two tooling leaks are cheap and in the
+abstraction's blast radius, so fixed in-pass; the schema-bound pair is a
+deliberate, documented exception gated on a schema bump.
+
+**Evidence:** `dispatcher/test/adapter-conformance.test.ts` drives both adapters
+through the same registry + interface calls and asserts identical sentinel
+classification — the automated proof the abstraction holds.
+
+## The `AgentAdapter` interface did not need to change for Codex
+**File(s):** `packages/core/src/adapter.ts`
+**Date:** 2026-05-26
+
+**Decision:** Codex was implemented against the existing `AgentAdapter` interface
+verbatim — no member added, removed, or re-typed. The per-CLI differences
+(config-driven auto mode vs. dialog-dismissal, `.codex/config.toml` `[hooks]` vs.
+`.claude/settings.json`, rollout JSONL vs. Claude transcript, the rate-limit
+pattern) all fit behind the existing methods. This is the Epic's headline
+signal: the abstraction held for a second, structurally-different CLI.
+
+**Why:** Validates the interface design. The only friction points were *empirical*
+(Codex's observable formats), not *structural* (the interface shape) — and the
+interface already isolates the empirical bits behind `installHooks` /
+`resolveTranscriptPath` / `readTranscriptState` / `classifyStop`.
+
+**Evidence:** `git diff` touches no signature in `packages/core/src/adapter.ts`;
+both adapters satisfy the same conformance suite.
+
+## Live dual-dispatch (Epic headline + #63 criterion 1) is an operator step
+**File(s):** n/a
+**Date:** 2026-05-26
+
+**Decision:** "Dispatch the same issue once per adapter on a test repo, both as
+interactive tmux sessions, and confirm conforming output" requires a running
+Codex CLI with OpenAI credentials. The Codex CLI is not installed in the dispatch
+sandbox, so this is surfaced in the reviewer's brief as the operator-executed
+acceptance step (with the exact commands), not run here.
+
+**Why:** It is inherently a live-environment verification (real CLIs, real auth, a
+real test repo). Everything mechanically verifiable headless — the adapter impl,
+the selection logic, the same-path cross-adapter conformance test, and the leak
+audit — is delivered and green. The live run confirms the empirical baselines and
+is the natural point to tighten them.
