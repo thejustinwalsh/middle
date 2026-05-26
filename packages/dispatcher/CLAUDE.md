@@ -17,7 +17,7 @@ Local invariants for the long-running dispatcher — the non-obvious facts behin
 ## Watchdog: staleness only, never override a live decision
 
 - The watchdog is the safety net *behind* the hook stream — it acts only on **staleness**, never overriding an in-progress hook decision. Hooks + the on-disk transcript are the fast path and the source of truth; the watchdog reconciles drift.
-- Cadence is fixed: `WATCHDOG_INTERVAL_MS = 30_000`, `POLLER_INTERVAL_MS = 60_000`. The reconcile passes (launch-timeout → tmux liveness → activity freshness → sentinel re-arm) run every tick over `launching`/`running` workflows.
+- Cadence: the watchdog is a fixed `WATCHDOG_INTERVAL_MS = 30_000` (constant in `watchdog-cron.ts`, not injectable). The poller defaults to `POLLER_INTERVAL_MS = 120_000` (`poller-cron.ts`) — tuned up from the spec's 60s in `8db12e8` to stay clear of GitHub's rate limits (one `gh` call per parked workflow per tick, no backoff yet — #122) — and is injectable via `startPoller`'s `intervalMs`; the daemon (`main.ts`) inherits the 120s default. The checkbox-revert pass (#101) rides the poller cron, so it shares that cadence. The watchdog reconcile passes (launch-timeout → tmux liveness → activity freshness → sentinel re-arm) run every tick over `launching`/`running` workflows.
 - **Freshness checks are skipped while `controlled_by = 'human'`.** A human-controlled session must never be idle-killed; preserve that guard in any freshness change.
 - The sentinel pass re-arms a `waitFor` signal when `<worktree>/.middle/blocked.json` exists with no armed signal — this handles the agent-wrote-the-sentinel-after-we-advanced race. Don't drop it; it's load-bearing for the blocked/resume handshake.
 
