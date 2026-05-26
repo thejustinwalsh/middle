@@ -41,6 +41,19 @@ export type IssueSummary = {
   labels: string[];
 };
 
+/** A merged PR and the issue numbers GitHub records it as closing. */
+export type MergedPrRef = {
+  number: number;
+  closes: number[];
+};
+
+/** Fields for filing a new issue (the anti-staleness reconcile task). */
+export type NewIssue = {
+  title: string;
+  body: string;
+  labels?: string[];
+};
+
 /**
  * Parse NDJSON (one issue object per line) into the Epic rows we cache. Each
  * line is one issue object emitted by `gh api --paginate` with a `--jq` filter
@@ -98,6 +111,12 @@ export interface GitHubGateway {
   listOpenIssues(repo: string): Promise<IssueSummary[]>;
   /** Add a label to an issue (no-op if already present). */
   addLabel(repo: string, issueNumber: number, label: string): Promise<void>;
+  /** Recently-merged PRs and the issues each closes — for landed-but-open detection. */
+  listMergedPrsClosingRefs(repo: string): Promise<MergedPrRef[]>;
+  /** Close an issue with an evidence comment (the anti-staleness reconcile trail). */
+  closeIssue(repo: string, issueNumber: number, comment: string): Promise<void>;
+  /** File a new issue (the proposal-first reconcile task). Returns its number. */
+  createIssue(repo: string, issue: NewIssue): Promise<number>;
 }
 
 async function run(
@@ -287,6 +306,84 @@ export const ghGitHub: GitHubGateway = {
       throw new Error(
         `gh issue edit #${issueNumber} --add-label ${label} failed: ${result.stderr.trim()}`,
       );
+    }
+  },
+
+  async listMergedPrsClosingRefs(repo) {
+    const result = await run([
+      "gh",
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "merged",
+      "--limit",
+      "100",
+      "--json",
+      "number,closingIssuesReferences",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh pr list --state merged for ${repo} failed: ${result.stderr.trim()}`);
+    }
+    const rows = JSON.parse(result.stdout) as {
+      number: number;
+      closingIssuesReferences?: { number: number }[];
+    }[];
+    return rows.map((r) => ({
+      number: r.number,
+      closes: (r.closingIssuesReferences ?? []).map((c) => c.number),
+    }));
+  },
+
+  async closeIssue(repo, issueNumber, comment) {
+    const result = await run([
+      "gh",
+      "issue",
+      "close",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--reason",
+      "completed",
+      "--comment",
+      comment,
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh issue close #${issueNumber} failed: ${result.stderr.trim()}`);
+    }
+  },
+
+  async createIssue(repo, issue) {
+    const bodyFile = join(tmpdir(), `middle-new-issue-${Date.now()}.md`);
+    await writeFile(bodyFile, issue.body);
+    try {
+      const argv = [
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        repo,
+        "--title",
+        issue.title,
+        "--body-file",
+        bodyFile,
+      ];
+      for (const label of issue.labels ?? []) argv.push("--label", label);
+      const result = await run(argv);
+      if (result.exitCode !== 0) {
+        throw new Error(`gh issue create failed: ${result.stderr.trim()}`);
+      }
+      // gh prints the new issue URL; the trailing path segment is its number.
+      const m = /\/(\d+)\s*$/.exec(result.stdout.trim());
+      if (!m) {
+        throw new Error(
+          `gh issue create: could not parse issue number from "${result.stdout.trim()}"`,
+        );
+      }
+      return Number(m[1]);
+    } finally {
+      await rm(bodyFile, { force: true });
     }
   },
 
