@@ -210,3 +210,112 @@ describe("loadConfig — missing files", () => {
     expect(config.repo).toBeUndefined();
   });
 });
+
+// The committed-policy split (#103): `policy.toml` (shared) sits between the
+// global file and the local `config.toml` cache in the merge.
+const POLICY_TOML = `
+[repo]
+owner = "thejustinwalsh"
+name = "middle"
+default_branch = "main"
+pr_mode = "single"
+
+[limits]
+max_concurrent = 3
+max_concurrent_per_adapter = { claude = 2, codex = 1 }
+complexity_ceiling = 5
+
+[recommender]
+enabled = true
+interval_minutes = 15
+adapter = "claude"
+auto_dispatch = false
+`;
+
+const LOCAL_CACHE_TOML = `
+[state_issue]
+number = 142
+label = "agent-queue:state"
+
+[bootstrap]
+version = 1
+installed_at = "2026-05-13T15:00:00Z"
+`;
+
+describe("loadConfig — committed policy layer", () => {
+  test("reads policy.toml as the sibling of repoPath, merged with the local cache", () => {
+    write("policy.toml", POLICY_TOML);
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("config.toml", LOCAL_CACHE_TOML),
+    });
+    // policy supplies repo identity + limits/recommender …
+    expect(config.repo!.owner).toBe("thejustinwalsh");
+    expect(config.limits!.complexityCeiling).toBe(5);
+    expect(config.recommender!.autoDispatch).toBe(false);
+    // … and the local cache supplies the volatile fields.
+    expect(config.stateIssue!.number).toBe(142);
+    expect(config.bootstrap!.version).toBe(1);
+  });
+
+  test("a fresh clone with committed policy but no local cache still reads policy", () => {
+    write("policy.toml", POLICY_TOML);
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: join(dir, "config.toml"), // not written — local cache absent
+    });
+    expect(config.repo!.owner).toBe("thejustinwalsh");
+    expect(config.limits!.complexityCeiling).toBe(5);
+    // no local cache → volatile sections stay undefined
+    expect(config.stateIssue).toBeUndefined();
+    expect(config.bootstrap).toBeUndefined();
+  });
+
+  test("local cache overrides committed policy on a colliding key", () => {
+    write("policy.toml", POLICY_TOML);
+    const override = `${LOCAL_CACHE_TOML}\n[limits]\ncomplexity_ceiling = 9\n`;
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("config.toml", override),
+    });
+    // most-local wins: the local cache's 9 beats policy's 5
+    expect(config.limits!.complexityCeiling).toBe(9);
+    // untouched policy keys survive the merge
+    expect(config.limits!.maxConcurrent).toBe(3);
+  });
+
+  test("policy overrides the global file on a colliding key", () => {
+    const policyOverride = `${POLICY_TOML}\n[global]\nmax_concurrent = 7\n`;
+    write("policy.toml", policyOverride);
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("config.toml", LOCAL_CACHE_TOML),
+    });
+    expect(config.global.maxConcurrent).toBe(7); // policy beat global's 4
+    expect(config.global.dispatcherPort).toBe(8822); // untouched global key survives
+  });
+
+  test("an explicit repoPolicyPath overrides the sibling derivation", () => {
+    // sibling policy.toml says complexity_ceiling = 5; the explicit one says 2
+    write("policy.toml", POLICY_TOML);
+    const explicit = write(
+      "elsewhere.toml",
+      `[limits]\nmax_concurrent = 3\nmax_concurrent_per_adapter = {}\ncomplexity_ceiling = 2\n`,
+    );
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("config.toml", LOCAL_CACHE_TOML),
+      repoPolicyPath: explicit,
+    });
+    expect(config.limits!.complexityCeiling).toBe(2);
+    // the sibling's [repo] block was NOT read (explicit path replaced it)
+    expect(config.repo).toBeUndefined();
+  });
+
+  test("no repoPath means no policy is derived (global-only callers unaffected)", () => {
+    write("policy.toml", POLICY_TOML); // present, but must be ignored
+    const config = loadConfig({ globalPath: write("global.toml", GLOBAL_TOML) });
+    expect(config.repo).toBeUndefined();
+    expect(config.limits).toBeUndefined();
+  });
+});
