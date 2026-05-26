@@ -32,6 +32,11 @@ timeout_seconds = 600
 name = "acceptance"
 command = "bun run scripts/acceptance.ts"
 phases = [40, 41]
+
+[[gate]]
+name = "smoke"
+command = "bun run test:smoke"
+category = "integration"
 ```
 
 ## `[[gate]]` fields
@@ -42,8 +47,17 @@ phases = [40, 41]
 | `command` | string | yes | Shell command run in the worktree (via `sh -c`). Non-empty. A non-zero exit, or a timeout, fails the gate. |
 | `timeout_seconds` | number | no | Per-gate wall-clock bound. Positive. Defaults to **300** (5 min). A gate exceeding it is killed and recorded as failed (timed out). |
 | `phases` | array of int | no | Sub-issue numbers this gate is scoped to. When present, the gate runs **only** for those phases. When absent, the gate runs for **every** phase. Each entry is a positive integer. |
+| `category` | string | no | `"unit"` (default) or `"integration"`. An `integration` gate exercises the **running product** — it boots/serves/invokes the real path, distinct from unit gates. The integration-verified definition of done (Epic #143) uses this to recognise that a repo declares an integration gate; `integrationGates(config)` returns them. |
 
-Unknown keys on a `[[gate]]` are rejected (to catch typos like `comand`).
+Unknown keys on a `[[gate]]` are rejected (to catch typos like `comand`). A `category` other than `unit`/`integration` is rejected.
+
+## Gate categories
+
+`category = "integration"` marks a gate as exercising the real product (the daemon
+boots and is hit over HTTP; the CLI runs end-to-end), as opposed to a `unit` gate that
+tests a function in isolation. It is the verify-side companion to the PR-ready gate's
+integration-evidence check: a feature phase is expected to add an integration test that
+runs the real path, not stop at green unit tests.
 
 ## Per-phase addressing
 
