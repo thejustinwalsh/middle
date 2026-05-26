@@ -15,6 +15,13 @@ export type PullRequest = {
   number: number;
   body: string;
   isDraft: boolean;
+  /**
+   * The PR's head commit SHA (`headRefOid`). The checkbox-revert pass diffs this
+   * across poller ticks to detect that the agent pushed (so it only re-runs gates
+   * when the PR actually advanced). Optional: a stub gateway may omit it, in which
+   * case the pass falls back to the reconciler's own checkbox-state diff.
+   */
+  headSha?: string;
 };
 
 /** A comment's author, resolved from a comment URL — for the PR-ready deferral check. */
@@ -170,14 +177,22 @@ export const ghGitHub: GitHubGateway = {
       "--state",
       "open",
       "--json",
-      "number,body,isDraft",
+      "number,body,isDraft,headRefOid",
       "--limit",
       "100",
     ]);
     if (result.exitCode !== 0) {
       throw new Error(`gh pr list failed: ${result.stderr.trim()}`);
     }
-    const prs = JSON.parse(result.stdout) as PullRequest[];
+    // `gh` returns `headRefOid`; map it onto the `headSha` field the gateway exposes.
+    const prs = (
+      JSON.parse(result.stdout) as Array<{
+        number: number;
+        body: string;
+        isDraft: boolean;
+        headRefOid?: string;
+      }>
+    ).map((pr) => ({ ...pr, headSha: pr.headRefOid }));
     // The Epic PR is the one that closes the Epic. Match a GitHub closing
     // keyword referencing the exact Epic number (word-boundaried so #27 doesn't
     // match #270).
@@ -238,10 +253,16 @@ export const ghGitHub: GitHubGateway = {
       "--repo",
       repo,
       "--json",
-      "number,body,isDraft",
+      "number,body,isDraft,headRefOid",
     ]);
     if (result.exitCode !== 0) return null;
-    return JSON.parse(result.stdout) as PullRequest;
+    const pr = JSON.parse(result.stdout) as {
+      number: number;
+      body: string;
+      isDraft: boolean;
+      headRefOid?: string;
+    };
+    return { number: pr.number, body: pr.body, isDraft: pr.isDraft, headSha: pr.headRefOid };
   },
 
   async editPullRequestBody(repo, prNumber, body) {
