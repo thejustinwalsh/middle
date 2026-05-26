@@ -142,6 +142,42 @@ describe("workflow meta_json accessors", () => {
       state: { 7: true, 8: false },
     });
   });
+
+  test("getCheckboxReconcileState sanitizes malformed nested meta back to the contract", () => {
+    // readWorkflowMeta only guards the top-level shape; the nested checkboxReconcile
+    // is still untrusted (hand-edited row / version skew). Inject raw meta_json that
+    // bypasses the typed setter to prove the read sanitizes every malformed shape.
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    const setMeta = (meta: unknown) =>
+      db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", [JSON.stringify(meta), "w"]);
+
+    // Non-object nested value → default.
+    setMeta({ checkboxReconcile: "nope" });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    // An array is typeof "object" but not a valid record shape → default (no leakage).
+    setMeta({ checkboxReconcile: [1, 2] });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    // Non-string headSha coerces to null; non-object state coerces to {}.
+    setMeta({ checkboxReconcile: { headSha: 123, state: "x" } });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    // A state array is rejected — no index-as-key coercion from Object.entries.
+    setMeta({ checkboxReconcile: { headSha: "abc", state: [true, false] } });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: "abc", state: {} });
+    // Non-boolean state entries are dropped; valid boolean ones survive.
+    setMeta({
+      checkboxReconcile: { headSha: "abc", state: { 1: true, 2: "yes", 3: false, 4: null } },
+    });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({
+      headSha: "abc",
+      state: { 1: true, 3: false },
+    });
+  });
 });
 
 describe("listRunningImplementationWorkflows", () => {

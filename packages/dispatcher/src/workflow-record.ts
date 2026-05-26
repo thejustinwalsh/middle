@@ -130,9 +130,32 @@ export function getWorkflowSource(db: Database, id: string): "manual" | "auto" |
  * The checkbox-revert pass's persisted diff base for a workflow. Defaults to
  * `{ headSha: null, state: {} }` when unset, so a first observation always treats
  * the PR as advanced and every checkbox as a fresh transition.
+ *
+ * `readWorkflowMeta` only guards the top-level JSON shape, so the nested
+ * `checkboxReconcile` is still untrusted (a hand-edited row, a forward/backward
+ * version skew). This sanitizes it back to the {@link CheckboxReconcileState}
+ * contract rather than trusting it — mirroring {@link getWorkflowSource}'s
+ * validate-don't-trust posture: a non-object (or array) reads as the default, a
+ * non-string `headSha` as null, and `state` is rebuilt keeping only boolean
+ * entries (a non-object/array `state`, or any non-boolean value, is dropped).
  */
 export function getCheckboxReconcileState(db: Database, id: string): CheckboxReconcileState {
-  return readWorkflowMeta(db, id).checkboxReconcile ?? { headSha: null, state: {} };
+  const raw = readWorkflowMeta(db, id).checkboxReconcile as unknown;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { headSha: null, state: {} };
+
+  const candidate = raw as { headSha?: unknown; state?: unknown };
+  const headSha = typeof candidate.headSha === "string" ? candidate.headSha : null;
+  const rawState = candidate.state;
+  const state =
+    rawState && typeof rawState === "object" && !Array.isArray(rawState)
+      ? (Object.fromEntries(
+          Object.entries(rawState as Record<string, unknown>).filter(
+            ([, value]) => typeof value === "boolean",
+          ),
+        ) as Record<number, boolean>)
+      : {};
+
+  return { headSha, state };
 }
 
 /** Persist the checkbox-revert pass's diff base for the next tick (merges into `meta_json`). */
