@@ -70,6 +70,12 @@ function Section({
   );
 }
 
+/**
+ * The Activity tab. Splits `runs` into Recommender and Documentation sections
+ * (each newest-first, with its own empty state) and renders one row per run; a
+ * row click invokes `onOpenInspector(run.session)` to open the run's Inspector.
+ * `now` (defaults to the live clock) is the reference point for relative times.
+ */
 export function Activity({
   runs,
   now,
