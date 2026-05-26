@@ -56,11 +56,14 @@ function defaultMessage(repo: string): string {
 }
 
 /**
- * Stage everything the agent wrote (honoring the repo's `.gitignore`, so middle's
- * own `.middle/` scratch never lands) and commit it. Returns `null` when the
+ * Stage everything the agent wrote and commit it. Returns `null` when the
  * worktree is clean — an audit-in-write-clothing that authored nothing must not
  * produce an empty commit or PR. Uses the repo's configured git identity (no
  * author overrides), per the repo convention.
+ *
+ * middle's own `.middle/` scratch (the prompt + hook scripts the runner drops into
+ * the worktree) is excluded explicitly — not left to the target repo's `.gitignore`,
+ * which may not list it — so it can never leak into a docs PR.
  */
 export async function commitDocs(opts: {
   repo: string;
@@ -71,6 +74,14 @@ export async function commitDocs(opts: {
   const add = await runGit(worktreePath, ["add", "-A"]);
   if (add.exitCode !== 0) {
     throw new Error(`docs persist: git add failed: ${add.stderr.trim()}`);
+  }
+  // Unstage middle's operational scratch regardless of the target repo's
+  // .gitignore (which may not list it). A no-op when nothing under .middle/ was
+  // staged. Done as a post-add reset rather than an `:(exclude)` add-pathspec
+  // because that pathspec makes `git add` error when .middle/ *is* gitignored.
+  const unstage = await runGit(worktreePath, ["reset", "-q", "--", ".middle"]);
+  if (unstage.exitCode !== 0) {
+    throw new Error(`docs persist: git reset .middle failed: ${unstage.stderr.trim()}`);
   }
 
   // Nothing staged → the agent authored no change. Skip the commit entirely.
