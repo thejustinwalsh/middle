@@ -22,9 +22,10 @@ export type SpecDrift = {
 /**
  * Matches future-tense spec phrasing tied to a phase number — "lands in Phase 9",
  * "ships in phase 12", "planned for Phase 3". The captured group is the phase.
+ * Two shapes: "<future-verb> in phase N", and the verb-less "planned for phase N".
  */
 const DRIFT_RE =
-  /\b(?:lands?|ships?|arrives?|will\s+(?:land|ship|arrive)|planned\s+for|to\s+be\s+(?:done|built|added))\s+in\s+phase\s+(\d+)\b/i;
+  /\b(?:(?:lands?|ships?|arrives?|will\s+(?:land|ship|arrive)|to\s+be\s+(?:done|built|added))\s+in|planned\s+for)\s+phase\s+(\d+)\b/i;
 
 /**
  * Find spec lines that describe a future phase whose work has already merged.

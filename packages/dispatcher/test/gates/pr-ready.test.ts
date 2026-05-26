@@ -160,6 +160,19 @@ describe("evaluatePrReady — integration evidence", () => {
     if (result.decision === "deny") expect(result.reason).toContain("non-bot human");
   });
 
+  test("an evidenced integration criterion allows even if a stray bot exemption is present", async () => {
+    // A real test beats a waiver: the evidenced criterion wins, so the bot-authored
+    // exemption annotation never causes a (false) deny.
+    const body = [
+      "## Acceptance criteria",
+      "- [ ] `mm start` serves it; a smoke test boots the daemon and GETs `/` — packages/cli/test/daemon-entry.test.ts",
+      "- [ ] note (integration-exempt: https://github.com/o/r/issues/27#issuecomment-9)",
+    ].join("\n");
+    const resolve: CommentAuthorResolver = async () => ({ login: "middle[bot]", isBot: true });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
   test("a deferred integration criterion does not count as integration evidence", async () => {
     const body =
       "## Acceptance criteria\n- [ ] `mm start` serves it; a smoke test boots the daemon and GETs `/` (deferred: https://github.com/o/r/issues/27#issuecomment-1)";

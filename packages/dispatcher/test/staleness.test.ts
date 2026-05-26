@@ -28,6 +28,11 @@ describe("detectSpecDrift", () => {
     expect(detectSpecDrift(SPEC, new Set([12]))).toHaveLength(1); // only phase 12
     expect(detectSpecDrift(SPEC, new Set())).toHaveLength(0);
   });
+
+  test("matches the verb-less 'planned for phase N' phrasing", () => {
+    const drift = detectSpecDrift("This work is planned for Phase 7 after review.", new Set([7]));
+    expect(drift.map((d) => d.phase)).toEqual([7]);
+  });
 });
 
 /** An in-memory gateway recording closes + created issues. */
