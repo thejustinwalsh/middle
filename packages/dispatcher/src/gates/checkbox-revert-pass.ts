@@ -46,6 +46,14 @@ function defaultLoadConfig(worktreePath: string): VerifyConfig | null {
   }
 }
 
+/**
+ * Everything {@link runCheckboxRevertPass} needs to service one pass: the workflow
+ * `db` it scans for running rows, the write-capable GitHub `github` gateway it
+ * reverts through, and the `getRateLimit` budget read it gates the pass on. The
+ * remaining fields are test/tuning seams with production defaults — `loadConfig`
+ * (per-worktree `verify.toml` loader), `now`, `rateLimitBuffer`, and
+ * `maxPollsPerPass` — so production wires only the first three.
+ */
 export type CheckboxRevertPassDeps = {
   db: Database;
   /** Write-capable GitHub access: find the Epic PR, edit its body, comment, post evidence. */
