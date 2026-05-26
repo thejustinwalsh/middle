@@ -33,6 +33,14 @@ export type EpicListItem = {
   subClosed: number;
 };
 
+/** A plain open issue with the fields the requirements/staleness audits read. */
+export type IssueSummary = {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+};
+
 /**
  * Parse NDJSON (one issue object per line) into the Epic rows we cache. Each
  * line is one issue object emitted by `gh api --paginate` with a `--jq` filter
@@ -86,6 +94,10 @@ export interface GitHubGateway {
   getIssueLabels(repo: string, issueNumber: number): Promise<string[]>;
   /** Open Epics in a repo (issues with ≥1 sub-issue), each with sub-issue progress. */
   listOpenEpics(repo: string): Promise<EpicListItem[]>;
+  /** Every open issue (not PRs) with body + labels — for the requirements/staleness audits. */
+  listOpenIssues(repo: string): Promise<IssueSummary[]>;
+  /** Add a label to an issue (no-op if already present). */
+  addLabel(repo: string, issueNumber: number, label: string): Promise<void>;
 }
 
 async function run(
@@ -227,6 +239,55 @@ export const ghGitHub: GitHubGateway = {
       throw new Error(`gh api list issues for ${repo} failed: ${result.stderr.trim()}`);
     }
     return parseEpicsList(result.stdout);
+  },
+
+  async listOpenIssues(repo) {
+    const result = await run([
+      "gh",
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--limit",
+      "1000",
+      "--json",
+      "number,title,body,labels",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh issue list for ${repo} failed: ${result.stderr.trim()}`);
+    }
+    const rows = JSON.parse(result.stdout) as {
+      number: number;
+      title: string;
+      body: string;
+      labels?: { name: string }[];
+    }[];
+    return rows.map((r) => ({
+      number: r.number,
+      title: r.title,
+      body: r.body ?? "",
+      labels: (r.labels ?? []).map((l) => l.name),
+    }));
+  },
+
+  async addLabel(repo, issueNumber, label) {
+    const result = await run([
+      "gh",
+      "issue",
+      "edit",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--add-label",
+      label,
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `gh issue edit #${issueNumber} --add-label ${label} failed: ${result.stderr.trim()}`,
+      );
+    }
   },
 
   async getPullRequest(repo, prNumber) {
