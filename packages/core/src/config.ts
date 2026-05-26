@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 /**
@@ -119,8 +119,15 @@ export type MiddleConfig = {
 export type LoadConfigOptions = {
   /** Path to the global config; defaults to `~/.middle/config.toml`. */
   globalPath?: string;
-  /** Path to the per-repo config (`<repo>/.middle/config.toml`); optional. */
+  /** Path to the per-repo local cache (`<repo>/.middle/config.toml`); optional. */
   repoPath?: string;
+  /**
+   * Path to the committed per-repo policy (`<repo>/.middle/policy.toml`). When
+   * omitted but `repoPath` is set, it defaults to `policy.toml` alongside
+   * `repoPath` — so the 8+ existing call sites that pass only `repoPath` pick up
+   * committed policy with no change. Pass explicitly to point elsewhere (tests).
+   */
+  repoPolicyPath?: string;
 };
 
 type RawTable = Record<string, unknown>;
@@ -280,15 +287,24 @@ function mapDocs(raw: RawTable): DocsSettings | undefined {
 }
 
 /**
- * Load and merge the global and per-repo config files into one typed object.
- * Per-repo values override global on any colliding key (deep merge). Missing
- * files are tolerated: an absent global file falls back to documented defaults,
- * an absent per-repo file leaves the per-repo sections undefined.
+ * Load and merge the config layers into one typed object. Precedence, lowest to
+ * highest: documented defaults < global file < committed repo policy
+ * (`policy.toml`) < local repo cache (`config.toml`). Each layer deep-merges
+ * onto the one below, so the most-local value wins on a colliding key. Missing
+ * files are tolerated: an absent global file falls back to documented defaults;
+ * an absent policy/local file simply contributes nothing — a fresh clone with a
+ * committed `policy.toml` but no local cache yet still reads the shared policy.
  */
 export function loadConfig(opts: LoadConfigOptions): MiddleConfig {
   const globalPath = opts.globalPath ?? join(homedir(), ".middle", "config.toml");
+  // Committed policy lives alongside the local cache as `policy.toml` unless the
+  // caller overrides it; only derived when a `repoPath` anchors the directory.
+  const policyPath =
+    opts.repoPolicyPath ??
+    (opts.repoPath === undefined ? undefined : join(dirname(opts.repoPath), "policy.toml"));
   const globalRaw = deepMerge(GLOBAL_DEFAULTS, readToml(globalPath));
-  const merged = deepMerge(globalRaw, readToml(opts.repoPath));
+  const withPolicy = deepMerge(globalRaw, readToml(policyPath));
+  const merged = deepMerge(withPolicy, readToml(opts.repoPath));
 
   return {
     global: mapGlobal(merged),
