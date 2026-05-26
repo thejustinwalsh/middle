@@ -122,3 +122,27 @@ real test repo). Everything mechanically verifiable headless — the adapter imp
 the selection logic, the same-path cross-adapter conformance test, and the leak
 audit — is delivered and green. The live run confirms the empirical baselines and
 is the natural point to tighten them.
+
+## Resume #1 carried no human answer — re-parked on the same criterion
+**File(s):** `.middle/blocked.json`
+**Date:** 2026-05-26
+
+**Decision:** A resume fired (prompt: "a human answered the open question"), but no
+substantive answer was present on any surface. Verified: the agent-question comment
+(id 4547214595) was created 18:06 and never edited (`created == updated`); the Epic,
+#63, and PR #155 carry no authorizing comment, no `approved` label, and no
+live-dispatch artifacts; the injected "reply" was my own parked question echoed back,
+attributed to the account that posts on the agent's behalf. So the live-run criterion
+remains genuinely unanswered. Re-parked via `.middle/blocked.json` with a sharpened
+message stating the prior resume was empty and naming the exact action needed.
+
+**Why:** I cannot honestly satisfy the PR-ready gate. Option (a) is impossible here
+(no `codex` binary, no creds). Option (b) requires a genuine non-bot authorization
+comment whose URL backs the `(deferred: <url>)` annotation — and none exists.
+Annotating with my own question comment's URL would game the gate; the integrity rule
+(must not self-author the deferral) forbids it. Everything else is airtight:
+typecheck clean, 794 pass / 0 fail, lint + format clean, branch MERGEABLE / CLEAN.
+
+**Evidence:** `gh api /repos/thejustinwalsh/middle/issues/comments/4547214595`
+(created == updated); `gh issue view 60/63 --json labels,comments`; `gh pr view 155
+--json mergeable,mergeStateStatus` → MERGEABLE / CLEAN.
