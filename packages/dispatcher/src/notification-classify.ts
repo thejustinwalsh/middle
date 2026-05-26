@@ -40,6 +40,9 @@ const PERMISSION_PANE_RE =
 const INPUT_MESSAGE_RE =
   /waiting\s+for\s+(?:your\s+)?input|is\s+waiting\s+for\s+(?:you|input)|needs?\s+(?:your\s+)?input|awaiting\s+(?:your\s+)?input/i;
 
+/** Max bytes of `message`/`pane` matched — the signal is always near the top. */
+const CLASSIFY_INPUT_MAX = 4096;
+
 /**
  * Classify the notification from its `message` (the Claude Notification payload's
  * field) and the captured pane text. Permission outranks input: a pane showing an
@@ -50,8 +53,6 @@ const INPUT_MESSAGE_RE =
  * payload, a raw pane capture), and the relevant signal is always near the top —
  * a defense-in-depth bound on regex work no matter how the patterns evolve.
  */
-const CLASSIFY_INPUT_MAX = 4096;
-
 export function classifyNotification(opts: { message: string; pane: string }): NotificationKind {
   const message = (opts.message ?? "").slice(0, CLASSIFY_INPUT_MAX);
   const pane = (opts.pane ?? "").slice(0, CLASSIFY_INPUT_MAX);
