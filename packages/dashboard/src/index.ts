@@ -14,11 +14,12 @@
  *   `listEpics` / `dispatchEpic` / `refreshEpics` for the Epic view
  * - `createDbDeps` — the production seam, backed by the SQLite db + state issue
  * - `handleApi` — the JSON API router (`/api/*`), usable without a live server;
- *   exposes `/api/epics/:repo`, `/api/epics/:repo/refresh`, and
- *   `/api/epics/:repo/:n/dispatch`
+ *   exposes `/api/epics/:repo`, `/api/epics/:repo/refresh`,
+ *   `/api/epics/:repo/:n/dispatch`, and `/api/runs`
  * - `attachCommands` / `spawnTerminal` — the tmux attach affordances
  * - the `wire.ts` types — the JSON contract shared with the SPA; includes
- *   `EpicCard` (the Epic browse shape: progress, runner, decision, dispatch)
+ *   `EpicCard` (the Epic browse shape: progress, runner, decision, dispatch) and
+ *   `RunSummary` (the Activity view shape: per-run outcome + timing)
  *
  * Where things live:
  * - `server.ts` — the `Bun.serve` entry (the package `main`); lazy-bundles the SPA
@@ -28,7 +29,8 @@
  * - `attach.ts` — `tmux attach` command builders + terminal spawn
  * - `window.ts` — the optional `webview-bun` launcher (spawned by `mm start --window`)
  * - `index.html` + `app/` — the React 19 SPA, bundled by Bun's built-in bundler;
- *   `app/components/Epics.tsx` — the default Epic-centric browse view
+ *   `app/components/Epics.tsx` — the default Epic-centric browse view;
+ *   `app/components/Activity.tsx` — the Activity (run history) view
  *
  * Gotchas:
  * - Repo (`owner/name`) and session path params are URL-encoded by callers so a
