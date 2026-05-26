@@ -189,3 +189,73 @@ sanctioned authorization, annotate criterion 2, and proceed to PR-ready.
 openai` → empty; `gh issue view 60 --json labels` → no `approved`; `gh api
 repos/.../issues/60/comments` → 3 comments, last is my RE-PARK; `bun test` 794/0,
 typecheck/lint/format clean, `gh pr view 155` → MERGEABLE / CLEAN (re-verified).
+
+## Resume #4 — prior premise disproven (Codex IS installed); real blocker is daemon-runs-main
+**File(s):** `.middle/blocked.json`, `planning/issues/60/decisions.md`
+**Date:** 2026-05-26
+
+**Decision:** A fourth resume fired ("a human answered"), again echoing my own re-park
+text with no new gate-readable signal (#60 still has labels `phase:10, dogfood, epic`
+— **no `approved`** — and no new authorizing comment). BUT this resume the environment
+**materially changed**, which I verified before acting: `codex` is now on PATH
+(`@openai/codex` 0.133.0), `~/.codex/auth.json` exists with `OPENAI_API_KEY` + tokens,
+`codex doctor` is all-green, `codex login status` → "Logged in using ChatGPT", and
+`claude` 2.1.150 is healthy. The auth files are timestamped **today 14:21–14:24** — the
+maintainer installed + logged into Codex in direct response to my park #3, which named
+"BOTH CLIs installed and authenticated" as option (3)'s prerequisite. So my prior parks'
+core premise — "structurally impossible: no `codex`, no `~/.codex`, no creds" — is now
+**false**, and I corrected the record rather than re-asserting it.
+
+**The real, newly-identified blocker (sound, and different from the prior three):** the
+live dual-dispatch still cannot run cleanly *from inside this dispatch*, for a reason
+that has nothing to do with tooling:
+- `mm`/the dispatcher daemon run from `~/Developer/middle` checked out at **`main`**
+  (HEAD `720044c`). `main` does **not** contain this PR's adapter-registry wiring —
+  `packages/dispatcher/src/adapters.ts` is absent there, and my commits are not in
+  `origin/main` (PR #155 unmerged). So the running daemon literally lacks the CodexAdapter
+  registry under test.
+- The **only** daemon is the one hosting **this very workflow (#60)** on port 4120
+  (the `middle-thejustinwalsh-middle-60` tmux session). Making it run my branch's code
+  means restarting it — which **aborts my own run**.
+- There is **no global `~/.middle/config.toml`**, and that single path is shared between
+  my session's `mm`/gate-hook invocations and any daemon I'd start. I cannot stand up
+  isolated parallel infra (separate port/db/worktree-root) without risking my own
+  session's gate behavior via that shared config path. Concretely: an isolated parallel
+  daemon is a fragile, collision-prone, ~2-nested-agent-run operation whose worst case
+  (port/config/worktree collision) destabilizes the daemon hosting my own workflow and
+  loses the entire run. The asymmetry (catastrophic worst case vs. a clean re-park)
+  rules out attempting it autonomously.
+
+**Conclusion:** criterion 2 is genuinely a **post-merge operator step** — the daemon
+must execute this PR's code, which happens naturally once #155 lands on `main`. This is
+exactly what #63 tracks. (Note: even the maintainer running `mm dispatch … --adapter
+codex` *pre-merge* would hit `main`'s `mm`, which lacks the CodexAdapter registry — so
+option (3) as I originally framed it doesn't work for them either until merge or a manual
+branch-checkout + daemon restart.)
+
+**Gate weakness discovered (not exploited):** the PR-ready gate's
+`EVIDENCE_RE = /(https?:\/\/\S+|#\d+)/` means a criterion line that *incidentally*
+references any `#<number>` (e.g. criterion 2's current "see the blocked question on
+**#60**") **auto-passes** the gate as "has evidence", regardless of whether the criterion
+is met. So `gh pr ready` would mechanically succeed right now. I deliberately did **not**
+exploit this — shipping an unmet criterion on an incidental `#`-ref is the same
+gate-gaming I refused via self-authored deferrals; the maintainer's intent (human sign-off
+on deferrals) governs over the buggy letter. Candidate follow-up: tighten
+`pr-ready.ts` so an evidence link must be distinguishable from an incidental issue
+cross-ref (out of this Epic's scope — pre-existing gate logic).
+
+**Why re-park (and why it's not the same loop):** I corrected a false premise and
+identified the true, sound reason criterion 2 is a post-merge step. The remaining
+decision is now *purely* "authorize deferring criterion 2 to the #63 post-merge step on a
+gate-readable surface" — simpler than before. I will still not self-author the deferral;
+`approved` (a deliberate, dispatch-rules-sanctioned human action) or a one-line human
+comment is what makes the next resume cleanly actionable. Re-parked with corrected,
+simplified reasoning + a thank-you for installing Codex.
+
+**Evidence:** `codex --version` → 0.133.0; `codex login status` → "Logged in using
+ChatGPT"; `readlink -f ~/.bun/bin/mm` → `/home/tjw/Developer/middle/packages/cli/src/index.ts`;
+`git -C ~/Developer/middle branch --show-current` → `main`; main lacks
+`packages/dispatcher/src/adapters.ts`; `ls ~/.middle/config.toml` → absent;
+`gh issue view 60 --json labels` → no `approved`; `bun test` 794/0, typecheck/lint/format
+clean, `git rev-list --count origin/main...HEAD` → 7 ahead/0 behind, `gh pr view 155` →
+MERGEABLE / CLEAN (all re-verified this resume).
