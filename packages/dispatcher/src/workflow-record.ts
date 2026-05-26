@@ -108,14 +108,16 @@ export function readWorkflowMeta(db: Database, id: string): WorkflowMeta {
  * (read-merge-write). Single-writer-per-key in practice — `source` is written
  * once at creation, `checkboxReconcile` only by the (single-worker) poller pass —
  * so the read-modify-write needs no cross-key locking.
+ *
+ * Deliberately does **not** touch `updated_at`: `meta_json` is scratch, not an
+ * activity signal, and the watchdog folds `updated_at` into its idle-freshness
+ * baseline (see this package's CLAUDE.md). Bumping it here would let the poller's
+ * checkbox-revert persist reset a running agent's idle-timeout clock — masking a
+ * genuinely wedged agent (e.g. on first observation after a daemon restart).
  */
 export function patchWorkflowMeta(db: Database, id: string, patch: Partial<WorkflowMeta>): void {
   const merged = { ...readWorkflowMeta(db, id), ...patch };
-  db.run("UPDATE workflows SET meta_json = ?, updated_at = ? WHERE id = ?", [
-    JSON.stringify(merged),
-    Date.now(),
-    id,
-  ]);
+  db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", [JSON.stringify(merged), id]);
 }
 
 /** Read a workflow's `meta_json.source` (`'manual'`/`'auto'`), or null if unset. */
