@@ -13,7 +13,6 @@ import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { loadConfig } from "@middle/core";
 import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import type { Database } from "bun:sqlite";
-import { Engine } from "bunqueue/workflow";
 import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
@@ -29,6 +28,7 @@ import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from
 import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
+import { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
 import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
 import { startAuditCron } from "./audit-cron.ts";
 import { startStalenessCron } from "./staleness-cron.ts";
@@ -123,9 +123,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const hub = new EventHub();
 
   // The one long-lived engine. Parked executions live here so the poller can
-  // resume them; it is in-memory (durable persistence across restart is deferred,
-  // #116) — do NOT add a no-op engine.recover() against the in-memory store.
-  const engine = new Engine({ embedded: true });
+  // resume them. `createDurableEngine` gives it a persistent execution store
+  // (a SQLite db alongside `db.sqlite3` under the middle data dir) so a parked
+  // `waiting` execution survives a daemon restart and is re-armed by
+  // `recoverEngine` on boot (#116) — while keeping the step queue in-memory (see
+  // that factory + this package's CLAUDE.md for why the queue must NOT persist).
+  // Its parent dir is the `mkdirSync` above.
+  const queuePath = join(dirname(config.global.dbPath), "queue.sqlite3");
+  const engine = createDurableEngine(queuePath);
 
   // Declared up front: `scheduleAutoDispatch` (hoisted below) reads it, and a
   // slot-freeing broadcast can fire that path the moment the engine observers
@@ -591,6 +596,47 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       },
     }),
   );
+
+  // Durable recovery (#116): the workflow store survived this restart. Drop
+  // mid-drive (`running`/`compensating`) executions — re-driving them would
+  // double-launch a session that the restart left alive; their rows are the
+  // watchdog's domain — then re-arm parked `waiting` executions so the poller can
+  // resume them. Runs AFTER the registers (recover needs the definitions) and
+  // BEFORE the poller (so it never signals an exec recover hasn't re-armed).
+  const recovery = await recoverEngine(engine);
+  if (recovery.cleared > 0 || recovery.recovered.total > 0) {
+    console.log(
+      `[recover] dropped ${recovery.cleared} mid-drive exec(s); re-armed ${recovery.recovered.waiting} parked / ${recovery.recovered.total} total`,
+    );
+  }
+  // Reconcile orphaned signals: a parked `waiting-human` row whose execution the
+  // store no longer has (a park from before persistence shipped, or a wiped queue
+  // db) can never resume — finalize it and surface it so the poller stops firing
+  // at a dead execution and the work isn't silently stuck.
+  const orphans = await reconcileOrphanedSignals({
+    db,
+    hasExecution: (id) => engine.getExecution(id) !== null,
+    surface: ({ workflowId, repo, epicNumber, signalName }) => {
+      console.error(
+        `[recover] orphaned parked signal '${signalName}' for ${repo}#${epicNumber ?? "?"} (workflow ${workflowId}) — no recoverable execution; finalized failed`,
+      );
+      if (epicNumber === null) return;
+      return ghGitHub
+        .postComment(
+          repo,
+          epicNumber,
+          `⚠️ middle could not recover this Epic's parked workflow after a daemon restart (no durable execution for \`${workflowId}\`). The run was finalized as \`failed\`; re-dispatch the Epic to continue.`,
+        )
+        .catch((error: unknown) => {
+          console.error(
+            `[recover] orphan Epic comment for ${repo}#${epicNumber} failed: ${(error as Error).message}`,
+          );
+        });
+    },
+  });
+  if (orphans.length > 0) {
+    console.error(`[recover] reconciled ${orphans.length} orphaned parked signal(s)`);
+  }
 
   // Watchdog cron: every 30s, correct transcript drift, rescue an agent stuck on
   // a Notification (#128), then reconcile every launching/running workflow
