@@ -8,6 +8,14 @@
 **Why:** The issue says "alongside the SQLite db under the middle data dir." Deriving keeps the change minimal and keeps the queue store co-located with `db.sqlite3` (one data dir to back up / wipe). A config knob is YAGNI until someone needs to relocate it. The dir is already `mkdirSync`'d for `db.sqlite3`, so no extra mkdir.
 **Evidence:** `config.global.dbPath` default `~/.middle/db.sqlite3` (`packages/core/src/config.ts:136`); bunqueue opens `dataPath` with `{create:true}` but does not mkdir the parent.
 
+## Persistent execution store + TRANSIENT (in-memory) queue — `createDurableEngine`
+**File(s):** `packages/dispatcher/src/recovery.ts`, `main.ts`
+**Date:** 2026-05-26
+
+**Decision:** The engine is built by `createDurableEngine(dataPath)`, which claims bunqueue's process-singleton queue manager as in-memory (a throwaway `Queue` with no `dataPath`) BEFORE `new Engine({ embedded: true, dataPath })`. Result: the `WorkflowStore` persists (it opens `dataPath` directly), the step queue stays in-memory.
+**Why:** A spike proved that a *persistent queue* replays stale step jobs onto the fresh worker after a restart — re-driving `launch-and-drive` and double-launching a tmux session the restart left alive (the exact regression #116's out-of-scope note guards against). The branch-before-`waitFor` shape in the implementation workflow leaves a non-terminal step job that the new worker auto-processes on construct. Only the *execution store* needs durability (#116's goal); `recover()` rebuilds the queue from it. bunqueue couples both to one `dataPath` via a process-singleton manager (`client/manager.js`) keyed by the first caller, and exposes no "store-only" option — so claiming the singleton as in-memory first is the lever. Confirmed by spike: with the in-memory queue, a parked execution survives the restart, `recover()` reports `waiting:1`, and a payload-bearing `signal` resumes it with zero re-drives.
+**Evidence:** spikes `spike6.ts` (no branch → no replay), `spike7.ts` (branch → replay), `spike8b.ts` (in-memory queue → no replay, resume works); `getSharedManager` singleton in bunqueue `dist/client/manager.js`.
+
 ## Boot cleanup of `running`/`compensating` execs before `recover()`
 **File(s):** `packages/dispatcher/src/recovery.ts`, `main.ts`
 **Date:** 2026-05-26
