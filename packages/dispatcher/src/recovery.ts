@@ -5,7 +5,7 @@ import {
   consumeWaitForSignal,
   finalizeParkedWorkflow,
   loadPollableWaits,
-  type WorkflowState,
+  type TerminalWorkflowState,
 } from "./workflow-record.ts";
 
 /**
@@ -22,10 +22,31 @@ import {
  * alive. The durable store is the source of truth; `recoverEngine` rebuilds the queue
  * from it on boot. See this package's CLAUDE.md ("bunqueue lifecycle").
  *
- * Caveat: if a `BUNQUEUE_DATA_PATH`/`BQ_DATA_PATH`/`DATA_PATH`/`SQLITE_PATH` env var is
- * set, the throwaway `Queue` would itself become persistent — middle never sets these.
+ * Guarded: if any of these env vars is set, the throwaway `Queue`'s shared manager would
+ * resolve a *persistent* `dataPath` from it (bunqueue's `getDataPath()` reads them with
+ * `??`), making the queue persistent and defeating the whole design — so we throw rather
+ * than silently build it. middle never sets these; the guard stops a parent-process env
+ * injection from doing it for us.
  */
+const PERSISTENT_QUEUE_ENV_VARS = [
+  "BUNQUEUE_DATA_PATH",
+  "BQ_DATA_PATH",
+  "DATA_PATH",
+  "SQLITE_PATH",
+] as const;
+
 export function createDurableEngine(dataPath: string): Engine {
+  // bunqueue's `getDataPath()` coalesces these with `??`, so any value that isn't strictly
+  // `undefined` (including `""`) becomes the manager's dataPath — match that exactly.
+  const persistent = PERSISTENT_QUEUE_ENV_VARS.filter((name) => process.env[name] !== undefined);
+  if (persistent.length > 0) {
+    const plural = persistent.length > 1;
+    throw new Error(
+      `createDurableEngine requires an in-memory bunqueue queue, but ${persistent.join(", ")} ` +
+        `${plural ? "are" : "is"} set; a persistent queue replays stale step jobs onto the fresh ` +
+        `worker after a restart (double-launching a session). Unset ${plural ? "them" : "it"} first.`,
+    );
+  }
   new Queue("__mm:engine-queue", { embedded: true });
   return new Engine({ embedded: true, dataPath });
 }
@@ -87,7 +108,7 @@ export type ReconcileOrphanedSignalsDeps = {
   /** Best-effort surface of an orphan for human visibility (log/Epic comment). Optional. */
   surface?: (orphan: OrphanedSignal) => void | Promise<void>;
   /** Terminal state an orphan is finalized to. Defaults to `"failed"`. */
-  finalState?: WorkflowState;
+  finalState?: TerminalWorkflowState;
 };
 
 /**
