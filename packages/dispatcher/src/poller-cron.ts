@@ -1,4 +1,8 @@
 import { Bunqueue } from "bunqueue/client";
+import {
+  type CheckboxRevertPassDeps,
+  runCheckboxRevertPass,
+} from "./gates/checkbox-revert-pass.ts";
 import { type PollerDeps, reconcileMergedParks, runPoller } from "./poller.ts";
 
 /**
@@ -11,20 +15,33 @@ import { type PollerDeps, reconcileMergedParks, runPoller } from "./poller.ts";
  */
 export const POLLER_INTERVAL_MS = 120_000;
 
+/** Optional extra passes the poller cron runs alongside the resume/reconcile core. */
+export type StartPollerOptions = {
+  /**
+   * The checkbox-revert production trigger (#101). When provided, each tick also
+   * runs {@link runCheckboxRevertPass} over running workflows. Omitted (e.g. tests)
+   * → the pass doesn't run.
+   */
+  checkboxRevert?: CheckboxRevertPassDeps;
+  intervalMs?: number;
+};
+
 /**
  * Stand up the GitHub poller as a bunqueue cron: every `intervalMs` (default
  * {@link POLLER_INTERVAL_MS}) it runs one {@link runPoller} pass over parked
  * workflows with an armed wait, firing the resume signal when the unblocking
- * event appears, then runs one {@link reconcileMergedParks} pass to finalize
- * parked workflows whose Epic PR has landed/closed. Returns a stop function that
- * tears the cron down. Each pass is resilient on its own (per-workflow failures
- * are isolated); this wrapper guards each so a thrown pass never crashes the
- * cron worker — and isolates them from each other so a failed resume poll still
- * lets reconciliation run, and vice versa.
+ * event appears, then one {@link reconcileMergedParks} pass to finalize parked
+ * workflows whose Epic PR has landed/closed, and — when `opts.checkboxRevert` is
+ * wired — one {@link runCheckboxRevertPass} over running workflows to revert a
+ * Status checkbox whose verification gates failed after a push. Returns a stop
+ * function that tears the cron down. Each pass is resilient on its own
+ * (per-workflow failures are isolated); this wrapper guards each so a thrown pass
+ * never crashes the cron worker — and isolates them from one another so one
+ * failed pass still lets the others run.
  */
 export async function startPoller(
   deps: PollerDeps,
-  intervalMs: number = POLLER_INTERVAL_MS,
+  opts: StartPollerOptions = {},
 ): Promise<() => Promise<void>> {
   const queue = new Bunqueue("middle-poller", {
     embedded: true,
@@ -39,9 +56,16 @@ export async function startPoller(
       } catch (error) {
         console.error(`[reconcile] pass failed: ${(error as Error).message}`);
       }
+      if (opts.checkboxRevert) {
+        try {
+          await runCheckboxRevertPass(opts.checkboxRevert);
+        } catch (error) {
+          console.error(`[checkbox-revert] pass failed: ${(error as Error).message}`);
+        }
+      }
     },
   });
-  await queue.every("poller-tick", intervalMs);
+  await queue.every("poller-tick", opts.intervalMs ?? POLLER_INTERVAL_MS);
   return async () => {
     await queue.close(true);
   };

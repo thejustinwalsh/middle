@@ -653,15 +653,30 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // its resume signal when the unblocking event appears (a human reply, or a PR
   // review verdict). `fireSignal` delivers it to this engine — the one that now
   // hosts the parked executions, so review-resume actually fires.
-  const stopPoller = await startPoller({
-    db,
-    github: ghPollGateway,
-    fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
-    // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
-    // and best-effort tear down its worktree (repo checkout from the registry).
-    removeWorktree: (repo, worktreePath) =>
-      worktreePath ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath) : Promise.resolve(),
-  });
+  const stopPoller = await startPoller(
+    {
+      db,
+      github: ghPollGateway,
+      fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
+      // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
+      // and best-effort tear down its worktree (repo checkout from the registry).
+      removeWorktree: (repo, worktreePath) =>
+        worktreePath
+          ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath)
+          : Promise.resolve(),
+    },
+    {
+      // Checkbox-revert trigger (#101): each tick, over running workflows whose
+      // Epic PR head SHA advanced, run the declared gates and revert a failing
+      // Status checkbox. Uses the write-capable `gh` gateway (body edits + the
+      // revert comment) and the free rate-limit read shared with the poller.
+      checkboxRevert: {
+        db,
+        github: ghGitHub,
+        getRateLimit: () => ghPollGateway.getRateLimit(),
+      },
+    },
+  );
 
   // Recommender cron (#135): every minute, run the recommender for each managed
   // repo whose `[recommender] interval_minutes` has elapsed — the periodic source
