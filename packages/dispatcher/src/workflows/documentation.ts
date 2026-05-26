@@ -332,7 +332,11 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
         retry: 1,
         timeout: launchTimeout + agentTimeout + 30_000,
       })
-      .step("persist-docs", persistDocs)
+      // retry: 1 — one-shot. The commit happens on the first attempt; a retry
+      // after a push/PR failure would find the worktree already clean, so
+      // commitDocs returns null and the push is silently never re-tried (a
+      // no-PR "success"). A single attempt surfaces the push failure instead.
+      .step("persist-docs", persistDocs, { retry: 1 })
       .step("cleanup-worktree", cleanupWorktree)
   );
 }
