@@ -48,21 +48,26 @@ export type CreateWorkflowRecordInput = {
 /**
  * Insert a fresh `pending` workflow row. `id` doubles as the bunqueue execution id.
  *
- * Idempotent (`INSERT OR IGNORE`): the workflow steps that call this run under
- * bunqueue's retry, and a retried step re-runs the INSERT for the *same*
- * execution id (the PK). A plain INSERT would throw `UNIQUE constraint failed`
- * and mask the real downstream error that triggered the retry (#108). The only
- * way the PK collides is a same-execution retry — exactly the case we want to
- * no-op — so the second call leaves the existing (possibly already advanced)
- * row untouched and lets the real error surface.
+ * Idempotent on the `id` PK (`ON CONFLICT(id) DO NOTHING`): the workflow steps
+ * that call this run under bunqueue's retry, and a retried step re-runs the
+ * INSERT for the *same* execution id. A plain INSERT would throw `UNIQUE
+ * constraint failed` and mask the real downstream error that triggered the
+ * retry (#108). The only way the PK collides is a same-execution retry —
+ * exactly the case we want to no-op — so the second call leaves the existing
+ * (possibly already advanced) row untouched and lets the real error surface.
+ *
+ * Scoped to the PK conflict (not a blanket `INSERT OR IGNORE`) on purpose: a
+ * genuine CHECK/NOT-NULL violation is a real bug and must still throw, not be
+ * silently swallowed.
  */
 export function createWorkflowRecord(db: Database, input: CreateWorkflowRecordInput): void {
   const now = Date.now();
   const metaJson = input.source === undefined ? null : JSON.stringify({ source: input.source });
   db.run(
-    `INSERT OR IGNORE INTO workflows
+    `INSERT INTO workflows
        (id, kind, repo, epic_number, adapter, state, created_at, updated_at, bunqueue_execution_id, meta_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
     [
       input.id,
       input.kind,

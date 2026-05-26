@@ -9,6 +9,7 @@ import {
   clearWorkflowObservers,
   countActiveImplementationSlots,
   createWorkflowRecord,
+  type CreateWorkflowRecordInput,
   finalizeParkedWorkflow,
   getWorkflow,
   getWorkflowSource,
@@ -116,6 +117,22 @@ describe("createWorkflowRecord", () => {
     expect(row!.adapter).toBe("claude");
     expect(row!.state).toBe("launching");
     expect(row!.worktreePath).toBe("/wt/exec-retry");
+  });
+
+  // The no-op is scoped to the id PK conflict, NOT a blanket `INSERT OR IGNORE`:
+  // a genuine CHECK/NOT-NULL violation is a real bug and must still throw rather
+  // than be silently swallowed. (Cast past the typed surface to force one.)
+  test("a non-PK constraint violation (bad kind) still throws — not swallowed", () => {
+    expect(() =>
+      createWorkflowRecord(db, {
+        id: "exec-bad-kind",
+        kind: "nonsense" as CreateWorkflowRecordInput["kind"],
+        repo: "o/r",
+        epicNumber: 1,
+        adapter: "claude",
+      }),
+    ).toThrow();
+    expect(getWorkflow(db, "exec-bad-kind")).toBeNull();
   });
 });
 
