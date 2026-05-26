@@ -2,14 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentAdapter, HookPayload } from "@middle/core";
-import { renderStateIssue } from "@middle/state-issue";
+import type { AgentAdapter, HookPayload, MiddleConfig } from "@middle/core";
+import { renderStateIssue, STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import {
   dispatchRecommender,
   type DispatchRecommenderOptions,
   type RecommenderRunOverrides,
+  resolveRecommenderOptions,
 } from "../src/recommender-run.ts";
 import type { RecommenderContext } from "../src/workflows/recommender.ts";
 
@@ -202,5 +203,35 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
     const result = await dispatchRecommender(opts);
     expect(result.state).toBe("completed");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("resolveRecommenderOptions — schema resolution (issue #107)", () => {
+  // A target repo with NO `schemas/` dir — the realistic case once auto-dispatch
+  // runs the recommender against bootstrapped repos that `mm init` set up.
+  function targetConfig(): MiddleConfig {
+    return {
+      stateIssue: { number: 42 },
+      recommender: { adapter: "claude" },
+      adapters: { claude: {} },
+      limits: {},
+      global: {
+        defaultAdapter: "claude",
+        dbPath: join(scratch, "db.sqlite3"),
+        worktreeRoot: join(scratch, "worktrees"),
+        dispatcherPort: 0,
+        maxConcurrent: 4,
+      },
+    } as unknown as MiddleConfig;
+  }
+
+  test("resolves schemaPath from the middle install, not from repoPath", async () => {
+    const resolved = await resolveRecommenderOptions(repoPath, targetConfig(), stubAdapter);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error(resolved.error);
+    // The fix: the schema comes from the package, so it is found even though the
+    // target repo (created in beforeEach) has no schemas/ directory of its own.
+    expect(resolved.options.schemaPath).toBe(STATE_ISSUE_SCHEMA_PATH);
+    expect(resolved.options.schemaPath.startsWith(repoPath)).toBe(false);
   });
 });

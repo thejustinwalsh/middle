@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { claudeAdapter } from "@middle/adapter-claude";
 import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { loadConfig } from "@middle/core";
+import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import type { Database } from "bun:sqlite";
 import { Engine } from "bunqueue/workflow";
 import { autoDispatch } from "./auto-dispatch.ts";
@@ -575,7 +576,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
           throw new Error(`recommender: repo ${repo} is not registered/configured`);
         }
         return {
-          schemaPath: join(repoPath, "schemas", "state-issue.v1.md"),
+          // Resolved from the middle install, not repoPath — see issue #107.
+          schemaPath: STATE_ISSUE_SCHEMA_PATH,
           config: {
             defaultAdapter: cfg.global.defaultAdapter,
             autoDispatch: cfg.recommender?.autoDispatch ?? false,
