@@ -83,6 +83,20 @@ describe("HookServer — Stop", () => {
     await postHook("agent.stopped", "middle-6", { reason: "turn-end" });
     expect((await next).reason).toBe("turn-end");
   });
+
+  test("a re-registered awaitStop is not evicted by an abandoned waiter's stale timeout", async () => {
+    // The drive may abandon a pending awaitStop when its session dies (the
+    // liveness race resolves first); a continuation then reuses the SAME
+    // deterministic session name and awaits Stop afresh. The abandoned waiter's
+    // stale timer must not evict the new one — otherwise the resumed drive's
+    // real Stop is dropped and it spuriously times out.
+    const abandoned = server.awaitStop("middle-6", 30);
+    abandoned.catch(() => {}); // the original drive no longer cares
+    const resumed = server.awaitStop("middle-6", 2000);
+    await Bun.sleep(60); // let the abandoned 30ms timer fire
+    await postHook("agent.stopped", "middle-6", { reason: "turn-end" });
+    expect((await resumed).reason).toBe("turn-end");
+  });
 });
 
 describe("HookServer — HMAC auth + event validation (with store)", () => {
