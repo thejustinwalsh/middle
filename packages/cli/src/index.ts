@@ -103,7 +103,10 @@ program
 program
   .command("doctor")
   .description("Check tmux/claude/git/gh preconditions for `mm dispatch`")
-  .action(async () => process.exit(await runDoctor()));
+  .option("--fix", "write the bun PATH export to your shell rc (~/.zshrc / ~/.bashrc)")
+  .action(async (options: { fix?: boolean }) =>
+    process.exit(await runDoctor({ fix: options.fix })),
+  );
 
 program
   .command("dispatch")
