@@ -69,8 +69,10 @@ function validateGate(raw: unknown, index: number): Gate {
   }
   for (const key of Object.keys(raw)) {
     if (!KNOWN_GATE_KEYS.has(key)) {
+      // Build the suggestion from the live key set so it never drifts stale as
+      // keys are added (it omitted `category` before this was made dynamic).
       throw new VerifyConfigError(
-        `${where}: unknown key "${key}" (did you mean one of name, command, timeout_seconds, phases?)`,
+        `${where}: unknown key "${key}" (did you mean one of ${[...KNOWN_GATE_KEYS].join(", ")}?)`,
       );
     }
   }

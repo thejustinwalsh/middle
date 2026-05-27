@@ -26,8 +26,15 @@ const WELL_FORMED = [
   "- [ ] `mm foo` serves the result; an integration test boots the daemon and GETs `/foo`, asserting the JSON shape",
 ].join("\n");
 
-/** Spawn the real CLI; return exit code + combined stdout/stderr. */
-async function runCli(args: string[]): Promise<{ code: number; out: string }> {
+/**
+ * Spawn the real CLI; return exit code with `stdout`/`stderr` separated (and
+ * `out` as their concatenation for convenience). JSON-mode assertions must parse
+ * `stdout` alone — combining stderr in can make `JSON.parse` flaky if a runtime
+ * warning is emitted on stderr.
+ */
+async function runCli(
+  args: string[],
+): Promise<{ code: number; stdout: string; stderr: string; out: string }> {
   const proc = Bun.spawn(["bun", CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
@@ -37,7 +44,7 @@ async function runCli(args: string[]): Promise<{ code: number; out: string }> {
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
-  return { code: await proc.exited, out: stdout + stderr };
+  return { code: await proc.exited, stdout, stderr, out: stdout + stderr };
 }
 
 describe("mm audit-issues --body-file (real CLI)", () => {
@@ -96,12 +103,26 @@ describe("mm audit-issues --body-file (real CLI)", () => {
   test("--json emits a machine-readable report", async () => {
     setup();
     try {
-      const { code, out } = await runCli(["audit-issues", ".", "--body-file", weakPath, "--json"]);
+      const { code, stdout } = await runCli([
+        "audit-issues",
+        ".",
+        "--body-file",
+        weakPath,
+        "--json",
+      ]);
       expect(code).toBe(1);
-      const parsed = JSON.parse(out) as { finding: { pass: boolean } }[];
+      const parsed = JSON.parse(stdout) as { finding: { pass: boolean } }[];
       expect(parsed[0]!.finding.pass).toBe(false);
     } finally {
       teardown();
+    }
+  });
+
+  test("rejects a non-positive-integer --issue with a clear error (exit 1)", async () => {
+    for (const bad of ["abc", "12abc", "0", "-3", "3.9"]) {
+      const { code, stderr } = await runCli(["audit-issues", ".", "--issue", bad]);
+      expect(code).toBe(1);
+      expect(stderr).toContain("--issue must be a positive integer");
     }
   });
 });

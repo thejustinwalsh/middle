@@ -38,6 +38,8 @@ export type CommentAuthor = { login: string; isBot: boolean };
 export type CommentAuthorResolver = (commentUrl: string) => Promise<CommentAuthor | null>;
 
 const DEFERRED_RE = /\(deferred:\s*(\S+?)\s*\)/i;
+/** Global form, for stripping *every* `(deferred: …)` annotation before an evidence check. */
+const DEFERRED_STRIP_RE = /\(deferred:\s*\S+?\s*\)/gi;
 /** The integration escape hatch — mirrors `(deferred: …)`; must be human-authored. */
 const INTEGRATION_EXEMPT_RE = /\(integration-exempt:\s*(\S+?)\s*\)/i;
 /** An evidence link: an http(s) URL or a GitHub `#<number>` issue/PR reference. */
@@ -73,10 +75,20 @@ export async function evaluatePrReady(opts: {
 
   const unmet: string[] = [];
   for (const criterion of criteria) {
+    // A criterion is met if it carries a stakeholder-authorized deferral OR
+    // concrete evidence — the two are an OR, so an invalid (bot-authored or
+    // unresolvable) deferral must NOT disqualify a criterion that also has
+    // independent evidence. But a deferral annotation's OWN url must not count
+    // as that evidence (else a bot-deferred criterion would self-satisfy via its
+    // `(deferred: https://…)` link), so we check evidence on the text with *every*
+    // deferral annotation stripped — not just the first, or a second one would
+    // leak through. Authorization is judged on the first deferral only (a single
+    // criterion carries one authorizing comment; multiple is malformed).
     const deferred = DEFERRED_RE.exec(criterion);
     if (deferred) {
       const author = await opts.resolveCommentAuthor(deferred[1]!);
       if (author && !author.isBot) continue; // stakeholder-authorized deferral
+      if (namesEvidence(criterion.replace(DEFERRED_STRIP_RE, ""))) continue; // independent evidence
       unmet.push(criterion);
       continue;
     }

@@ -29,6 +29,11 @@ export function parseAcceptanceCriteria(body: string): string[] {
   let inSection = false;
   for (const line of lines) {
     if (/^#{1,6}\s/.test(line)) {
+      // Collection is the *first* acceptance section only: once we've entered
+      // it, the next heading of any level ends collection for good — a later
+      // "## Acceptance …" heading must not reopen it (which would silently fold
+      // a second, unintended list into the criteria and change gate outcomes).
+      if (inSection) break;
       inSection = /acceptance/i.test(line);
       continue;
     }
@@ -54,7 +59,7 @@ const WIRING_RE =
  * rubric on its own.
  */
 const REAL_PATH_TEST_RE =
-  /\b(?:integration[ -]?test|smoke[ -]?test|e2e|end-to-end|exercis(?:e|es|ing)|boots? the|drives? the|runs? the real|real path|live (?:path|frame|server))\b/i;
+  /\b(?:integration[ -]?tests?|smoke[ -]?tests?|e2e|end-to-end|exercis(?:e|es|ing)|boots? the|drives? the|runs? the real|real path|live (?:path|frame|server))\b/i;
 
 /**
  * Whether a single acceptance-criterion string is an *integration criterion*: it

@@ -24,6 +24,18 @@ describe("parseAcceptanceCriteria", () => {
   test("returns [] when there is no acceptance section", () => {
     expect(parseAcceptanceCriteria("## Context\n- a\n## Out of scope\n- b")).toEqual([]);
   });
+
+  test("only the first acceptance section counts — a later one does not reopen it", () => {
+    const body = [
+      "## Acceptance criteria",
+      "- [ ] real one",
+      "## Out of scope",
+      "- nope",
+      "### Acceptance criteria (notes)",
+      "- [ ] must NOT be collected",
+    ].join("\n");
+    expect(parseAcceptanceCriteria(body)).toEqual(["real one"]);
+  });
 });
 
 describe("isIntegrationCriterion", () => {
@@ -57,6 +69,15 @@ describe("isIntegrationCriterion", () => {
   test("served + e2e qualifies", () => {
     expect(
       isIntegrationCriterion("the route is served by the daemon; an e2e test exercises it"),
+    ).toBe(true);
+  });
+
+  test("plural 'integration tests' / 'smoke tests' phrasing still qualifies", () => {
+    expect(
+      isIntegrationCriterion("`mm start` serves `/`; integration tests boot the daemon and GET it"),
+    ).toBe(true);
+    expect(
+      isIntegrationCriterion("the route is served by the daemon; smoke tests exercise it"),
     ).toBe(true);
   });
 });

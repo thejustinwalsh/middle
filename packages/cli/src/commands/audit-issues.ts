@@ -11,6 +11,13 @@ import {
 /** The `needs-design` label applied to issues that fail the integration rubric. */
 export const NEEDS_DESIGN_LABEL = "needs-design";
 
+/**
+ * Options for {@link runAuditIssues} — the `mm audit-issues` command. Selects the
+ * mode (single issue / local body file / standing backlog), toggles JSON output
+ * and label application, and lets every GitHub/fs interaction be injected (the
+ * defaults shell out to `gh` / the filesystem) so the command is unit-testable
+ * without network or disk.
+ */
 export type AuditIssuesOptions = {
   /** Audit a single GitHub issue by number. */
   issue?: number;
@@ -108,7 +115,12 @@ async function listOpenIssuesDefault(slug: string): Promise<IssueLike[]> {
 }
 
 async function addLabelDefault(slug: string, n: number, label: string): Promise<void> {
-  await gh(["gh", "issue", "edit", String(n), "--repo", slug, "--add-label", label]);
+  const res = await gh(["gh", "issue", "edit", String(n), "--repo", slug, "--add-label", label]);
+  // Fail loudly: a non-zero `gh` exit means the label was NOT applied, and the
+  // caller must not log it as applied. Propagate so the failure surfaces.
+  if (res.exitCode !== 0) {
+    throw new Error(res.stderr.trim() || `gh issue edit --add-label failed for ${slug}#${n}`);
+  }
 }
 
 /**
@@ -154,7 +166,15 @@ export async function runAuditIssues(
 
   // --- Mode 2: a single issue ---
   if (opts.issue !== undefined) {
-    const issue = await (opts.fetchIssue ?? fetchIssueDefault)(slug, opts.issue);
+    let issue: IssueLike | null;
+    try {
+      issue = await (opts.fetchIssue ?? fetchIssueDefault)(slug, opts.issue);
+    } catch (error) {
+      errlog(
+        `mm audit-issues: failed to fetch ${slug}#${opts.issue} — ${(error as Error).message}`,
+      );
+      return 1;
+    }
     if (!issue) {
       errlog(`mm audit-issues: could not fetch ${slug}#${opts.issue}`);
       return 1;
@@ -162,8 +182,14 @@ export async function runAuditIssues(
     const report = auditIssue(issue);
     emit([report], opts.json ?? false, log);
     if (!report.finding.pass && opts.label) {
-      await (opts.addLabel ?? addLabelDefault)(slug, issue.number, NEEDS_DESIGN_LABEL);
-      log(`  → labelled #${issue.number} ${NEEDS_DESIGN_LABEL}`);
+      // A label-write failure must surface (never be logged as applied), but it
+      // shouldn't crash the command — the audit verdict still stands.
+      try {
+        await (opts.addLabel ?? addLabelDefault)(slug, issue.number, NEEDS_DESIGN_LABEL);
+        log(`  → labelled #${issue.number} ${NEEDS_DESIGN_LABEL}`);
+      } catch (error) {
+        errlog(`  → failed to label #${issue.number} — ${(error as Error).message}`);
+      }
     }
     return report.finding.pass ? 0 : 1;
   }
@@ -180,9 +206,15 @@ export async function runAuditIssues(
   emit(reports, opts.json ?? false, log);
   const failures = reports.filter((r) => !r.finding.pass);
   if (opts.label) {
+    // Isolate per-issue label failures so one bad write neither aborts the sweep
+    // nor escapes as an unhandled rejection (mirrors the dispatcher's backlog audit).
     for (const r of failures) {
-      await (opts.addLabel ?? addLabelDefault)(slug, r.number, NEEDS_DESIGN_LABEL);
-      log(`  → labelled #${r.number} ${NEEDS_DESIGN_LABEL}`);
+      try {
+        await (opts.addLabel ?? addLabelDefault)(slug, r.number, NEEDS_DESIGN_LABEL);
+        log(`  → labelled #${r.number} ${NEEDS_DESIGN_LABEL}`);
+      } catch (error) {
+        errlog(`  → failed to label #${r.number} — ${(error as Error).message}`);
+      }
     }
   }
   if (!opts.json) {

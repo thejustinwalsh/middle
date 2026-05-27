@@ -115,6 +115,27 @@ describe("reconcileStaleness (integration — real pass, in-memory gateway)", ()
     expect(result.filed).toHaveLength(0);
   });
 
+  test("maxPerPass caps the TOTAL of closes + filed tasks, not each bucket", async () => {
+    // One close AND one drift are both available; with maxPerPass=1 the single
+    // shared budget is spent on the close, leaving nothing to file a task with.
+    const gh = fakeGithub({
+      open: [{ number: 50, title: "Landed", body: "", labels: ["phase:9"] }],
+      merged: [{ number: 88, closes: [50] }],
+    });
+    const result = await reconcileStaleness({
+      repo: "o/r",
+      github: gh,
+      readSpec: () => "The dashboard lands in Phase 9.",
+      specPath: "planning/spec.md",
+      maxPerPass: 1,
+    });
+    expect(result.closed).toEqual([50]); // budget spent here
+    expect(result.drift.map((d) => d.phase)).toEqual([9]); // drift still *detected*
+    expect(result.filed).toEqual([]); // …but no budget left to file it
+    expect(gh.created).toHaveLength(0);
+    expect(result.closed.length + result.filed.length).toBeLessThanOrEqual(1);
+  });
+
   test("no spec → still reconciles landed issues, no drift", async () => {
     const gh = fakeGithub({
       open: [{ number: 50, title: "Landed", body: "", labels: ["phase:9"] }],

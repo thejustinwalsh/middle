@@ -20,7 +20,14 @@ export const STALENESS_CRON_INTERVAL_MS = 60 * 60_000;
  */
 export const DEFAULT_SPEC_PATH = join("planning", "middle-management-build-spec.md");
 
+/**
+ * Dependencies for a staleness cron pass over the managed-repo registry: the
+ * SQLite handle the registry lives in, the GitHub gateway each repo's
+ * reconciliation reads/mutates, and the spec path + clock (both injectable for
+ * tests).
+ */
 export type StalenessCronDeps = {
+  /** The dispatcher DB holding the managed-repo registry. */
   db: Database;
   github: Pick<
     GitHubGateway,
@@ -28,6 +35,7 @@ export type StalenessCronDeps = {
   >;
   /** The build-spec path, repo-relative (default {@link DEFAULT_SPEC_PATH}). */
   specPath?: string;
+  /** Injectable clock for the paused-repo check (default `Date.now`). */
   now?: () => number;
 };
 
@@ -51,8 +59,12 @@ export async function runStalenessCronPass(deps: StalenessCronDeps): Promise<num
         readSpec: () => {
           try {
             return readFileSync(join(managed.checkoutPath, specPath), "utf8");
-          } catch {
-            return null; // no spec in this repo → skip the drift check
+          } catch (error) {
+            // Only a genuinely-absent spec means "skip the drift check". A
+            // permission/I/O error (EACCES, EISDIR, …) is a real failure and must
+            // surface — swallowing it would silently disable drift detection.
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+            throw error;
           }
         },
       });

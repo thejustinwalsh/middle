@@ -174,16 +174,25 @@ program
         label?: boolean;
         json?: boolean;
       },
-    ) =>
+    ) => {
+      // Require a canonical positive integer. `Number.parseInt` would silently
+      // accept trailing garbage ("12abc" → 12), so validate the raw string first.
+      if (options.issue !== undefined && !/^[1-9]\d*$/.test(options.issue)) {
+        console.error("mm audit-issues: --issue must be a positive integer");
+        process.exit(1);
+        return;
+      }
+      const issue = options.issue === undefined ? undefined : Number.parseInt(options.issue, 10);
       process.exit(
         await runAuditIssues(repo, {
-          issue: options.issue === undefined ? undefined : Number(options.issue),
+          issue,
           bodyFile: options.bodyFile,
           title: options.title,
           label: options.label,
           json: options.json,
         }),
-      ),
+      );
+    },
   );
 
 program
