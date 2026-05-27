@@ -552,6 +552,50 @@ export function createImplementationWorkflow(
   const maxNudgeStopWaits = maxNudges + verifyRoundCap * (1 + maxNudges);
 
   /**
+   * Await the next Stop boundary, liveness-aware. The interactive process never
+   * exits between turns, so the Stop hook is the normal signal — but a hung
+   * agent may never fire it and a watchdog idle-kill removes the session. Race
+   * the Stop hook against session-death and the wait timeout
+   * (`awaitStopOrSessionEnd`). When no Stop arrives but a `blocked.json` sentinel
+   * is present, classify it as the park (the synthetic payload is ignored by
+   * `classifyStop` once the sentinel is seen) so the saga never compensates and
+   * the worktree survives; with no sentinel it's a genuine dead/hung session —
+   * throw so the drive fails. Every in-drive Stop wait (initial + nudge + verify)
+   * routes through here so the self-heal is uniform.
+   */
+  async function awaitNextStop(args: {
+    tag: string;
+    sessionName: string;
+    worktree: string;
+    timeoutMs: number;
+    classifyAt: (payload: HookPayload) => StopClassification;
+  }): Promise<StopClassification> {
+    const probeStatus = deps.tmux.status;
+    const waitResult = await awaitStopOrSessionEnd({
+      awaitStop: (timeoutMs) => deps.sessionGate.awaitStop(args.sessionName, timeoutMs),
+      timeoutMs: args.timeoutMs,
+      isAlive: probeStatus ? async () => (await probeStatus(args.sessionName)).alive : undefined,
+      pollMs: deps.livenessPollMs,
+    });
+    if (waitResult.via === "stop") return args.classifyAt(waitResult.payload);
+    if (existsSync(join(args.worktree, ".middle", "blocked.json"))) {
+      // Self-heal: no Stop arrived (session killed/crashed, or the wait timed
+      // out) but the agent declared itself blocked. Park it for human resume —
+      // throwing here would compensate the saga and prune the worktree the
+      // resume needs, orphaning the armed signal (the #60 failure mode).
+      console.error(`${args.tag} ${waitResult.via} with blocked.json present — parking for resume`);
+      return args.classifyAt({ reason: waitResult.via } as HookPayload);
+    }
+    // A dead/hung session with no sentinel is a genuine failure (unchanged):
+    // throw so the outer catch kills the session and the saga compensates.
+    throw new Error(
+      waitResult.via === "timeout"
+        ? `Stop wait timed out after ${args.timeoutMs}ms`
+        : "session ended before Stop hook",
+    );
+  }
+
+  /**
    * Resolve a `bare-stop` into a terminal outcome (#80). Completion requires a
    * ready, non-draft Epic PR; without it, send a same-session "continue" nudge
    * and re-await the Stop, up to `maxNudges`. A nudge that yields a definitive
@@ -560,6 +604,7 @@ export function createImplementationWorkflow(
   async function resolveBareStop(args: {
     tag: string;
     sessionName: string;
+    worktree: string;
     repo: string;
     epicNumber: number;
     classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
@@ -578,8 +623,13 @@ export function createImplementationWorkflow(
       console.error(`${args.tag} bare-stop, no ready PR — nudge ${nudges + 1}/${maxNudges}`);
       await deps.tmux.sendText(args.sessionName, "continue");
       await deps.tmux.sendEnter(args.sessionName);
-      const stopPayload = await deps.sessionGate.awaitStop(args.sessionName, nudgeStopTimeout);
-      const classification = args.classifyAt(stopPayload);
+      const classification = await awaitNextStop({
+        tag: args.tag,
+        sessionName: args.sessionName,
+        worktree: args.worktree,
+        timeoutMs: nudgeStopTimeout,
+        classifyAt: args.classifyAt,
+      });
       if (classification.kind !== "bare-stop") return classification;
     }
   }
@@ -623,8 +673,13 @@ export function createImplementationWorkflow(
           `Do not mark the PR ready until they pass.\n\n${verify.report}`,
       );
       await deps.tmux.sendEnter(args.sessionName);
-      const stopPayload = await deps.sessionGate.awaitStop(args.sessionName, nudgeStopTimeout);
-      const classification = args.classifyAt(stopPayload);
+      const classification = await awaitNextStop({
+        tag: args.tag,
+        sessionName: args.sessionName,
+        worktree: args.worktree,
+        timeoutMs: nudgeStopTimeout,
+        classifyAt: args.classifyAt,
+      });
       // A re-stop means the agent "finished" its fix attempt — re-run the gates
       // (loop) rather than completing on the stale failure. A `done` loops
       // directly. A `bare-stop` is never completion on its own (#80): settle it
@@ -638,6 +693,7 @@ export function createImplementationWorkflow(
           const settled = await resolveBareStop({
             tag: args.tag,
             sessionName: args.sessionName,
+            worktree: args.worktree,
             repo: args.repo,
             epicNumber: args.epicNumber,
             classifyAt: args.classifyAt,
@@ -794,18 +850,10 @@ export function createImplementationWorkflow(
       await deps.tmux.sendText(sessionName, promptText);
       await deps.tmux.sendEnter(sessionName);
 
-      // observe: the Stop boundary is the normal signal — but the process never
-      // exits between turns, so a hung agent can sit forever, and a watchdog
-      // idle-kill takes the session out from under us. Race the Stop hook against
-      // session-death and the wait's own timeout instead of blocking on Stop.
+      // observe: await the Stop boundary, liveness-aware — `awaitNextStop` parks
+      // (not fails) when a hung/killed session left a blocked.json. The process
+      // never exits between turns, so the Stop hook is the signal, not an exit.
       console.error(`${tag} waiting for Stop hook (timeout ${stopTimeout}ms)`);
-      const probeStatus = deps.tmux.status;
-      const waitResult = await awaitStopOrSessionEnd({
-        awaitStop: (timeoutMs) => deps.sessionGate.awaitStop(sessionName, timeoutMs),
-        timeoutMs: stopTimeout,
-        isAlive: probeStatus ? async () => (await probeStatus(sessionName)).alive : undefined,
-        pollMs: deps.livenessPollMs,
-      });
       const classifyAt = (payload: HookPayload): StopClassification =>
         adapter.classifyStop({
           payload,
@@ -813,26 +861,13 @@ export function createImplementationWorkflow(
           sentinelPresent: existsSync(join(handle.path, ".middle", "blocked.json")),
           worktree: handle.path,
         });
-      let stopPayload: HookPayload;
-      if (waitResult.via === "stop") {
-        stopPayload = waitResult.payload;
-      } else if (existsSync(join(handle.path, ".middle", "blocked.json"))) {
-        // Self-heal: no Stop arrived (session killed/crashed, or the wait timed
-        // out) but the agent declared itself blocked. Park it for human resume —
-        // throwing here would compensate the saga and prune the worktree the
-        // resume needs, orphaning the armed signal (the #60 failure mode).
-        console.error(`${tag} ${waitResult.via} with blocked.json present — parking for resume`);
-        stopPayload = { reason: waitResult.via } as HookPayload;
-      } else {
-        // A dead/hung session with no sentinel is a genuine failure (unchanged):
-        // throw so the outer catch kills the session and the saga compensates.
-        throw new Error(
-          waitResult.via === "timeout"
-            ? `Stop wait timed out after ${stopTimeout}ms`
-            : "session ended before Stop hook",
-        );
-      }
-      const classification = classifyAt(stopPayload);
+      const classification = await awaitNextStop({
+        tag,
+        sessionName,
+        worktree: handle.path,
+        timeoutMs: stopTimeout,
+        classifyAt,
+      });
       console.error(`${tag} Stop received — classification=${classification.kind}`);
       // Positive done-signal (#80): a bare-stop is NOT completion on its own —
       // only a ready, non-draft Epic PR is. Otherwise nudge (session still
@@ -842,6 +877,7 @@ export function createImplementationWorkflow(
         outcome = await resolveBareStop({
           tag,
           sessionName,
+          worktree: handle.path,
           repo: ctx.input.repo,
           epicNumber: ctx.input.epicNumber,
           classifyAt,
