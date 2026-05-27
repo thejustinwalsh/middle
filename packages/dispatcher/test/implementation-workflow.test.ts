@@ -9,7 +9,12 @@ import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import { getRateLimitState, setRateLimited } from "../src/rate-limits.ts";
-import { getWaitForSignal, getWorkflow, getWorkflowSource } from "../src/workflow-record.ts";
+import {
+  armWaitForSignal,
+  getWaitForSignal,
+  getWorkflow,
+  getWorkflowSource,
+} from "../src/workflow-record.ts";
 import {
   createImplementationWorkflow,
   RESUME_EVENT,
@@ -319,6 +324,100 @@ function readPromptBrief(workflowId: string): string {
   if (!path) throw new Error(`workflow ${workflowId} has no worktree path`);
   return readFileSync(join(path, ".middle", "prompt.md"), "utf8");
 }
+
+describe("implementation workflow — blocked sentinel self-heal", () => {
+  /** A SessionGate whose Stop wait never resolves — models an agent that hangs. */
+  const hangingGate: SessionGate = {
+    awaitSessionStart: async () =>
+      ({ session_id: "stub-session", transcript_path: "/tmp/stub.jsonl" }) as HookPayload,
+    awaitStop: () => new Promise<HookPayload>(() => {}),
+  };
+
+  /**
+   * An adapter that, on `installHooks`, writes a real `.middle/blocked.json`
+   * into the worktree (the drive checks the file on disk, not the stub), then
+   * classifies every Stop as `asked-question`. `onInstall` lets a test inject
+   * extra setup once the worktree path is known (e.g. simulate the watchdog's
+   * sentinel re-arm during the hang).
+   */
+  function blockedAdapter(onInstall?: (worktree: string) => void): AgentAdapter {
+    const base = makeAdapterStub({
+      kind: "asked-question",
+      sentinelPath: "/x/.middle/blocked.json",
+      sentinel: { question: "is the sandbox configured?" },
+    });
+    const installHooks: AgentAdapter["installHooks"] = async (opts) => {
+      mkdirSync(join(opts.worktree, ".middle"), { recursive: true });
+      writeFileSync(
+        join(opts.worktree, ".middle", "blocked.json"),
+        JSON.stringify({ question: "is the sandbox configured?" }),
+      );
+      onInstall?.(opts.worktree);
+    };
+    return { ...base, installHooks };
+  }
+
+  test("a hung agent whose session dies parks for resume; worktree preserved", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: { ...tmux.ops, status: async () => ({ alive: false }) },
+      sessionGate: hangingGate,
+      livenessPollMs: 20,
+      getAdapter: () => blockedAdapter(),
+    });
+    const id = await start(deps);
+    await awaitParked(id); // reaches the waitFor and the row reads waiting-human
+
+    // worktree preserved — the resume reuses it (the #60 failure pruned it)
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toHaveLength(1);
+    // exactly one resume signal armed so the poller can resume on a reply
+    expect(getWaitForSignal(db, id)).not.toBeNull();
+    expectNoSessionLeak(tmux);
+  });
+
+  test("parkForResume keeps a pre-armed blocked signal (no duplicate)", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: { ...tmux.ops, status: async () => ({ alive: false }) },
+      sessionGate: hangingGate,
+      livenessPollMs: 20,
+      getAdapter: () =>
+        // Simulate the watchdog's rule-4 re-arm firing during the hang, before
+        // the drive parks: arm `blocked:<id>` for the launching row.
+        blockedAdapter(() => {
+          const row = db
+            .query(
+              "SELECT id FROM workflows WHERE epic_number = ? AND state IN ('launching','running')",
+            )
+            .get(EPIC) as { id: string } | null;
+          if (row) armWaitForSignal(db, `blocked:${row.id}`, row.id, null);
+        }),
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+
+    const rows = db
+      .query("SELECT signal_name FROM waitfor_signals WHERE workflow_id = ?")
+      .all(id) as Array<{ signal_name: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.signal_name).toBe(`blocked:${id}`);
+  });
+
+  test("a hung agent with NO sentinel still fails (compensates, worktree pruned)", async () => {
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: { ...tmux.ops, status: async () => ({ alive: false }) },
+      sessionGate: hangingGate,
+      livenessPollMs: 20,
+      // default adapter writes no blocked.json
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+    });
+    const id = await start(deps);
+    expect(await awaitSettled(id)).toBe("compensated");
+    expect(getWaitForSignal(db, id)).toBeNull();
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+  });
+});
 
 describe("implementation workflow — complexity pause (#52)", () => {
   test("a complexity-kind pause routes to waiting-human and surfaces with kind 'complexity'", async () => {

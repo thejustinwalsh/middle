@@ -10,7 +10,7 @@ import {
   resolveAgentLogin as ghResolveAgentLogin,
 } from "./github.ts";
 import type { SessionGate } from "./hook-server.ts";
-import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
+import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { findActiveWorkflowBySession, getWorkflow } from "./workflow-record.ts";
 import type { ImplementationDeps, ImplementationInput } from "./workflows/implementation.ts";
 import { createWorktree, destroyWorktree } from "./worktree.ts";
@@ -159,7 +159,7 @@ export async function buildImplementationDeps(
     db: args.db,
     getAdapter: args.getAdapter,
     sessionGate,
-    tmux: { newSession, sendText, sendEnter, killSession },
+    tmux: { newSession, sendText, sendEnter, killSession, status },
     worktree: { createWorktree, destroyWorktree },
     resolveRepoPath: args.resolveRepoPath,
     worktreeRoot: args.worktreeRoot,

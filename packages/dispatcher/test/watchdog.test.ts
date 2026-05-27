@@ -7,6 +7,7 @@ import type { TranscriptState } from "@middle/core";
 import { openAndMigrate } from "../src/db.ts";
 import { createWorkflowRecord, getWorkflow, recordEvent } from "../src/workflow-record.ts";
 import {
+  BLOCKED_HANDOFF_EVENT,
   FAILED_EVENT,
   IDLE_EVENT,
   reconcileTranscriptDrift,
@@ -363,6 +364,58 @@ describe("watchdog — sentinel re-arm", () => {
       }
     ).n;
     expect(n).toBe(0);
+  });
+});
+
+describe("watchdog — blocked sentinel self-heal", () => {
+  test("idle ≥ kill-threshold with a blocked sentinel hands off to the drive, not compensation", async () => {
+    const blocked = join(scratch, "blocked.json");
+    writeFileSync(blocked, JSON.stringify({ question: "is the sandbox configured?" }));
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      worktreePath: scratch,
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const tmux = makeTmux(true);
+    const compensated: string[] = [];
+    await runWatchdog(
+      baseDeps({
+        tmux: tmux.ops,
+        blockedSentinelPath: () => blocked,
+        triggerCompensation: (wid) => compensated.push(wid),
+      }),
+    );
+    // self-heal: the agent declared itself blocked, so the watchdog must NOT
+    // fail/compensate (which would prune the worktree the resume needs).
+    expect(getWorkflow(db, id)!.state).toBe("running");
+    expect(failureReason(id)).toBeUndefined();
+    expect(compensated).toEqual([]);
+    // the hung session IS killed so the drive's liveness race wakes and parks it
+    expect(tmux.killed).toContain("middle-14");
+    // a resume signal is armed so the poller can resume on the human's reply
+    const armed = db
+      .query("SELECT count(*) AS n FROM waitfor_signals WHERE workflow_id = ?")
+      .get(id) as { n: number };
+    expect(armed.n).toBe(1);
+    expect(eventTypes(id)).toContain(BLOCKED_HANDOFF_EVENT);
+  });
+
+  test("the handoff is recorded once, not every idle tick", async () => {
+    const blocked = join(scratch, "blocked.json");
+    writeFileSync(blocked, JSON.stringify({ question: "which window?" }));
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      worktreePath: scratch,
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const deps = baseDeps({ blockedSentinelPath: () => blocked });
+    await runWatchdog(deps);
+    await runWatchdog(deps);
+    expect(eventTypes(id).filter((t) => t === BLOCKED_HANDOFF_EVENT)).toHaveLength(1);
   });
 });
 

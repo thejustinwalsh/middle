@@ -68,6 +68,12 @@ const DEFAULT_IDLE_KILL_THRESHOLD_MS = 15 * 60 * 1000;
 export const IDLE_EVENT = "watchdog.idle";
 /** Event type written when the watchdog fails a workflow; payload carries the reason. */
 export const FAILED_EVENT = "watchdog.failed";
+/**
+ * Event type written when the watchdog idle-kills a session that left a
+ * `blocked.json` sentinel: instead of failing/compensating, it kills the hung
+ * session so the drive's liveness race wakes and parks it for human resume.
+ */
+export const BLOCKED_HANDOFF_EVENT = "watchdog.blocked-handoff";
 
 type ReconcilableRow = {
   id: string;
@@ -206,6 +212,28 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
       const baseline = Math.max(row.last_heartbeat ?? 0, transcriptMs ?? 0, row.updated_at);
       const age = now - baseline;
       if (age >= idleKill) {
+        // Self-heal: if the agent declared itself blocked (sentinel present) it
+        // is *waiting for a human*, not dead — failing/compensating here would
+        // prune the worktree its resume needs and orphan the armed signal (the
+        // #60 failure mode). Kill the hung session so the drive's liveness race
+        // wakes and parks it (`waiting-human`), arm a resume signal, and hand
+        // off — never compensate. Recorded once, not every idle tick.
+        if (row.worktree_path && existsSync(sentinelPath(row.worktree_path))) {
+          if (latestEventType(deps.db, row.id) !== BLOCKED_HANDOFF_EVENT) {
+            if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
+            if (!isWaitForArmed(deps.db, row.id)) {
+              armWaitForSignal(deps.db, `blocked:${row.id}`, row.id, null);
+            }
+            recordEvent(deps.db, {
+              workflowId: row.id,
+              ts: now,
+              type: BLOCKED_HANDOFF_EVENT,
+              payloadJson: null,
+            });
+            acted++;
+          }
+          continue;
+        }
         if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
         failWorkflow(deps, row.id, "idle-timeout", now);
         acted++;

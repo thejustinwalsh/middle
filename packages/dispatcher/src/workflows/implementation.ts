@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import type { AgentAdapter, StopClassification } from "@middle/core";
+import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import { type PlanCommentReader, verifyPlanComment } from "../gates/plan-comment.ts";
@@ -13,6 +13,7 @@ import {
   armWaitForSignal,
   consumeWaitForSignal,
   createWorkflowRecord,
+  isWaitForArmed,
   updateWorkflow,
   type WorkflowState,
 } from "../workflow-record.ts";
@@ -76,6 +77,66 @@ export function signalNameFor(epicNumber: number, reason: ResumeReason): string 
     : `epic-${epicNumber}-answered`;
 }
 
+/** Default cadence for the drive's session-liveness probe (production). */
+const DEFAULT_LIVENESS_POLL_MS = 5000;
+
+/** How the drive's Stop wait ended. */
+export type StopWaitResult =
+  | { via: "stop"; payload: HookPayload }
+  | { via: "session-ended" }
+  | { via: "timeout" };
+
+/**
+ * Wait for the agent's turn boundary, but don't trust the Stop hook to be the
+ * only way the wait ends. The interactive process doesn't exit between turns, so
+ * `awaitStop` is the normal signal — but a hung agent may never fire Stop, and a
+ * watchdog idle-kill (or any crash) takes the session out from under us. So we
+ * race three outcomes: the Stop hook arrives (`stop`), the tmux session goes
+ * away (`session-ended`), or the Stop wait's own timeout elapses (`timeout`).
+ *
+ * The caller decides what each means: a `stop` is classified as usual; a
+ * `session-ended`/`timeout` is a park when the agent left a `blocked.json`
+ * sentinel, a failure otherwise. Liveness-probe errors are inconclusive and
+ * ignored (mirrors the watchdog) — the probe never *causes* a false end, it only
+ * reports a confirmed-dead session. `isAlive` absent → Stop-or-timeout only.
+ */
+export async function awaitStopOrSessionEnd(opts: {
+  awaitStop: (timeoutMs: number) => Promise<HookPayload>;
+  timeoutMs: number;
+  isAlive?: () => Promise<boolean>;
+  pollMs?: number;
+}): Promise<StopWaitResult> {
+  const pollMs = opts.pollMs ?? DEFAULT_LIVENESS_POLL_MS;
+  let poller: ReturnType<typeof setInterval> | undefined;
+  try {
+    const stop: Promise<StopWaitResult> = opts
+      .awaitStop(opts.timeoutMs)
+      .then((payload) => ({ via: "stop" as const, payload }))
+      // The gate rejects only when the Stop wait elapses; treat any rejection
+      // as "no Stop arrived" rather than crashing the drive.
+      .catch(() => ({ via: "timeout" as const }));
+
+    if (!opts.isAlive) return await stop;
+
+    const probe = opts.isAlive;
+    const sessionEnded = new Promise<StopWaitResult>((resolve) => {
+      poller = setInterval(() => {
+        // Inconclusive probe (e.g. tmux server momentarily unreachable) must
+        // not be read as a dead session — only a confirmed `false` ends the wait.
+        probe()
+          .then((alive) => {
+            if (!alive) resolve({ via: "session-ended" });
+          })
+          .catch(() => {});
+      }, pollMs);
+    });
+
+    return await Promise.race([stop, sessionEnded]);
+  } finally {
+    if (poller) clearInterval(poller);
+  }
+}
+
 /** The `waitFor` timeout — a parked workflow waits up to a week for its signal. */
 const WAITFOR_TIMEOUT_MS = 7 * 24 * 3600 * 1000;
 
@@ -90,6 +151,13 @@ export type TmuxOps = {
   sendText(sessionName: string, text: string): Promise<void>;
   sendEnter(sessionName: string): Promise<void>;
   killSession(sessionName: string): Promise<void>;
+  /**
+   * Session liveness, used by the drive to notice a session killed out from
+   * under it (e.g. a watchdog idle-kill) instead of blocking on the Stop hook
+   * for the full `stopTimeout`. Optional: when absent the drive falls back to
+   * Stop-or-timeout. Production wires tmux `status`.
+   */
+  status?(sessionName: string): Promise<{ alive: boolean }>;
 };
 
 /** The worktree surface the workflow drives — structural so tests can stub it. */
@@ -110,6 +178,8 @@ export type ImplementationDeps = {
   dispatcherUrl: string;
   launchTimeoutMs?: number;
   stopTimeoutMs?: number;
+  /** Cadence for the drive's session-liveness probe; defaults to 5s. */
+  livenessPollMs?: number;
   /**
    * Surface the agent's pause on the Epic for human visibility when it parks on
    * `asked-question`. Receives the sentinel contents `classifyStop` surfaced
@@ -724,16 +794,44 @@ export function createImplementationWorkflow(
       await deps.tmux.sendText(sessionName, promptText);
       await deps.tmux.sendEnter(sessionName);
 
-      // observe: the Stop boundary is the signal — not a process exit
+      // observe: the Stop boundary is the normal signal — but the process never
+      // exits between turns, so a hung agent can sit forever, and a watchdog
+      // idle-kill takes the session out from under us. Race the Stop hook against
+      // session-death and the wait's own timeout instead of blocking on Stop.
       console.error(`${tag} waiting for Stop hook (timeout ${stopTimeout}ms)`);
-      const stopPayload = await deps.sessionGate.awaitStop(sessionName, stopTimeout);
-      const classifyAt = (payload: typeof stopPayload): StopClassification =>
+      const probeStatus = deps.tmux.status;
+      const waitResult = await awaitStopOrSessionEnd({
+        awaitStop: (timeoutMs) => deps.sessionGate.awaitStop(sessionName, timeoutMs),
+        timeoutMs: stopTimeout,
+        isAlive: probeStatus ? async () => (await probeStatus(sessionName)).alive : undefined,
+        pollMs: deps.livenessPollMs,
+      });
+      const classifyAt = (payload: HookPayload): StopClassification =>
         adapter.classifyStop({
           payload,
           transcriptPath,
           sentinelPresent: existsSync(join(handle.path, ".middle", "blocked.json")),
           worktree: handle.path,
         });
+      let stopPayload: HookPayload;
+      if (waitResult.via === "stop") {
+        stopPayload = waitResult.payload;
+      } else if (existsSync(join(handle.path, ".middle", "blocked.json"))) {
+        // Self-heal: no Stop arrived (session killed/crashed, or the wait timed
+        // out) but the agent declared itself blocked. Park it for human resume —
+        // throwing here would compensate the saga and prune the worktree the
+        // resume needs, orphaning the armed signal (the #60 failure mode).
+        console.error(`${tag} ${waitResult.via} with blocked.json present — parking for resume`);
+        stopPayload = { reason: waitResult.via } as HookPayload;
+      } else {
+        // A dead/hung session with no sentinel is a genuine failure (unchanged):
+        // throw so the outer catch kills the session and the saga compensates.
+        throw new Error(
+          waitResult.via === "timeout"
+            ? `Stop wait timed out after ${stopTimeout}ms`
+            : "session ended before Stop hook",
+        );
+      }
       const classification = classifyAt(stopPayload);
       console.error(`${tag} Stop received — classification=${classification.kind}`);
       // Positive done-signal (#80): a bare-stop is NOT completion on its own —
@@ -813,12 +911,20 @@ export function createImplementationWorkflow(
   async function parkForResume(ctx: StepContext<ImplementationInput>): Promise<void> {
     const { outcome } = ctx.steps["launch-and-drive"] as DriveResult;
     const reason = reasonFor(outcome.kind);
-    armWaitForSignal(
-      deps.db,
-      signalNameFor(ctx.input.epicNumber, reason),
-      ctx.executionId,
-      JSON.stringify({ reason }),
-    );
+    // Idempotent arm: the watchdog's sentinel re-arm (`blocked:<id>`) may have
+    // already armed a wait while the agent hung before this park. Don't add a
+    // second row (PK is signal_name, so they wouldn't collide) — the poller
+    // would then see two pollable waits for one workflow. Keep the existing one;
+    // its earlier `created_at` also avoids filtering out a reply made during the
+    // hang. Both names map to the same resume reason via `reasonFromSignalName`.
+    if (!isWaitForArmed(deps.db, ctx.executionId)) {
+      armWaitForSignal(
+        deps.db,
+        signalNameFor(ctx.input.epicNumber, reason),
+        ctx.executionId,
+        JSON.stringify({ reason }),
+      );
+    }
     updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
     if (outcome.kind === "asked-question" && deps.postQuestion) {
       // The sentinel's `kind` distinguishes a complexity pause (surfaced under the

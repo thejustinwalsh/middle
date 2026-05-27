@@ -461,12 +461,26 @@ export class HookServer implements SessionGate {
       this.#stashed.delete(key);
       return Promise.resolve(stashed);
     }
+    // Supersede any waiter already parked on this key — e.g. an awaitStop the
+    // drive abandoned when its session-liveness race won, then a continuation
+    // reusing the same deterministic session name awaits afresh. Clear the
+    // stale timer and reject the orphan so its timeout can't later evict us.
+    const prev = this.#waiters.get(key);
+    if (prev) {
+      clearTimeout(prev.timer);
+      this.#waiters.delete(key);
+      prev.reject(new Error(`superseded waiter for ${key}`));
+    }
     return new Promise<HookPayload>((resolve, reject) => {
+      let waiter: Waiter;
       const timer = setTimeout(() => {
-        this.#waiters.delete(key);
+        // Only evict if we're still the registered waiter: a superseded timer
+        // must never remove a successor that re-registered under this key.
+        if (this.#waiters.get(key) === waiter) this.#waiters.delete(key);
         reject(new Error(`timed out waiting for ${key}`));
       }, timeoutMs);
-      this.#waiters.set(key, { resolve, reject, timer });
+      waiter = { resolve, reject, timer };
+      this.#waiters.set(key, waiter);
     });
   }
 
