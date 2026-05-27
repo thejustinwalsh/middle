@@ -45,11 +45,23 @@ export async function getBunGlobalBinDir(): Promise<string> {
 /** Where to add the PATH export, resolved from `$SHELL`. */
 export type ShellRc = { shell: "zsh" | "bash"; rcPath: string } | { unknown: true };
 
-/** zsh → `~/.zshrc`, bash → `~/.bashrc`, anything else → `{ unknown: true }`. */
-export function resolveShellRc(shell: string | undefined, home: string): ShellRc {
+/**
+ * Resolve the rc file to edit from `$SHELL`: zsh → `~/.zshrc`; bash →
+ * `~/.bash_profile` on macOS (`platform === "darwin"`, where login shells source
+ * `.bash_profile`, *not* `.bashrc`) and `~/.bashrc` elsewhere; anything else →
+ * `{ unknown: true }`. Pass `process.platform` for `platform`.
+ */
+export function resolveShellRc(
+  shell: string | undefined,
+  home: string,
+  platform: NodeJS.Platform,
+): ShellRc {
   if (!shell) return { unknown: true };
   if (shell.endsWith("zsh")) return { shell: "zsh", rcPath: join(home, ".zshrc") };
-  if (shell.endsWith("bash")) return { shell: "bash", rcPath: join(home, ".bashrc") };
+  if (shell.endsWith("bash")) {
+    const rc = platform === "darwin" ? ".bash_profile" : ".bashrc";
+    return { shell: "bash", rcPath: join(home, rc) };
+  }
   return { unknown: true };
 }
 

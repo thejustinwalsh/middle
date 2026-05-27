@@ -27,21 +27,31 @@ describe("isDirOnPath", () => {
 });
 
 describe("resolveShellRc", () => {
-  test("zsh", () => {
-    expect(resolveShellRc("/bin/zsh", "/home/u")).toEqual({
+  test("zsh (platform-independent)", () => {
+    expect(resolveShellRc("/bin/zsh", "/home/u", "linux")).toEqual({
+      shell: "zsh",
+      rcPath: "/home/u/.zshrc",
+    });
+    expect(resolveShellRc("/bin/zsh", "/home/u", "darwin")).toEqual({
       shell: "zsh",
       rcPath: "/home/u/.zshrc",
     });
   });
-  test("bash", () => {
-    expect(resolveShellRc("/usr/bin/bash", "/home/u")).toEqual({
+  test("bash on macOS targets .bash_profile (login shells don't source .bashrc)", () => {
+    expect(resolveShellRc("/usr/bin/bash", "/home/u", "darwin")).toEqual({
+      shell: "bash",
+      rcPath: "/home/u/.bash_profile",
+    });
+  });
+  test("bash elsewhere targets .bashrc", () => {
+    expect(resolveShellRc("/usr/bin/bash", "/home/u", "linux")).toEqual({
       shell: "bash",
       rcPath: "/home/u/.bashrc",
     });
   });
   test("unknown shell", () => {
-    expect(resolveShellRc("/bin/sh", "/home/u")).toEqual({ unknown: true });
-    expect(resolveShellRc(undefined, "/home/u")).toEqual({ unknown: true });
+    expect(resolveShellRc("/bin/sh", "/home/u", "linux")).toEqual({ unknown: true });
+    expect(resolveShellRc(undefined, "/home/u", "darwin")).toEqual({ unknown: true });
   });
 });
 
