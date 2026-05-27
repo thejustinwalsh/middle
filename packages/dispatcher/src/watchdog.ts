@@ -127,15 +127,20 @@ function failWorkflow(deps: WatchdogDeps, id: string, reason: string, now: numbe
 }
 
 /**
- * Best-effort session kill. The kill always runs *after* we've already decided
- * to fail the workflow, so a kill error must not prevent recording that failure
- * (or abort the reconciliation pass for other rows) — swallow and log it.
+ * Best-effort session kill. On the fail paths the kill runs *after* we've
+ * already decided to fail the workflow, so a kill error must not prevent
+ * recording that failure (or abort the reconciliation pass for other rows) —
+ * swallow and log it. Returns whether the kill succeeded so the blocked-handoff
+ * path can refuse to mark itself done (and retry next pass) if the hung session
+ * is still alive.
  */
-async function safeKillSession(tmux: WatchdogTmux, sessionName: string): Promise<void> {
+async function safeKillSession(tmux: WatchdogTmux, sessionName: string): Promise<boolean> {
   try {
     await tmux.killSession(sessionName);
+    return true;
   } catch (error) {
     console.error(`[watchdog] killSession failed for ${sessionName}: ${(error as Error).message}`);
+    return false;
   }
 }
 
@@ -220,17 +225,25 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
         // off — never compensate. Recorded once, not every idle tick.
         if (row.worktree_path && existsSync(sentinelPath(row.worktree_path))) {
           if (latestEventType(deps.db, row.id) !== BLOCKED_HANDOFF_EVENT) {
-            if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
-            if (!isWaitForArmed(deps.db, row.id)) {
-              armWaitForSignal(deps.db, `blocked:${row.id}`, row.id, null);
+            // The kill is what wakes the drive's liveness race to park. If it
+            // fails, do NOT record the handoff — otherwise the next pass's
+            // `latestEventType` guard suppresses the retry and the session never
+            // dies, leaving the workflow stuck `running`. Retry next tick instead.
+            const killed = row.session_name
+              ? await safeKillSession(deps.tmux, row.session_name)
+              : true;
+            if (killed) {
+              if (!isWaitForArmed(deps.db, row.id)) {
+                armWaitForSignal(deps.db, `blocked:${row.id}`, row.id, null);
+              }
+              recordEvent(deps.db, {
+                workflowId: row.id,
+                ts: now,
+                type: BLOCKED_HANDOFF_EVENT,
+                payloadJson: null,
+              });
+              acted++;
             }
-            recordEvent(deps.db, {
-              workflowId: row.id,
-              ts: now,
-              type: BLOCKED_HANDOFF_EVENT,
-              payloadJson: null,
-            });
-            acted++;
           }
           continue;
         }

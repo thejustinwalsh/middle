@@ -333,19 +333,24 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
     awaitStop: () => new Promise<HookPayload>(() => {}),
   };
 
+  const QUESTION = {
+    kind: "asked-question" as const,
+    sentinelPath: "/x/.middle/blocked.json",
+    sentinel: { question: "is the sandbox configured?" },
+  };
+
   /**
    * An adapter that, on `installHooks`, writes a real `.middle/blocked.json`
    * into the worktree (the drive checks the file on disk, not the stub), then
-   * classifies every Stop as `asked-question`. `onInstall` lets a test inject
-   * extra setup once the worktree path is known (e.g. simulate the watchdog's
-   * sentinel re-arm during the hang).
+   * classifies each Stop per `classifications` (default: a single
+   * `asked-question`). `onInstall` lets a test inject extra setup once the
+   * worktree path is known (e.g. simulate the watchdog's sentinel re-arm).
    */
-  function blockedAdapter(onInstall?: (worktree: string) => void): AgentAdapter {
-    const base = makeAdapterStub({
-      kind: "asked-question",
-      sentinelPath: "/x/.middle/blocked.json",
-      sentinel: { question: "is the sandbox configured?" },
-    });
+  function blockedAdapter(
+    classifications: StopClassification | StopClassification[] = QUESTION,
+    onInstall?: (worktree: string) => void,
+  ): AgentAdapter {
+    const base = makeAdapterStub(classifications);
     const installHooks: AgentAdapter["installHooks"] = async (opts) => {
       mkdirSync(join(opts.worktree, ".middle"), { recursive: true });
       writeFileSync(
@@ -384,7 +389,7 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
       getAdapter: () =>
         // Simulate the watchdog's rule-4 re-arm firing during the hang, before
         // the drive parks: arm `blocked:<id>` for the launching row.
-        blockedAdapter(() => {
+        blockedAdapter(QUESTION, () => {
           const row = db
             .query(
               "SELECT id FROM workflows WHERE epic_number = ? AND state IN ('launching','running')",
@@ -416,6 +421,36 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
     expect(await awaitSettled(id)).toBe("compensated");
     expect(getWaitForSignal(db, id)).toBeNull();
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+  });
+
+  test("a session that dies mid-nudge with a blocked sentinel parks, not compensates", async () => {
+    // The initial Stop is a real bare-stop; resolveBareStop nudges, and the
+    // session dies during the nudge wait with a blocked.json present. The nudge
+    // wait must self-heal the same way the first Stop wait does.
+    let stopCalls = 0;
+    const gate: SessionGate = {
+      awaitSessionStart: async () =>
+        ({ session_id: "stub-session", transcript_path: "/tmp/stub.jsonl" }) as HookPayload,
+      // First Stop resolves (bare-stop); the nudge's Stop never fires (hung).
+      awaitStop: () =>
+        stopCalls++ === 0
+          ? Promise.resolve({ reason: "turn-end" } as HookPayload)
+          : new Promise<HookPayload>(() => {}),
+    };
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      // Alive for the initial wait (stopCalls 0), dead once nudging (stopCalls ≥ 1).
+      tmux: { ...tmux.ops, status: async () => ({ alive: stopCalls === 0 }) },
+      sessionGate: gate,
+      livenessPollMs: 20,
+      epicPrReadiness: async () => ({ exists: false, isDraft: false }),
+      getAdapter: () => blockedAdapter([{ kind: "bare-stop" }, QUESTION]),
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toHaveLength(1);
+    expect(getWaitForSignal(db, id)).not.toBeNull();
   });
 });
 

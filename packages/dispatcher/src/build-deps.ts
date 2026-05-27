@@ -114,6 +114,7 @@ export type BuildImplementationDepsArgs = {
   isEpicApproved?: ImplementationDeps["isEpicApproved"];
   launchTimeoutMs?: number;
   stopTimeoutMs?: number;
+  livenessPollMs?: number;
   reviewRoundCap?: number;
   maxNudges?: number;
   nudgeStopTimeoutMs?: number;
@@ -188,6 +189,7 @@ export async function buildImplementationDeps(
         (await github.getIssueLabels(repo, epicNumber)).includes(APPROVED_LABEL)),
     launchTimeoutMs: args.launchTimeoutMs,
     stopTimeoutMs: args.stopTimeoutMs,
+    livenessPollMs: args.livenessPollMs,
     reviewRoundCap: args.reviewRoundCap,
     maxNudges: args.maxNudges,
     nudgeStopTimeoutMs: args.nudgeStopTimeoutMs,

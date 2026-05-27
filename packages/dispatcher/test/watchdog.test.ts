@@ -402,6 +402,33 @@ describe("watchdog — blocked sentinel self-heal", () => {
     expect(eventTypes(id)).toContain(BLOCKED_HANDOFF_EVENT);
   });
 
+  test("a failed kill does not record the handoff — it retries next pass", async () => {
+    const blocked = join(scratch, "blocked.json");
+    writeFileSync(blocked, JSON.stringify({ question: "which window?" }));
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      worktreePath: scratch,
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const tmux = {
+      status: async () => ({ alive: true, paneCount: 1 }),
+      killSession: async () => {
+        throw new Error("kill failed");
+      },
+    };
+    await runWatchdog(baseDeps({ tmux, blockedSentinelPath: () => blocked }));
+    // The kill is what wakes the drive to park; if it failed, recording the
+    // handoff would suppress the retry and strand the workflow in 'running'.
+    expect(eventTypes(id)).not.toContain(BLOCKED_HANDOFF_EVENT);
+    expect(getWorkflow(db, id)!.state).toBe("running");
+    const armed = db
+      .query("SELECT count(*) AS n FROM waitfor_signals WHERE workflow_id = ?")
+      .get(id) as { n: number };
+    expect(armed.n).toBe(0);
+  });
+
   test("the handoff is recorded once, not every idle tick", async () => {
     const blocked = join(scratch, "blocked.json");
     writeFileSync(blocked, JSON.stringify({ question: "which window?" }));
