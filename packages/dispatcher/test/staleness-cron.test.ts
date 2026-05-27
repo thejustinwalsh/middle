@@ -77,4 +77,30 @@ describe("runStalenessCronPass", () => {
       'chore(spec): reconcile stale "Phase 9" reference',
     );
   });
+
+  test("a non-ENOENT spec read error surfaces (not silently treated as missing spec)", async () => {
+    // A directory where the spec file is expected makes readFileSync throw EISDIR
+    // (not ENOENT). That's a real I/O failure: the pass must log it via its
+    // per-repo guard, not swallow it as "no spec" the way an absent file is.
+    const repo = join(scratch, "broken");
+    mkdirSync(join(repo, DEFAULT_SPEC_PATH), { recursive: true }); // spec path is a DIR
+    registerManagedRepo(db, "o/broken", repo);
+
+    const gh = fakeGithub(
+      [{ number: 50, title: "SPA", body: "", labels: ["phase:9"] }],
+      [{ number: 88, closes: [50] }],
+    );
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      await expect(runStalenessCronPass({ db, github: gh })).resolves.toBeNumber();
+    } finally {
+      console.error = origError;
+    }
+    expect(errors.some((e) => e.includes("o/broken") && e.includes("pass failed"))).toBe(true);
+  });
 });

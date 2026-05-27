@@ -35,7 +35,7 @@ stale. Three coordinated self-auditing systems, built (1) → (2) → (3).
    cron + `needs-design` labelling. Integration test spawns the real CLI against weak &
    well-formed fixtures.
 2. **#145** — Integration-verified definition of done: `verify.toml` integration gate
-   category (schema + parser + `verify.v1.md`); PR-ready gate requires evidenced
+   category (schema + parser + `verify.v1.md`); PR-ready gate requires an evidenced
    integration test + `(integration-exempt: <url>)` escape hatch;
    `implementing-github-issues` definition-of-done update. Integration test drives the
    PR-ready gate against a fixture PR with/without an integration test.

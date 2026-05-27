@@ -16,7 +16,9 @@ export const NEEDS_DESIGN_LABEL = "needs-design";
 /** Default cap on issues flagged in a single pass, so one sweep can't label-storm. */
 const DEFAULT_MAX_FLAGS_PER_PASS = 25;
 
+/** Dependency contract for {@link runBacklogAudit} — the repo to sweep, the GitHub gateway it reads/labels through, and the per-pass flag cap. */
 export type BacklogAuditDeps = {
+  /** The `owner/name` repo slug whose open feature issues are audited. */
   repo: string;
   github: Pick<GitHubGateway, "listOpenIssues" | "addLabel">;
   /** Cap on issues labelled per pass (default {@link DEFAULT_MAX_FLAGS_PER_PASS}). */

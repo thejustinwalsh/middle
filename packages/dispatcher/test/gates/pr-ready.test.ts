@@ -108,6 +108,32 @@ describe("evaluatePrReady", () => {
     if (result.decision === "deny") expect(result.reason).toContain("Punted");
   });
 
+  test("evidence still satisfies a criterion whose deferral is invalid (OR semantics)", async () => {
+    // A criterion carrying BOTH an evidence link and an invalid (bot-authored)
+    // deferral must still pass — the invalid deferral must not override the
+    // evidence. The integration half is satisfied by the second criterion.
+    const body = [
+      "## Acceptance criteria",
+      "- [ ] Done (https://example.com/x) (deferred: https://github.com/o/r/issues/1#issuecomment-2)",
+      "- [ ] `mm start` serves it; a smoke test boots the daemon and GETs `/` — packages/cli/test/daemon-entry.test.ts",
+    ].join("\n");
+    const resolve: CommentAuthorResolver = async () => ({ login: "middle[bot]", isBot: true });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result).toEqual({ decision: "allow" });
+  });
+
+  test("two bot deferrals and no real evidence is denied (no second-annotation leak)", async () => {
+    // The deferral-strip must remove EVERY `(deferred: …)`; if only the first is
+    // stripped, the second one's URL would satisfy the evidence check and let a
+    // fully-punted, unauthorized criterion through.
+    const body =
+      "## Acceptance criteria\n- [ ] Punted twice (deferred: https://github.com/o/r/issues/1#issuecomment-1) (deferred: https://github.com/o/r/issues/2#issuecomment-2)\n";
+    const resolve: CommentAuthorResolver = async () => ({ login: "middle[bot]", isBot: true });
+    const result = await evaluatePrReady({ body, resolveCommentAuthor: resolve });
+    expect(result.decision).toBe("deny");
+    if (result.decision === "deny") expect(result.reason).toContain("Punted twice");
+  });
+
   test("denies when there is no acceptance-criteria section (no bypass by deletion)", async () => {
     const result = await evaluatePrReady({
       body: "## Summary\nnothing to gate\n",

@@ -120,6 +120,14 @@ describe("parseVerifyConfig — malformed fails loudly", () => {
       expect(() => parseVerifyConfig(toml)).toThrow(VerifyConfigError);
     });
   }
+
+  test("the unknown-key message lists the live key set (incl. `category`)", () => {
+    // The suggestion is built from KNOWN_GATE_KEYS, so it never drifts stale as
+    // keys are added — `category` must appear now that it's a valid key.
+    expect(() => parseVerifyConfig('[[gate]]\nname = "x"\ncommand = "a"\ncomand = "typo"')).toThrow(
+      /category/,
+    );
+  });
 });
 
 describe("loadVerifyConfig — file IO", () => {

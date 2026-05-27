@@ -54,6 +54,56 @@ describe("runAuditIssues --issue mode", () => {
     expect(labelled).toEqual([{ n: 11, label: "needs-design" }]);
   });
 
+  test("a thrown fetch error is handled: returns 1 and logs, not an unhandled rejection", async () => {
+    let logged = "";
+    const code = await runAuditIssues("/repo", {
+      issue: 11,
+      resolveSlug: async () => "owner/name",
+      fetchIssue: async () => {
+        throw new Error("gh blew up");
+      },
+      log: () => {},
+      errlog: (m) => {
+        logged = m;
+      },
+    });
+    expect(code).toBe(1);
+    expect(logged).toContain("failed to fetch");
+    expect(logged).toContain("gh blew up");
+  });
+
+  test("a label-application failure is surfaced (logged) but does not crash the command", async () => {
+    // `addLabelDefault` now throws on a non-zero `gh` exit so a failure can't be
+    // logged as applied; the command catches it, logs to errlog, and still
+    // returns the audit verdict (1 for a failing issue) rather than rejecting.
+    let labelLogged = false;
+    let errLogged = "";
+    const code = await runAuditIssues("/repo", {
+      issue: 11,
+      label: true,
+      resolveSlug: async () => "owner/name",
+      fetchIssue: async (_slug, n) => ({
+        number: n,
+        title: "Weak feature",
+        body: WEAK_BODY,
+        labels: ["enhancement"],
+      }),
+      addLabel: async () => {
+        throw new Error("gh issue edit --add-label failed");
+      },
+      log: (m) => {
+        if (m.includes("labelled")) labelLogged = true;
+      },
+      errlog: (m) => {
+        errLogged = m;
+      },
+    });
+    expect(code).toBe(1);
+    expect(labelLogged).toBe(false); // never logged as applied
+    expect(errLogged).toContain("failed to label");
+    expect(errLogged).toContain("--add-label failed");
+  });
+
   test("a passing issue returns 0 and is never labelled", async () => {
     const labelled: number[] = [];
     const code = await runAuditIssues("/repo", {

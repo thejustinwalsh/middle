@@ -58,7 +58,13 @@ function phaseOfLabel(label: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Input contract for one {@link reconcileStaleness} pass over a single repo: the
+ * GitHub gateway it reads/mutates, plus how to read the build-spec for drift
+ * detection.
+ */
 export type StalenessDeps = {
+  /** The `owner/name` repo slug to reconcile. */
   repo: string;
   github: Pick<
     GitHubGateway,
@@ -68,10 +74,14 @@ export type StalenessDeps = {
   readSpec: () => string | null;
   /** The spec's repo-relative path, named in the reconcile task body. */
   specPath: string;
-  /** Cap on closes + tasks per pass (default {@link DEFAULT_MAX_PER_PASS}). */
+  /**
+   * Cap on the *total* mutations (closes + filed tasks) per pass — a single
+   * shared budget, so one sweep can't storm (default {@link DEFAULT_MAX_PER_PASS}).
+   */
   maxPerPass?: number;
 };
 
+/** Output of one {@link reconcileStaleness} pass — what it changed and detected. */
 export type StalenessResult = {
   /** Issue numbers closed as landed-but-open this pass. */
   closed: number[];
@@ -90,7 +100,10 @@ export type StalenessResult = {
  * abort the pass.
  */
 export async function reconcileStaleness(deps: StalenessDeps): Promise<StalenessResult> {
-  const cap = deps.maxPerPass ?? DEFAULT_MAX_PER_PASS;
+  // One shared budget across *all* mutations this pass — closes AND filed tasks
+  // draw from it, so the documented "per pass" cap bounds the total write storm,
+  // not each bucket independently (which would let a pass do `cap` of each).
+  let budget = deps.maxPerPass ?? DEFAULT_MAX_PER_PASS;
   const open = await deps.github.listOpenIssues(deps.repo);
   const openByNumber = new Map(open.map((i) => [i.number, i]));
 
@@ -100,7 +113,7 @@ export async function reconcileStaleness(deps: StalenessDeps): Promise<Staleness
 
   for (const ref of merged) {
     for (const issueNum of closingTargets(ref)) {
-      if (closed.length >= cap) break;
+      if (budget <= 0) break;
       const issue = openByNumber.get(issueNum);
       if (!issue) continue; // already closed, or never open → nothing to reconcile
       try {
@@ -110,6 +123,7 @@ export async function reconcileStaleness(deps: StalenessDeps): Promise<Staleness
           `Work landed in merged PR #${ref.number} — closed by middle's anti-staleness reconciliation. Reopen if this was premature.`,
         );
         closed.push(issueNum);
+        budget -= 1;
         openByNumber.delete(issueNum); // a PR closing it twice shouldn't double-close
         for (const label of issue.labels) {
           const phase = phaseOfLabel(label);
@@ -135,7 +149,7 @@ export async function reconcileStaleness(deps: StalenessDeps): Promise<Staleness
   const existingTitles = new Set(open.map((i) => i.title));
   const seenPhases = new Set<number>();
   for (const d of drift) {
-    if (filed.length >= cap) break;
+    if (budget <= 0) break;
     if (seenPhases.has(d.phase)) continue;
     seenPhases.add(d.phase);
     const title = reconcileTaskTitle(d.phase);
@@ -147,6 +161,7 @@ export async function reconcileStaleness(deps: StalenessDeps): Promise<Staleness
         labels: ["housekeeping"],
       });
       filed.push(number);
+      budget -= 1;
       console.error(
         `[staleness] ${deps.repo}: filed reconcile task #${number} for Phase ${d.phase}`,
       );

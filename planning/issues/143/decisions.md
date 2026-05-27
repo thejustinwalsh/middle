@@ -23,7 +23,7 @@ already live there.
 **Date:** 2026-05-26
 
 **Decision:** A criterion is an *integration criterion* iff its text contains **both** a
-product-wiring signal (served/mounted/invoked/reachable/wired/booted/GET/POST/`mm `/endpoint/route…)
+product-wiring signal (served/mounted/invoked/reachable/wired/booted/GET/POST/`mm`/endpoint/route…)
 **and** a real-path-test signal (integration test / smoke test / e2e / end-to-end /
 exercises / boots the / drives the / real path…). The bare phrase "unit test(s) pass" is
 explicitly insufficient. An issue passes the rubric if ≥1 of its acceptance criteria is an
