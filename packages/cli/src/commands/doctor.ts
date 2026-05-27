@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import {
   getTmuxVersion,
   MIN_TMUX_VERSION,
@@ -8,6 +9,13 @@ import {
   CANONICAL_SKILLS_DIR,
   diffSkills,
 } from "../bootstrap/skills-sync.ts";
+import {
+  applyPathFix,
+  bunPathSnippet,
+  getBunGlobalBinDir,
+  isDirOnPath,
+  resolveShellRc,
+} from "../checks/bun-path.ts";
 import { checkModuleIndex } from "../checks/module-index.ts";
 import { checkTsdocCoverage } from "../checks/tsdoc-coverage.ts";
 
@@ -59,6 +67,54 @@ async function checkBinary(
     };
   }
   return { name, status: "pass", detail: parseDetail(result.stdout) };
+}
+
+/**
+ * Flag when Bun's global bin dir (where `bun link` drops the `mm` symlink) is
+ * not on `$PATH`. A **warning**, not a fail: `mm` is still runnable via
+ * `bun run mm`. The motivating case is a Homebrew Bun install, which never adds
+ * `~/.bun/bin` to the shell rc the way the `curl | bash` installer does.
+ */
+async function checkBunPath(): Promise<Check> {
+  const binDir = await getBunGlobalBinDir();
+  if (isDirOnPath(binDir, process.env.PATH ?? "")) {
+    return { name: "bun PATH", status: "pass", detail: `${binDir} on PATH` };
+  }
+  return {
+    name: "bun PATH",
+    status: "warn",
+    detail: `${binDir} not on PATH — globally-linked binaries like \`mm\` are invisible; run \`mm doctor --fix\``,
+  };
+}
+
+/**
+ * `mm doctor --fix` action: if Bun's global bin dir is off `$PATH`, append the
+ * PATH export to the active shell's rc (`$SHELL` → `~/.zshrc` / `~/.bashrc`).
+ * Prints manual instructions when the shell is unrecognized; a no-op otherwise.
+ */
+async function runBunPathFix(): Promise<void> {
+  const binDir = await getBunGlobalBinDir();
+  if (isDirOnPath(binDir, process.env.PATH ?? "")) {
+    console.log("--fix: bun PATH already correct — nothing to fix.");
+    return;
+  }
+  const home = homedir();
+  const snippet = bunPathSnippet(binDir, home);
+  const rc = resolveShellRc(process.env.SHELL, home);
+  if ("unknown" in rc) {
+    console.log(
+      `--fix: couldn't detect your shell from $SHELL. Add this to your shell rc (~/.zshrc or ~/.bashrc):\n\n${snippet}\n`,
+    );
+    return;
+  }
+  const { changed } = applyPathFix({ rcPath: rc.rcPath, snippet, binDir });
+  if (changed) {
+    console.log(
+      `--fix: added bun PATH export to ${rc.rcPath} — run \`source ${rc.rcPath}\` or open a new shell.`,
+    );
+  } else {
+    console.log(`--fix: ${rc.rcPath} already configured — open a new shell to pick it up.`);
+  }
 }
 
 async function checkGhAuth(): Promise<Check> {
@@ -148,9 +204,10 @@ function checkTsdocCoverageWarn(): Check {
  * Exits 0 when no check fails; 1 if anything is missing or broken. Warnings
  * (degraded but functional) do not fail the run.
  */
-export async function runDoctor(): Promise<number> {
+export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number> {
   const checks: Check[] = [
     await checkBinary("bun", ["bun", "--version"]),
+    await checkBunPath(),
     await checkTmux(),
     await checkBinary("claude", ["claude", "--version"]),
     await checkBinary("git", ["git", "--version"]),
@@ -166,6 +223,11 @@ export async function runDoctor(): Promise<number> {
     console.log(`  ${STATUS_ICON[c.status]} ${c.name.padEnd(9)} ${c.detail}`);
   }
   console.log("");
+
+  if (fix) {
+    await runBunPathFix();
+    console.log("");
+  }
 
   const fails = checks.filter((c) => c.status === "fail");
   const warns = checks.filter((c) => c.status === "warn");
