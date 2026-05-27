@@ -100,7 +100,7 @@ async function runBunPathFix(): Promise<void> {
   }
   const home = homedir();
   const snippet = bunPathSnippet(binDir, home);
-  const rc = resolveShellRc(process.env.SHELL, home);
+  const rc = resolveShellRc(process.env.SHELL, home, process.platform);
   if ("unknown" in rc) {
     console.log(
       `--fix: couldn't detect your shell from $SHELL. Add this to your shell rc (~/.zshrc or ~/.bashrc):\n\n${snippet}\n`,
