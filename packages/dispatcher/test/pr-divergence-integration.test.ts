@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitOps, tryRebaseOntoMain } from "../src/reconcilers/pr-divergence.ts";
+import {
+  gitOps,
+  tryMergeMainNewWorkAsBase,
+  tryRebaseOntoMain,
+} from "../src/reconcilers/pr-divergence.ts";
 
 /**
  * Integration tests for the rebase / merge helpers exercised against real `git`
@@ -210,5 +214,75 @@ describe("tryRebaseOntoMain — fixture repo", () => {
     };
     const result = await tryRebaseOntoMain(skipDeps, "o/r", 999);
     expect(result).toEqual({ ok: false, conflictingPaths: [] });
+  });
+});
+
+describe("tryMergeMainNewWorkAsBase — fixture repo", () => {
+  test("rebase would loop but merge -X ours lands cleanly (same line, feature wins)", async () => {
+    // Seed shared file on main first, reset feature so both start from one commit.
+    await writeAndCommit(work, "shared.txt", "line\n", "main: seed shared");
+    await git(work, ["push", "origin", "main"]);
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+    await git(worktree, ["checkout", "-B", "middle-issue-32"]);
+
+    // Same line, both sides. Rebase would conflict; merge -X ours auto-resolves.
+    await writeAndCommit(worktree, "shared.txt", "feature edit\n", "feature: edit shared");
+    await writeAndCommit(work, "shared.txt", "main edit\n", "main: edit shared");
+    await git(work, ["push", "origin", "main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    // Sanity: rebase fails first (we exercised this in the rebase suite).
+    const rebaseResult = await tryRebaseOntoMain(deps(), "o/r", 999);
+    expect(rebaseResult.ok).toBe(false);
+
+    // The fallback lands; feature's content wins (-X ours preserves the branch).
+    const mergeResult = await tryMergeMainNewWorkAsBase(deps(), "o/r", 999);
+    expect(mergeResult).toEqual({ ok: true });
+
+    const contents = await Bun.file(join(worktree, "shared.txt")).text();
+    expect(contents).toBe("feature edit\n");
+
+    // A merge commit landed (not a fast-forward) — the reconciliation is visible
+    // in history so a reviewer can see main was folded in.
+    const parents = (await git(worktree, ["rev-list", "--parents", "-n", "1", "HEAD"])).stdout
+      .trim()
+      .split(/\s+/);
+    expect(parents.length).toBeGreaterThanOrEqual(3); // child + ≥2 parents
+  });
+
+  test("residual conflict -X ours can't auto-resolve (rename/rename) → abort, paths reported", async () => {
+    // Seed a baseline file, reset feature to it.
+    await writeAndCommit(work, "shared.txt", "baseline\n", "main: seed shared");
+    await git(work, ["push", "origin", "main"]);
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+    await git(worktree, ["checkout", "-B", "middle-issue-32"]);
+
+    // Feature renames shared.txt → feature-name.txt
+    await git(worktree, ["mv", "shared.txt", "feature-name.txt"]);
+    await git(worktree, ["commit", "-m", "feature: rename"]);
+    const featureSha = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // Main renames shared.txt → main-name.txt — rename/rename is a structural
+    // conflict that -X ours cannot resolve.
+    await git(work, ["mv", "shared.txt", "main-name.txt"]);
+    await git(work, ["commit", "-m", "main: rename"]);
+    await git(work, ["push", "origin", "main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+    const result = await tryMergeMainNewWorkAsBase(deps(), "o/r", 999);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The unmerged paths are whatever git's rename/rename resolver records;
+      // assert it surfaces at least one of the two renamed targets, so a real
+      // bug surfaces (an unconditionally-empty paths list).
+      expect(result.conflictingPaths.length).toBeGreaterThan(0);
+    }
+
+    // Worktree clean after abort: HEAD back at feature, no leftover MERGE_HEAD.
+    expect((await git(worktree, ["rev-parse", "HEAD"])).stdout.trim()).toBe(featureSha);
+    expect(existsSync(join(worktree, ".git", "MERGE_HEAD"))).toBe(false);
   });
 });

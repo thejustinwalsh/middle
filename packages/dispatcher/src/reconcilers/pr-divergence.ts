@@ -170,6 +170,11 @@ export type GitOps = {
   /** `git rebase <upstream>`. Returns `{ ok: true }` on a clean rebase (incl. FF)
    *  and `{ ok: false, conflictingPaths }` after aborting on conflict. */
   rebase(cwd: string, upstream: string): Promise<GitResolutionResult>;
+  /** `git merge -X ours <ref>` — *new-work-as-base* on a content collision: the
+   *  branch's version wins, so main's net-new edits land on top. On a residual
+   *  conflict `-X ours` can't auto-resolve (rare; rename/rename, modify/delete),
+   *  aborts with `git merge --abort` and reports the unmerged paths. */
+  mergeOurs(cwd: string, ref: string): Promise<GitResolutionResult>;
 };
 
 async function spawnGit(
@@ -212,6 +217,17 @@ export const gitOps: GitOps = {
     // index, after which `--diff-filter=U` returns nothing).
     const conflictingPaths = await readConflictingPaths(cwd);
     await spawnGit(cwd, ["rebase", "--abort"]);
+    return { ok: false, conflictingPaths };
+  },
+  async mergeOurs(cwd: string, ref: string): Promise<GitResolutionResult> {
+    // `--no-edit` keeps the run non-interactive when -X ours auto-resolves and a
+    // merge commit is produced. `--no-ff` ensures even a fast-forward-eligible
+    // merge produces a commit (the reconciliation is loud on purpose so a
+    // reviewer can see main was folded in).
+    const r = await spawnGit(cwd, ["merge", "--no-edit", "--no-ff", "-X", "ours", ref]);
+    if (r.exitCode === 0) return { ok: true };
+    const conflictingPaths = await readConflictingPaths(cwd);
+    await spawnGit(cwd, ["merge", "--abort"]);
     return { ok: false, conflictingPaths };
   },
 };
@@ -299,4 +315,30 @@ export async function tryRebaseOntoMain(
   if (!resolved) return { ok: false, conflictingPaths: [] };
   await deps.git.fetch(resolved.worktreePath, "main");
   return deps.git.rebase(resolved.worktreePath, "origin/main");
+}
+
+/**
+ * Merge-commit fallback when `tryRebaseOntoMain` keeps re-conflicting on the
+ * same hunks (CLAUDE.md → "Keeping the branch mergeable into main" → escape
+ * hatch). Performs a single `git merge -X ours origin/main` resolved
+ * **new-work-as-base**: on content collisions the branch's version wins, so
+ * main's net-new edits land cleanly on top.
+ *
+ *  - `{ ok: true }` — the merge landed (clean or `-X ours`-resolved).
+ *  - `{ ok: false, conflictingPaths }` — a residual conflict `-X ours` can't
+ *    auto-resolve (structural: rename/rename, modify/delete, dir/file). The
+ *    merge is aborted with `git merge --abort` so the worktree is clean.
+ *
+ * Mirrors `tryRebaseOntoMain`'s skip behavior for a non-managed head ref (the
+ * empty-paths case the trigger sibling distinguishes).
+ */
+export async function tryMergeMainNewWorkAsBase(
+  deps: WorktreeOpsDeps,
+  repo: string,
+  prNumber: number,
+): Promise<GitResolutionResult> {
+  const resolved = await resolveWorktreePath(deps, repo, prNumber);
+  if (!resolved) return { ok: false, conflictingPaths: [] };
+  await deps.git.fetch(resolved.worktreePath, "main");
+  return deps.git.mergeOurs(resolved.worktreePath, "origin/main");
 }
