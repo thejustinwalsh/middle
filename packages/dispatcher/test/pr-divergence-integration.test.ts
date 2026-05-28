@@ -247,6 +247,16 @@ describe("tryRebaseOntoMain — fixture repo", () => {
       /failed without unmerged files/,
     );
   });
+
+  test("non-conflict merge failure (missing ref) THROWS — symmetric to the rebase hardening", async () => {
+    // Symmetric coverage for `gitOps.mergeOurs`: the same "non-zero exit AND
+    // no unmerged paths" shape must throw, not silently map to a path-less
+    // conflict result. Without this assertion, a regression that dropped the
+    // throw on the merge twin would slip through.
+    await expect(gitOps.mergeOurs(worktree, "does-not-exist-ref")).rejects.toThrow(
+      /failed without unmerged files/,
+    );
+  });
 });
 
 describe("tryMergeMainNewWorkAsBase — fixture repo", () => {
