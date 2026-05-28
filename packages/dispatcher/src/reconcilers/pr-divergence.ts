@@ -88,6 +88,12 @@ export function classifyMergeability(view: MergeabilityView | null): DivergenceS
  * One `gh` call per PR (`mergeable,mergeStateStatus` on `pr view`), so a sweep
  * over `N` open PRs costs `N` REST calls — the rate-limit ceiling
  * (Phase 6) is what bounds bursts.
+ *
+ * A `getMergeability` transport/auth failure propagates as a thrown error (the
+ * gateway distinguishes that from a missing PR — see `ghStderrIsNotFound`). The
+ * orchestrator's per-PR try/catch counts that as `failed`, and the state row
+ * stays at its previous observation rather than being overwritten with a stale
+ * UNKNOWN — preserving the failure signal for the operator.
  */
 export async function classifyDivergence(
   deps: { db: Database; github: DivergenceGateway; now?: () => number },
@@ -556,11 +562,14 @@ function renderSubIssueReopenComment(prNumber: number, epicNumber: number): stri
  * review-feedback convention), re-enqueues the Epic through the recommender's
  * entry point, and records `DEMOTED` in `pr_divergence_state`.
  *
- * Idempotency rests on two independent gates so a partial-retry doesn't pile
- * on duplicates:
- *  - **PR.isDraft** — if the PR is already a draft, the demote has already
- *    landed; the whole function returns. This survives a classifier overwrite
- *    of the state row back to CONFLICTED (a re-classification under DEMOTED).
+ * Idempotency is **per-step**, never a function-wide short-circuit — a partial
+ * prior attempt (e.g. the PR got flipped to draft but the next call crashed
+ * before reopen/comment/enqueue/state-write) must still be able to finish
+ * remediation on retry. Each step has its own gate so duplicates don't pile on:
+ *  - **PR.isDraft** — if the PR is already a draft, skip the `convertPrToDraft`
+ *    step; the rest of the function still runs so a partial prior attempt can
+ *    complete. This also survives a classifier overwrite of the state row back
+ *    to CONFLICTED (a re-classification under DEMOTED).
  *  - **Epic-keyed marker on prior demote** — if the Epic already carries the
  *    demote marker from a previous incident, skip the sub-issue reopen even if
  *    the PR was un-drafted in the meantime (e.g. a human reviewed the
@@ -593,9 +602,15 @@ export async function applyDemoteToWork(
 
   const pr = await deps.github.getPullRequest(repo, prNumber);
   if (!pr) return;
-  if (pr.isDraft) return; // already demoted — fully idempotent
 
-  await deps.github.convertPrToDraft(repo, prNumber);
+  // Skip only the draft-flip step on a partial-retry, not the rest of
+  // remediation — a prior attempt that crashed AFTER converting to draft but
+  // BEFORE the reopen/comment/enqueue/state-write must still be able to finish
+  // those steps on the next pass. Duplicates downstream are gated per-step
+  // (Epic marker, comment marker, enqueueEpic's own existing-workflow guard).
+  if (!pr.isDraft) {
+    await deps.github.convertPrToDraft(repo, prNumber);
+  }
 
   const marker = demoteMarker(epicNumber);
   const epicComments = await deps.github.listIssueComments(repo, epicNumber);
@@ -869,6 +884,28 @@ function safeJsonParse<T>(stdout: string): T | null {
 }
 
 /**
+ * Distinguish `gh`'s "this PR / branch doesn't exist" exits (which the gateway
+ * surfaces as `null` so the orchestrator can pass the PR for the pass) from
+ * transport/auth/rate-limit/syntax failures (which must throw so the per-PR
+ * try/catch increments `failed` and the operator sees the real error). The
+ * not-found shape is stable across `gh`'s outputs — both the GraphQL `Could
+ * not resolve to a …` phrasing and the REST `HTTP 404` phrasing appear in
+ * stderr. Anything else is a real failure.
+ *
+ * Deliberately narrow: we match only the two `gh`-known not-found prefixes,
+ * never a bare `"not found"` substring (which could appear inside a push-
+ * protection rejection or a secret-scanning notice and silently mask a real
+ * failure as a PR-missing no-op).
+ *
+ * Exported for unit tests; the predicate is the load-bearing seam between
+ * "return null" and "throw" across every gateway method.
+ */
+export function ghStderrIsNotFound(stderr: string): boolean {
+  const s = stderr.toLowerCase();
+  return s.includes("could not resolve to a") || s.includes("http 404");
+}
+
+/**
  * Production gateway backing {@link reconcileOpenPRs}. Composes with
  * `ghGitHub`'s comment ops at the daemon-wiring site; methods that overlap
  * (`listIssueComments`, `postComment`) are intentionally absent here so the
@@ -894,7 +931,10 @@ export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | 
   },
   async getMainCommitSha(repo) {
     const r = await ghSpawn(["api", `/repos/${repo}/branches/main`, "--jq", ".commit.sha"]);
-    if (r.exitCode !== 0) return null;
+    if (r.exitCode !== 0) {
+      if (ghStderrIsNotFound(r.stderr)) return null;
+      throw new Error(`gh api branches/main for ${repo} failed: ${r.stderr.trim()}`);
+    }
     const sha = r.stdout.trim();
     return sha === "" ? null : sha;
   },
@@ -908,7 +948,10 @@ export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | 
       "--json",
       "mergeable,mergeStateStatus",
     ]);
-    if (r.exitCode !== 0) return null;
+    if (r.exitCode !== 0) {
+      if (ghStderrIsNotFound(r.stderr)) return null;
+      throw new Error(`gh pr view #${prNumber} (mergeability) failed: ${r.stderr.trim()}`);
+    }
     return safeJsonParse<MergeabilityView>(r.stdout);
   },
   async getPrHeadRef(repo, prNumber) {
@@ -923,13 +966,19 @@ export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | 
       "--jq",
       ".headRefName",
     ]);
-    if (r.exitCode !== 0) return null;
+    if (r.exitCode !== 0) {
+      if (ghStderrIsNotFound(r.stderr)) return null;
+      throw new Error(`gh pr view #${prNumber} (headRefName) failed: ${r.stderr.trim()}`);
+    }
     const ref = r.stdout.trim();
     return ref === "" ? null : ref;
   },
   async getPullRequest(repo, prNumber) {
     const r = await ghSpawn(["pr", "view", String(prNumber), "--repo", repo, "--json", "isDraft"]);
-    if (r.exitCode !== 0) return null;
+    if (r.exitCode !== 0) {
+      if (ghStderrIsNotFound(r.stderr)) return null;
+      throw new Error(`gh pr view #${prNumber} (isDraft) failed: ${r.stderr.trim()}`);
+    }
     return safeJsonParse<{ isDraft: boolean }>(r.stdout);
   },
   async convertPrToDraft(repo, prNumber) {

@@ -12,6 +12,7 @@ import {
   type ClosedSubIssue,
   type DivergenceGateway,
   getDivergenceState,
+  ghStderrIsNotFound,
   type MergeabilityView,
   parseEpicFromHeadRef,
   recordDivergenceState,
@@ -295,7 +296,12 @@ describe("applyDemoteToWork", () => {
     });
   });
 
-  test("idempotent: a second call sees PR.isDraft and skips everything", async () => {
+  test("per-step idempotency: a second call skips draft-flip + reopen + comments via markers (but still re-enqueues)", async () => {
+    // After the first call lands, the second call must NOT pile on duplicates
+    // for the steps gated by GitHub state (draft flip, sub-issue reopen, both
+    // surfaces' escalation comments). Re-enqueue still fires on every pass —
+    // it's the recommender's "fresh divergence" nudge and is itself idempotent
+    // at the daemon (existing-workflow guard), per the function's contract.
     const spy = makeDemoteSpy();
     const enqueues: Array<[string, number]> = [];
     const deps = {
@@ -310,10 +316,45 @@ describe("applyDemoteToWork", () => {
     await applyDemoteToWork(deps, REPO, 99, ["a.txt"]);
     await applyDemoteToWork(deps, REPO, 99, ["a.txt"]); // second call
 
+    // Marker-gated steps fired exactly once across two calls.
     expect(spy.calls.convertPrToDraft.length).toBe(1);
     expect(spy.calls.reopenIssue.length).toBe(1);
     expect(spy.calls.postComment.length).toBe(2);
-    expect(enqueues.length).toBe(1);
+    // Re-enqueue fires every pass — docstring contract.
+    expect(enqueues.length).toBe(2);
+  });
+
+  test("partial-retry: prior attempt left the PR drafted but did not reopen / comment / enqueue — second pass completes remediation", async () => {
+    // Models a crash between `convertPrToDraft` and the next step on the first
+    // attempt: GitHub already sees the PR as a draft, but our spy's state shows
+    // no reopen, no comments, no enqueue, no row. The second pass must NOT
+    // short-circuit on `pr.isDraft` (the pre-fix behaviour) — it must finish
+    // every remaining remediation step.
+    const spy = makeDemoteSpy({ isDraft: true });
+    const enqueues: Array<[string, number]> = [];
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async (r, e) => {
+          enqueues.push([r, e]);
+        },
+        now: () => 1_700_000_200_000,
+      },
+      REPO,
+      99,
+      ["packages/x.ts"],
+    );
+
+    // The draft-flip step was skipped — the PR was already draft.
+    expect(spy.calls.convertPrToDraft).toEqual([]);
+    // …but every downstream step ran to completion.
+    expect(spy.calls.reopenIssue.length).toBe(1);
+    expect(spy.calls.reopenIssue[0]?.issueNumber).toBe(50);
+    expect(spy.calls.postComment.length).toBe(2);
+    expect(new Set(spy.calls.postComment.map((c) => c.issueNumber))).toEqual(new Set([99, 32]));
+    expect(enqueues).toEqual([[REPO, 32]]);
+    expect(getDivergenceState(db, REPO, 99)?.state).toBe("DEMOTED");
   });
 
   test("partial-retry safety: existing marker on PR skips the duplicate PR comment, still posts on Epic", async () => {
@@ -442,4 +483,38 @@ describe("applyDemoteToWork", () => {
     expect(spy.calls.convertPrToDraft).toEqual([]);
     expect(spy.calls.postComment).toEqual([]);
   });
+});
+
+describe("ghStderrIsNotFound", () => {
+  // The not-found shapes the production gateway's `getMergeability` /
+  // `getPrHeadRef` / `getPullRequest` / `getMainCommitSha` recognize as "PR or
+  // branch doesn't exist → null". Anything else must throw so the orchestrator's
+  // per-PR try/catch surfaces transport/auth/rate-limit failures as `failed++`
+  // instead of silently passing the PR through as UNKNOWN.
+  for (const stderr of [
+    "Could not resolve to a PullRequest with the number 99.",
+    "Could not resolve to a Branch with the name 'main'.",
+    "HTTP 404: Not Found (https://api.github.com/...)",
+    "graphql: Could not resolve to a Repository",
+  ]) {
+    test(`recognizes not-found: ${JSON.stringify(stderr.slice(0, 40))}`, () => {
+      expect(ghStderrIsNotFound(stderr)).toBe(true);
+    });
+  }
+
+  for (const stderr of [
+    "error connecting to api.github.com: dial tcp: connection refused",
+    "HTTP 401: Bad credentials",
+    "HTTP 403: API rate limit exceeded",
+    "HTTP 502: Bad Gateway",
+    "gh: command failed (oauth token expired)",
+    "could not deserialize response", // close-but-not — must NOT be treated as 404
+    "remote: secret not found, push declined", // push-protection: NOT a 404
+    "Not Found", // bare phrase alone — too ambiguous; require an `HTTP 404` or `Could not resolve` prefix
+    "",
+  ]) {
+    test(`treats non-404 failure as throw-worthy: ${JSON.stringify(stderr.slice(0, 40))}`, () => {
+      expect(ghStderrIsNotFound(stderr)).toBe(false);
+    });
+  }
 });

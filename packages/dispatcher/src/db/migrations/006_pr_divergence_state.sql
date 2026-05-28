@@ -25,3 +25,8 @@ CREATE TABLE pr_divergence_state (
 );
 
 CREATE INDEX idx_pr_divergence_state ON pr_divergence_state(state);
+-- Recency/staleness scans (e.g. "rows last classified > N seconds ago") are
+-- the table's other query shape; index `classified_at` so they don't degrade
+-- to a full scan as the table grows.
+CREATE INDEX idx_pr_divergence_state_classified_at
+  ON pr_divergence_state(classified_at);
