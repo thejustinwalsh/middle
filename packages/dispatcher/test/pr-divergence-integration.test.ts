@@ -689,6 +689,48 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     expect(getDivergenceState(db, "o/r", 103)?.state).toBe("CLEAN" satisfies DivergenceState);
   });
 
+  test("two open managed PRs in one pass — both walked, mix of CLEAN + BEHIND→rebased", async () => {
+    // Pass-through fixture: one PR is up-to-date (CLEAN), the other is BEHIND
+    // (will rebase via the fixture worktree). Proves the orchestrator iterates
+    // the list and applies the right chain per-PR — the spec's "merging one
+    // triggers the reconciler; the other rebases onto the new main" topology.
+    await writeAndCommit(work, "main.txt", "main\n", "main: add file");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [
+        { prNumber: 200, headRefName: "middle-issue-32" }, // will rebase BEHIND→CLEAN
+        { prNumber: 201, headRefName: "middle-issue-99" }, // already CLEAN
+      ],
+      headRefs: { 200: "middle-issue-32", 201: "middle-issue-99" },
+      mergeability: {
+        200: { mergeStateStatus: "BEHIND", mergeable: "MERGEABLE" },
+        201: { mergeStateStatus: "CLEAN", mergeable: "MERGEABLE" },
+      },
+    });
+
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    expect(r).toEqual({ reconciled: 1, passed: 1, skippedForBudget: false });
+
+    // PR 200 got an applySuccess comment; PR 201 (CLEAN) got nothing.
+    expect(fixture.calls.postComment.length).toBe(1);
+    expect(fixture.calls.postComment[0]?.issueNumber).toBe(200);
+    // Both rows are persisted reflecting their classified state.
+    expect(getDivergenceState(db, "o/r", 200)?.state).toBe("CLEAN" satisfies DivergenceState); // applySuccess wrote CLEAN
+    expect(getDivergenceState(db, "o/r", 201)?.state).toBe("CLEAN" satisfies DivergenceState); // classifier wrote CLEAN
+  });
+
   test("listOpenManagedPrs throws → pass returns 0s and logs, no orchestration", async () => {
     const fixture = makeOrchestratorGateway({
       openPrs: [],
