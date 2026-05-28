@@ -95,6 +95,11 @@ function fakeGithub(opts: { body: string; headSha?: string; epicNumber?: number 
     getCommentAuthor: unimplemented("getCommentAuthor"),
     getIssueLabels: unimplemented("getIssueLabels"),
     listOpenEpics: unimplemented("listOpenEpics"),
+    listOpenIssues: unimplemented("listOpenIssues"),
+    addLabel: unimplemented("addLabel"),
+    listMergedPrsClosingRefs: unimplemented("listMergedPrsClosingRefs"),
+    closeIssue: unimplemented("closeIssue"),
+    createIssue: unimplemented("createIssue"),
   };
   return {
     github,
