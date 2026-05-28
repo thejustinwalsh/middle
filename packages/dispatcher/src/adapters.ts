@@ -9,19 +9,24 @@ import { claudeAdapter } from "@middle/adapter-claude";
 import { codexAdapter } from "@middle/adapter-codex";
 import type { AgentAdapter } from "@middle/core";
 
-const REGISTRY: Readonly<Record<string, AgentAdapter>> = {
-  claude: claudeAdapter,
-  codex: codexAdapter,
-};
+// `Map` (not a plain object) so lookups never resolve inherited keys: an
+// attacker-controlled name like `toString` or `constructor` would otherwise hit
+// `Object.prototype` and bypass `getAdapter`'s `undefined` guard, returning a
+// non-`AgentAdapter` value to callers that validate names by side-effecting
+// `getAdapter`.
+const REGISTRY = new Map<string, AgentAdapter>([
+  ["claude", claudeAdapter],
+  ["codex", codexAdapter],
+]);
 
 /** The names of every implemented adapter. */
 export function knownAdapters(): string[] {
-  return Object.keys(REGISTRY);
+  return [...REGISTRY.keys()];
 }
 
 /** Whether `name` resolves to an implemented adapter. */
 export function isKnownAdapter(name: string): boolean {
-  return Object.hasOwn(REGISTRY, name);
+  return REGISTRY.has(name);
 }
 
 /**
@@ -30,7 +35,7 @@ export function isKnownAdapter(name: string): boolean {
  * non-throwing check guard with {@link isKnownAdapter} first.
  */
 export function getAdapter(name: string): AgentAdapter {
-  const adapter = REGISTRY[name];
+  const adapter = REGISTRY.get(name);
   if (adapter === undefined) {
     throw new Error(`unknown adapter: ${name} (known: ${knownAdapters().join(", ")})`);
   }

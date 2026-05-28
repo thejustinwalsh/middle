@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isNormalizedEvent } from "@middle/core";
-import { getAdapter, knownAdapters } from "../src/adapters.ts";
+import { getAdapter, isKnownAdapter, knownAdapters } from "../src/adapters.ts";
 
 // The proof that the `AgentAdapter` abstraction holds across both adapters: the
 // SAME sequence of interface calls is driven against every registered adapter
@@ -31,6 +31,21 @@ function worktreeWithMiddle(): { worktree: string; middle: string } {
 
 test("the registry knows both adapters", () => {
   expect(knownAdapters().sort()).toEqual(["claude", "codex"]);
+});
+
+// Regression: a plain-object registry would inherit `Object.prototype` keys
+// (`toString`, `constructor`, `hasOwnProperty`, …) and `getAdapter("toString")`
+// would return the inherited function instead of throwing. Lookups must be
+// exact-key — the registry is a `Map` for this reason.
+describe("registry lookup is exact-key (no prototype walk)", () => {
+  for (const protoKey of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+    test(`getAdapter(${JSON.stringify(protoKey)}) throws unknown-adapter`, () => {
+      expect(() => getAdapter(protoKey)).toThrow(/unknown adapter/);
+    });
+    test(`isKnownAdapter(${JSON.stringify(protoKey)}) is false`, () => {
+      expect(isKnownAdapter(protoKey)).toBe(false);
+    });
+  }
 });
 
 describe.each(knownAdapters())("AgentAdapter contract — %s", (name) => {
