@@ -6,7 +6,7 @@
 
 **Decision:** React to `agent.notification` as a new watchdog reconcile pass (`reconcileNotifications`), not as an event-driven handler in the hook server.
 **Why:** The acceptance criteria are explicit about reacting on "notification **+ subsequent idle**" — a transient notification the agent resolves itself must not trip the failsafe. Distinguishing "the agent went quiet after notifying" from "the agent kept working" is inherently a staleness check, which is the watchdog's whole job. The watchdog already sweeps every `launching`/`running` workflow on a 30s cadence with `tmux` + `db` in hand, regardless of spawn kind — so AC5 ("all spawn kinds") falls out for free, and there's no new scheduling machinery. A hook-server handler would fire instantly on every notification and couldn't tell a transient one from a real block.
-**Evidence:** `watchdog.ts` rule 3 (activity freshness) already derives idleness from `max(last_heartbeat, transcriptMs, updated_at)`; the notification rule reuses the same baseline against the latest `agent.notification` ts.
+**Evidence:** `watchdog.ts` rule 3 (activity freshness) already derives idleness from `max(last_heartbeat, transcriptMs, updated_at)`; the notification rule uses a similar staleness check but on a stricter baseline — `activityMs = max(last_heartbeat, transcriptMs)` (no `updated_at`) — and flags a stall when `notifTs > activityMs`. The stricter baseline keeps heartbeat-bookkeeping writes (`reconcileTranscriptDrift` sets `updated_at = now`) from masking a real notification-idle. See "Anchor idle + 'handled' on real activity, not `updated_at` or `notifTs`" below for the rationale.
 
 ## Intervene by instruction-nudge, route a real block into the existing park
 **File(s):** `packages/dispatcher/src/watchdog.ts`
@@ -28,8 +28,8 @@
 **File(s):** `packages/dispatcher/src/watchdog.ts`, `packages/dispatcher/src/workflow-record.ts`
 **Date:** 2026-05-26
 
-**Decision:** Track the per-notification handling ("captured at", "intervened at", kind) via `notification.captured` / `notification.intervened` event rows, compared against the latest `agent.notification` ts — no schema change.
-**Why:** Mirrors how the watchdog already marks `watchdog.idle` once per idle period via `latestEventType`. Comparing handled-ts ≥ notification-ts re-arms the failsafe naturally for each *new* notification without per-row state. Added `lastEventTs(db, id, type)` to read the latest ts of a given event type (the `firstEventTs` sibling).
+**Decision:** Track the per-notification handling ("captured at", "intervened at", kind) via `notification.captured` / `notification.intervened` event rows, compared against the activity baseline (`activityMs = max(last_heartbeat, transcriptMs)`) — no schema change.
+**Why:** Mirrors how the watchdog already marks `watchdog.idle` once per idle period via `latestEventType`. Comparing `capturedTs > activityMs` re-arms the failsafe only on genuine resumed activity (not on each repeat "still waiting" notification) — see the "Anchor idle + 'handled' on real activity" decision below for the bugs that the obvious "handled when capturedTs ≥ notifTs" formulation hides. Added `lastEventTs(db, id, type)` to read the latest ts of a given event type (the `firstEventTs` sibling).
 **Evidence:** `watchdog.ts` rule 3 idle-once guard; `workflow-record.ts:firstEventTs`.
 
 ## Anchor idle + "handled" on real activity, not `updated_at` or `notifTs`
