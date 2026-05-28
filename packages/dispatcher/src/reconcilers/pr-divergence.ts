@@ -446,3 +446,143 @@ export async function applySuccess(
 
   recordDivergenceState(deps.db, repo, prNumber, "CLEAN", (deps.now ?? Date.now)());
 }
+
+// ── Phase 5: applyDemoteToWork ──────────────────────────────────────────────
+
+/** One closed sub-issue under an Epic, as
+ *  {@link ApplyDemoteGateway.listClosedSubIssues} returns them. `closedAt` is
+ *  epoch ms or null if GitHub doesn't surface it (a hand-edited row). */
+export type ClosedSubIssue = { number: number; closedAt: number | null };
+
+/** The narrow gateway `applyDemoteToWork` needs on top of comment posting:
+ *  the PR's draft state, the draft-conversion mutation, the sub-issue listing,
+ *  and the reopen call. Production wiring lives in Phase 6. */
+export type ApplyDemoteGateway = PrHeadRefGateway &
+  PrCommentGateway & {
+    /** Read the PR's draft status, or null if the PR doesn't exist. */
+    getPullRequest(repo: string, prNumber: number): Promise<{ isDraft: boolean } | null>;
+    /** Convert a PR back to a draft. Caller already checked `isDraft = false`. */
+    convertPrToDraft(repo: string, prNumber: number): Promise<void>;
+    /** Closed sub-issues of an Epic, most-recently-closed first
+     *  (caller relies on the ordering — don't return unsorted). */
+    listClosedSubIssues(repo: string, epicNumber: number): Promise<ClosedSubIssue[]>;
+    /** Reopen an issue and optionally post a comment in the same call. Idempotent
+     *  on GitHub's side: reopening an already-open issue is a no-op. */
+    reopenIssue(repo: string, issueNumber: number, options?: { comment?: string }): Promise<void>;
+  };
+
+/** Deps for `applyDemoteToWork` — gateway + db + the re-enqueue seam (caller
+ *  wires it through the recommender entry point so ranking still applies). */
+export type ApplyDemoteDeps = {
+  db: Database;
+  github: ApplyDemoteGateway;
+  /** Re-enqueue the Epic for dispatch. Daemon-wired to a recommender run +
+   *  `scheduleAutoDispatch(repo)` so the recommender's ranking still applies.
+   *  The wiring is idempotent — the existing collision guard on the
+   *  enqueue path no-ops a duplicate dispatch for the same Epic. */
+  enqueueEpic: (repo: string, epicNumber: number) => Promise<void>;
+  now?: () => number;
+};
+
+/** Hidden HTML marker that gates the dual-surface escalation comment per Epic.
+ *  A retry after a partial failure (PR was demoted but a follow-on call lost
+ *  the comment-post step) sees the marker and skips the duplicate. */
+function demoteMarker(epicNumber: number): string {
+  return `<!-- middle-divergence-demoted: ${epicNumber} -->`;
+}
+
+function renderDemoteEscalation(
+  epicNumber: number,
+  prNumber: number,
+  conflictingPaths: string[],
+): string {
+  const pathsLine =
+    conflictingPaths.length > 0
+      ? conflictingPaths.map((p) => `- \`${p}\``).join("\n")
+      : "_(no conflicting paths reported — the rebase and merge fallback both failed without surfacing unmerged files; investigate manually)_";
+  return [
+    `🛑 **Reconciliation escalation:** PR #${prNumber} for Epic #${epicNumber} could not be auto-reconciled with \`main\`.`,
+    ``,
+    `Both autonomous attempts failed:`,
+    `1. \`git rebase origin/main\` — conflicts`,
+    `2. \`git merge -X ours origin/main\` (new-work-as-base) — residual conflict`,
+    ``,
+    `Conflicting paths:`,
+    pathsLine,
+    ``,
+    `The PR has been flipped back to **draft** and the most-recently-closed sub-issue reopened so a fresh agent can pick up conflict resolution. The Epic has been re-enqueued through the recommender's ranking — it will be dispatched again when slots free up.`,
+    ``,
+    demoteMarker(epicNumber),
+  ].join("\n");
+}
+
+function renderSubIssueReopenComment(prNumber: number, epicNumber: number): string {
+  return `Reopened by the open-PR reconciler: PR #${prNumber} for Epic #${epicNumber} could not be auto-reconciled with \`main\`. See the escalation comment on the Epic and the PR for details.`;
+}
+
+/**
+ * Demote a PR back to work when both autonomous reconciliation attempts (rebase
+ * + `-X ours` merge) have failed. Flips the PR to draft, reopens the most-
+ * recently-closed sub-issue of the Epic with an escalation comment, posts the
+ * same escalation on both the Epic and the PR (dual-surface per CLAUDE.md's
+ * review-feedback convention), re-enqueues the Epic through the recommender's
+ * entry point, and records `DEMOTED` in `pr_divergence_state`.
+ *
+ * Idempotency rests on two independent gates so a partial-retry doesn't pile
+ * on duplicates:
+ *  - **PR.isDraft** — if the PR is already a draft, the demote has already
+ *    landed; the whole function returns. This survives a classifier overwrite
+ *    of the state row back to CONFLICTED (a re-classification under DEMOTED).
+ *  - **comment marker** — the dual-surface comments include a hidden HTML
+ *    marker keyed on the Epic number; on a retry that comes after the post
+ *    succeeded but before the row was written, the listing-then-post sequence
+ *    sees the marker and skips. (Re-`reopenIssue` and re-`enqueueEpic` are
+ *    themselves idempotent — sub-issue reopen is a no-op on open, the enqueue
+ *    collides against the existing-workflow guard.)
+ *
+ * Non-managed head refs (the PR isn't `middle-issue-<N>`) short-circuit as a
+ * no-op — the reconciler is never the right hand for those.
+ */
+export async function applyDemoteToWork(
+  deps: ApplyDemoteDeps,
+  repo: string,
+  prNumber: number,
+  conflictingPaths: string[],
+): Promise<void> {
+  const headRef = await deps.github.getPrHeadRef(repo, prNumber);
+  if (!headRef) return;
+  const epicNumber = parseEpicFromHeadRef(headRef);
+  if (epicNumber === null) return;
+
+  const pr = await deps.github.getPullRequest(repo, prNumber);
+  if (!pr) return;
+  if (pr.isDraft) return; // already demoted — fully idempotent
+
+  await deps.github.convertPrToDraft(repo, prNumber);
+
+  // Most-recently-closed sub-issue, if any. An Epic with no closed sub-issues
+  // (every phase is still open) means there's nothing to reopen — that's not
+  // an error; the demote still proceeds with the comments + re-enqueue.
+  const closedSubs = await deps.github.listClosedSubIssues(repo, epicNumber);
+  const targetSub = closedSubs[0]; // gateway contract: most-recently-closed first
+  if (targetSub) {
+    await deps.github.reopenIssue(repo, targetSub.number, {
+      comment: renderSubIssueReopenComment(prNumber, epicNumber),
+    });
+  }
+
+  // Dual-surface escalation. Same marker on both surfaces gates re-posts.
+  const escalationBody = renderDemoteEscalation(epicNumber, prNumber, conflictingPaths);
+  const marker = demoteMarker(epicNumber);
+
+  for (const issueNumber of [prNumber, epicNumber]) {
+    const existing = await deps.github.listIssueComments(repo, issueNumber);
+    if (!existing.some((c) => (c.body ?? "").includes(marker))) {
+      await deps.github.postComment(repo, issueNumber, escalationBody);
+    }
+  }
+
+  await deps.enqueueEpic(repo, epicNumber);
+
+  recordDivergenceState(deps.db, repo, prNumber, "DEMOTED", (deps.now ?? Date.now)());
+}

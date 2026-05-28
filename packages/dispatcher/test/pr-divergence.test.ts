@@ -5,8 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAndMigrate } from "../src/db.ts";
 import {
+  type ApplyDemoteGateway,
+  applyDemoteToWork,
   classifyDivergence,
   classifyMergeability,
+  type ClosedSubIssue,
   type DivergenceGateway,
   getDivergenceState,
   type MergeabilityView,
@@ -183,5 +186,221 @@ describe("recordDivergenceState", () => {
     recordDivergenceState(db, "owner-b/r", 90, "BEHIND", 200);
     expect(getDivergenceState(db, "owner-a/r", 90)?.state).toBe("CLEAN");
     expect(getDivergenceState(db, "owner-b/r", 90)?.state).toBe("BEHIND");
+  });
+});
+
+/**
+ * Build an `ApplyDemoteGateway` spy that records every call (so the test can
+ * assert exact call counts across consecutive invocations) and threads a
+ * settable `isDraft` for the PR — flipping it on the first call models how
+ * GitHub responds on the second.
+ */
+type DemoteSpy = {
+  gateway: ApplyDemoteGateway;
+  state: {
+    isDraft: boolean;
+    headRef: string | null;
+    /** Comments per issue number, keyed by issue number. */
+    comments: Map<number, string[]>;
+    closedSubs: ClosedSubIssue[];
+  };
+  calls: {
+    convertPrToDraft: Array<[string, number]>;
+    reopenIssue: Array<{ repo: string; issueNumber: number; comment: string | undefined }>;
+    listClosedSubIssues: Array<[string, number]>;
+    postComment: Array<{ repo: string; issueNumber: number; body: string }>;
+  };
+};
+
+function makeDemoteSpy(over: Partial<DemoteSpy["state"]> = {}): DemoteSpy {
+  const state: DemoteSpy["state"] = {
+    isDraft: false,
+    headRef: "middle-issue-32",
+    comments: new Map(),
+    closedSubs: [{ number: 50, closedAt: 1_700_000_000_000 }],
+    ...over,
+  };
+  const calls: DemoteSpy["calls"] = {
+    convertPrToDraft: [],
+    reopenIssue: [],
+    listClosedSubIssues: [],
+    postComment: [],
+  };
+  const gateway: ApplyDemoteGateway = {
+    async getPrHeadRef() {
+      return state.headRef;
+    },
+    async getPullRequest() {
+      return { isDraft: state.isDraft };
+    },
+    async convertPrToDraft(repo, prNumber) {
+      calls.convertPrToDraft.push([repo, prNumber]);
+      state.isDraft = true; // model the live PR flipping
+    },
+    async listClosedSubIssues(repo, epicNumber) {
+      calls.listClosedSubIssues.push([repo, epicNumber]);
+      return state.closedSubs;
+    },
+    async reopenIssue(repo, issueNumber, options) {
+      calls.reopenIssue.push({ repo, issueNumber, comment: options?.comment });
+    },
+    async listIssueComments(_repo, issueNumber) {
+      return (state.comments.get(issueNumber) ?? []).map((body) => ({ body }));
+    },
+    async postComment(repo, issueNumber, body) {
+      calls.postComment.push({ repo, issueNumber, body });
+      const bucket = state.comments.get(issueNumber) ?? [];
+      bucket.push(body);
+      state.comments.set(issueNumber, bucket);
+    },
+  };
+  return { gateway, state, calls };
+}
+
+describe("applyDemoteToWork", () => {
+  test("flips PR draft, reopens sub-issue, posts dual-surface comment, re-enqueues, state→DEMOTED", async () => {
+    const spy = makeDemoteSpy();
+    const enqueues: Array<[string, number]> = [];
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async (r, e) => {
+          enqueues.push([r, e]);
+        },
+        now: () => 1_700_000_100_000,
+      },
+      REPO,
+      99,
+      ["packages/dispatcher/src/main.ts", "docs/README.md"],
+    );
+
+    expect(spy.calls.convertPrToDraft).toEqual([[REPO, 99]]);
+    expect(spy.calls.reopenIssue.length).toBe(1);
+    expect(spy.calls.reopenIssue[0]?.issueNumber).toBe(50);
+    expect(spy.calls.reopenIssue[0]?.comment).toContain("PR #99 for Epic #32");
+    expect(spy.calls.postComment.length).toBe(2);
+    // Dual surface: one on the PR (99) and one on the Epic (32 — derived from head ref).
+    expect(new Set(spy.calls.postComment.map((c) => c.issueNumber))).toEqual(new Set([99, 32]));
+    // Conflicting paths are surfaced in the escalation body.
+    for (const post of spy.calls.postComment) {
+      expect(post.body).toContain("packages/dispatcher/src/main.ts");
+      expect(post.body).toContain("docs/README.md");
+      expect(post.body).toContain("<!-- middle-divergence-demoted: 32 -->");
+    }
+    expect(enqueues).toEqual([[REPO, 32]]);
+    expect(getDivergenceState(db, REPO, 99)).toEqual({
+      state: "DEMOTED",
+      classifiedAt: 1_700_000_100_000,
+    });
+  });
+
+  test("idempotent: a second call sees PR.isDraft and skips everything", async () => {
+    const spy = makeDemoteSpy();
+    const enqueues: Array<[string, number]> = [];
+    const deps = {
+      db,
+      github: spy.gateway,
+      enqueueEpic: async (r: string, e: number) => {
+        enqueues.push([r, e]);
+      },
+      now: () => 100,
+    };
+
+    await applyDemoteToWork(deps, REPO, 99, ["a.txt"]);
+    await applyDemoteToWork(deps, REPO, 99, ["a.txt"]); // second call
+
+    expect(spy.calls.convertPrToDraft.length).toBe(1);
+    expect(spy.calls.reopenIssue.length).toBe(1);
+    expect(spy.calls.postComment.length).toBe(2);
+    expect(enqueues.length).toBe(1);
+  });
+
+  test("partial-retry safety: existing marker on PR skips the duplicate PR comment, still posts on Epic", async () => {
+    // Simulate a crash after PR draft + PR comment but before Epic comment. On
+    // retry, the PR's marker is found and skipped; the Epic still needs the post.
+    // To trigger that path we keep PR.isDraft=false (so the function proceeds)
+    // and pre-seed the PR's comments with the marker.
+    const spy = makeDemoteSpy({
+      comments: new Map([[99, ["…earlier escalation… <!-- middle-divergence-demoted: 32 -->"]]]),
+    });
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async () => {},
+        now: () => 100,
+      },
+      REPO,
+      99,
+      ["x"],
+    );
+    // Only the Epic comment posts — the PR's existing marker gates the duplicate.
+    expect(spy.calls.postComment.length).toBe(1);
+    expect(spy.calls.postComment[0]?.issueNumber).toBe(32);
+  });
+
+  test("Epic with no closed sub-issues: still demotes + comments + enqueues; no reopen call", async () => {
+    const spy = makeDemoteSpy({ closedSubs: [] });
+    const enqueues: Array<[string, number]> = [];
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async (r, e) => {
+          enqueues.push([r, e]);
+        },
+        now: () => 100,
+      },
+      REPO,
+      99,
+      ["x"],
+    );
+    expect(spy.calls.reopenIssue.length).toBe(0);
+    expect(spy.calls.convertPrToDraft.length).toBe(1);
+    expect(spy.calls.postComment.length).toBe(2);
+    expect(enqueues.length).toBe(1);
+  });
+
+  test("non-managed head ref → no-op (no draft, no comments, no enqueue, no row)", async () => {
+    const spy = makeDemoteSpy({ headRef: "feature/random" });
+    const enqueues: Array<[string, number]> = [];
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async (r, e) => {
+          enqueues.push([r, e]);
+        },
+      },
+      REPO,
+      99,
+      ["x"],
+    );
+    expect(spy.calls.convertPrToDraft).toEqual([]);
+    expect(spy.calls.postComment).toEqual([]);
+    expect(enqueues).toEqual([]);
+    expect(getDivergenceState(db, REPO, 99)).toBe(null);
+  });
+
+  test("PR doesn't exist (gateway returns null) → no-op", async () => {
+    const spy = makeDemoteSpy();
+    // Override getPullRequest to return null.
+    const gateway = {
+      ...spy.gateway,
+      getPullRequest: async () => null,
+    };
+    await applyDemoteToWork(
+      {
+        db,
+        github: gateway,
+        enqueueEpic: async () => {},
+      },
+      REPO,
+      99,
+      ["x"],
+    );
+    expect(spy.calls.convertPrToDraft).toEqual([]);
+    expect(spy.calls.postComment).toEqual([]);
   });
 });
