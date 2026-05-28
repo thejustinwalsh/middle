@@ -232,6 +232,21 @@ describe("tryRebaseOntoMain — fixture repo", () => {
     const result = await tryRebaseOntoMain(skipDeps, "o/r", 999);
     expect(result).toEqual({ ok: false, conflictingPaths: [] });
   });
+
+  test("non-conflict rebase failure (missing upstream) THROWS — not shaped as a path-less conflict", async () => {
+    // Make `git rebase` fail by passing a ref that doesn't exist on origin.
+    // The fixture has no `origin/does-not-exist`, so the rebase exits non-zero
+    // with no unmerged paths — the self-review hardening must surface this as
+    // a real error, not as `{ok:false, conflictingPaths:[]}` (which the
+    // orchestrator would mistake for a non-managed-PR skip).
+    await aliasFixtureUnderRoot("o/r", 32);
+    // Direct call into gitOps.rebase against a missing ref proves the contract:
+    // a non-conflict failure throws so the orchestrator's per-PR try/catch
+    // logs it, instead of papering over it as a path-less conflict result.
+    await expect(gitOps.rebase(worktree, "does-not-exist-ref")).rejects.toThrow(
+      /failed without unmerged files/,
+    );
+  });
 });
 
 describe("tryMergeMainNewWorkAsBase — fixture repo", () => {
@@ -403,6 +418,34 @@ describe("applySuccess — fixture repo", () => {
     expect(comments.posted[1]).toContain("bbbbbbbbb");
   });
 
+  test("null mainCommitSha skips the comment but still pushes and records CLEAN (self-review hardening)", async () => {
+    // Make the local branch ahead of origin so the push branch is exercised.
+    await writeAndCommit(work, "main-file.txt", "main only\n", "main: add file");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+    const rebase = await tryRebaseOntoMain(deps(), "o/r", 999);
+    expect(rebase).toEqual({ ok: true });
+
+    const comments = makeCommentSpy();
+    const baseDeps = deps();
+    const successDeps = {
+      ...baseDeps,
+      db,
+      github: { ...baseDeps.github, ...comments },
+      now: () => 5_000,
+    };
+
+    await applySuccess(successDeps, "o/r", 999, "rebased", null);
+
+    expect(comments.posted).toEqual([]); // no marker → no comment posted
+    expect(getDivergenceState(db, "o/r", 999)).toEqual({ state: "CLEAN", classifiedAt: 5_000 });
+
+    // Push DID happen — the bare remote now has the rebased HEAD.
+    const localSha = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    const remoteSha = (await git(remote, ["rev-parse", "middle-issue-32"])).stdout.trim();
+    expect(remoteSha).toBe(localSha);
+  });
+
   test("a non-managed head ref is a no-op (no push, no comment, no row)", async () => {
     const comments = makeCommentSpy();
     const baseDeps = deps();
@@ -523,7 +566,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     };
 
     const r1 = await reconcileOpenPRs(orchDeps, "o/r");
-    expect(r1).toEqual({ reconciled: 1, passed: 0, skippedForBudget: false });
+    expect(r1).toEqual({ reconciled: 1, passed: 0, failed: 0, skippedForBudget: false });
     // The rebase moved feature on top of main; applySuccess pushed and posted.
     expect(fixture.calls.postComment.length).toBe(1);
     expect(fixture.calls.postComment[0]?.issueNumber).toBe(100);
@@ -543,7 +586,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       },
     };
     const r2 = await reconcileOpenPRs(orchDeps2, "o/r");
-    expect(r2).toEqual({ reconciled: 0, passed: 1, skippedForBudget: false });
+    expect(r2).toEqual({ reconciled: 0, passed: 1, failed: 0, skippedForBudget: false });
     expect(fixture.calls.postComment).toEqual([]);
     expect(fixture.calls.convertPrToDraft).toEqual([]);
     expect(enqueues).toEqual([]);
@@ -662,7 +705,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       },
       "o/r",
     );
-    expect(r).toEqual({ reconciled: 0, passed: 0, skippedForBudget: true });
+    expect(r).toEqual({ reconciled: 0, passed: 0, failed: 0, skippedForBudget: true });
     expect(fixture.calls.listOpenManagedPrs).toBe(0);
   });
 
@@ -683,7 +726,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       },
       "o/r",
     );
-    expect(r).toEqual({ reconciled: 0, passed: 1, skippedForBudget: false });
+    expect(r).toEqual({ reconciled: 0, passed: 1, failed: 0, skippedForBudget: false });
     expect(fixture.calls.postComment).toEqual([]);
     // Classifier still wrote a row (the recording invariant from Phase 1).
     expect(getDivergenceState(db, "o/r", 103)?.state).toBe("CLEAN" satisfies DivergenceState);
@@ -721,7 +764,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       },
       "o/r",
     );
-    expect(r).toEqual({ reconciled: 1, passed: 1, skippedForBudget: false });
+    expect(r).toEqual({ reconciled: 1, passed: 1, failed: 0, skippedForBudget: false });
 
     // PR 200 got an applySuccess comment; PR 201 (CLEAN) got nothing.
     expect(fixture.calls.postComment.length).toBe(1);
@@ -751,6 +794,6 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       },
       "o/r",
     );
-    expect(r).toEqual({ reconciled: 0, passed: 0, skippedForBudget: false });
+    expect(r).toEqual({ reconciled: 0, passed: 0, failed: 0, skippedForBudget: false });
   });
 });

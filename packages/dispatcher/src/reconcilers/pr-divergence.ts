@@ -198,11 +198,14 @@ async function spawnGit(
 }
 
 /**
- * The conflicting paths from a worktree mid-rebase, read via
- * `git diff --name-only --diff-filter=U` (unmerged-only). Empty when no
- * conflict markers exist — the rebase's own non-zero exit then has a different
- * cause (a missing upstream, a hook refusal) which the helper surfaces as the
- * empty-paths variant of the conflict result, never as a thrown error.
+ * The conflicting paths from a worktree mid-rebase/merge, read via
+ * `git diff --name-only --diff-filter=U` (unmerged-only). Returns the list of
+ * paths git considers unmerged right now — empty when none.
+ *
+ * The helpers below distinguish "non-zero exit AND no unmerged paths" (a real
+ * wiring failure: missing upstream, hook refusal, dirty worktree) from "non-
+ * zero exit AND ≥1 unmerged path" (a genuine merge conflict). The first throws;
+ * the second returns the paths so the caller can fall back / demote.
  */
 async function readConflictingPaths(cwd: string): Promise<string[]> {
   const r = await spawnGit(cwd, ["diff", "--name-only", "--diff-filter=U"]);
@@ -225,6 +228,14 @@ export const gitOps: GitOps = {
     // index, after which `--diff-filter=U` returns nothing).
     const conflictingPaths = await readConflictingPaths(cwd);
     await spawnGit(cwd, ["rebase", "--abort"]);
+    if (conflictingPaths.length === 0) {
+      // Non-zero exit AND no unmerged files = wiring failure (missing
+      // upstream, hook refusal, dirty worktree). Surface the underlying error
+      // so the orchestrator's per-PR try/catch logs it and the pass continues;
+      // do NOT shape it as `{ok:false, conflictingPaths:[]}`, which the
+      // applyDemoteToWork path would read as a real (path-less) conflict.
+      throw new Error(`git rebase ${upstream} failed without unmerged files: ${r.stderr.trim()}`);
+    }
     return { ok: false, conflictingPaths };
   },
   async mergeOurs(cwd: string, ref: string): Promise<GitResolutionResult> {
@@ -236,6 +247,11 @@ export const gitOps: GitOps = {
     if (r.exitCode === 0) return { ok: true };
     const conflictingPaths = await readConflictingPaths(cwd);
     await spawnGit(cwd, ["merge", "--abort"]);
+    if (conflictingPaths.length === 0) {
+      // Same distinction as `rebase` above — surface a real failure rather than
+      // a path-less conflict shape.
+      throw new Error(`git merge ${ref} failed without unmerged files: ${r.stderr.trim()}`);
+    }
     return { ok: false, conflictingPaths };
   },
   async revParse(cwd: string, ref: string): Promise<string | null> {
@@ -406,7 +422,12 @@ function reconciledMarker(resolution: ReconciliationResolution, mainCommitSha: s
  *    already at the target state is a no-op (per #172's spec).
  *  - **Comment:** scans existing comments for the resolution+sha marker; posts
  *    only if absent. The marker is hidden HTML in the body, so the visible
- *    text stays clean.
+ *    text stays clean. When `mainCommitSha` is null (a transient
+ *    `getMainCommitSha` failure during the same pass), the comment step is
+ *    **skipped** — the marker would be ambiguous — but the push + state-row
+ *    write still happen. A later pass with a readable main SHA posts the
+ *    announcement; the sha-keyed marker prevents a duplicate once the SHA
+ *    settles.
  *  - **State row:** upserted to `CLEAN` — idempotent by construction.
  *
  * Force-pushing uses `--force-with-lease` (never plain `--force`), so a
@@ -421,7 +442,7 @@ export async function applySuccess(
   repo: string,
   prNumber: number,
   resolution: ReconciliationResolution,
-  mainCommitSha: string,
+  mainCommitSha: string | null,
 ): Promise<void> {
   const resolved = await resolveWorktreePath(deps, repo, prNumber);
   if (!resolved) return;
@@ -436,12 +457,18 @@ export async function applySuccess(
     await deps.git.pushForceWithLease(resolved.worktreePath, branch);
   }
 
-  const marker = reconciledMarker(resolution, mainCommitSha);
-  const existing = await deps.github.listIssueComments(repo, prNumber);
-  const alreadyPosted = existing.some((c) => (c.body ?? "").includes(marker));
-  if (!alreadyPosted) {
-    const body = `🔁 Reconciled with main (${resolution}) after ${mainCommitSha.slice(0, 9)}\n\n${marker}`;
-    await deps.github.postComment(repo, prNumber, body);
+  // Comment only when we have a main SHA to key the marker by; the next pass
+  // re-posts under the right SHA. Push + state-row write are unconditional —
+  // the rebase/merge already landed locally, so failing to comment shouldn't
+  // also fail to record the success.
+  if (mainCommitSha !== null) {
+    const marker = reconciledMarker(resolution, mainCommitSha);
+    const existing = await deps.github.listIssueComments(repo, prNumber);
+    const alreadyPosted = existing.some((c) => (c.body ?? "").includes(marker));
+    if (!alreadyPosted) {
+      const body = `🔁 Reconciled with main (${resolution}) after ${mainCommitSha.slice(0, 9)}\n\n${marker}`;
+      await deps.github.postComment(repo, prNumber, body);
+    }
   }
 
   recordDivergenceState(deps.db, repo, prNumber, "CLEAN", (deps.now ?? Date.now)());
@@ -533,12 +560,21 @@ function renderSubIssueReopenComment(prNumber: number, epicNumber: number): stri
  *  - **PR.isDraft** — if the PR is already a draft, the demote has already
  *    landed; the whole function returns. This survives a classifier overwrite
  *    of the state row back to CONFLICTED (a re-classification under DEMOTED).
+ *  - **Epic-keyed marker on prior demote** — if the Epic already carries the
+ *    demote marker from a previous incident, skip the sub-issue reopen even if
+ *    the PR was un-drafted in the meantime (e.g. a human reviewed the
+ *    escalation, manually fixed the conflict, marked the PR ready, and a fresh
+ *    divergence emerged). Without this gate the reconciler would re-fire
+ *    `reopenIssue` against a sub-issue the human had already closed.
  *  - **comment marker** — the dual-surface comments include a hidden HTML
  *    marker keyed on the Epic number; on a retry that comes after the post
  *    succeeded but before the row was written, the listing-then-post sequence
- *    sees the marker and skips. (Re-`reopenIssue` and re-`enqueueEpic` are
- *    themselves idempotent — sub-issue reopen is a no-op on open, the enqueue
- *    collides against the existing-workflow guard.)
+ *    sees the marker and skips.
+ *
+ * `enqueueEpic` is itself idempotent (the daemon-wired implementation collides
+ * against the existing-workflow guard) so a re-enqueue on the same Epic is
+ * safe; we still call it on each demote pass so the recommender's ranking gets
+ * a fresh nudge after the new divergence.
  *
  * Non-managed head refs (the PR isn't `middle-issue-<N>`) short-circuit as a
  * no-op — the reconciler is never the right hand for those.
@@ -560,23 +596,33 @@ export async function applyDemoteToWork(
 
   await deps.github.convertPrToDraft(repo, prNumber);
 
-  // Most-recently-closed sub-issue, if any. An Epic with no closed sub-issues
-  // (every phase is still open) means there's nothing to reopen — that's not
-  // an error; the demote still proceeds with the comments + re-enqueue.
-  const closedSubs = await deps.github.listClosedSubIssues(repo, epicNumber);
-  const targetSub = closedSubs[0]; // gateway contract: most-recently-closed first
-  if (targetSub) {
-    await deps.github.reopenIssue(repo, targetSub.number, {
-      comment: renderSubIssueReopenComment(prNumber, epicNumber),
-    });
+  const marker = demoteMarker(epicNumber);
+  const epicComments = await deps.github.listIssueComments(repo, epicNumber);
+  const epicAlreadyDemoted = epicComments.some((c) => (c.body ?? "").includes(marker));
+
+  // Most-recently-closed sub-issue, if any. Skip the reopen when the Epic
+  // already carries a prior demote marker — a human may have manually fixed
+  // the conflict and closed that sub-issue; we don't fight their recovery.
+  // The fresh divergence still demotes the PR + posts the new escalation +
+  // re-enqueues; only the reopen is suppressed.
+  if (!epicAlreadyDemoted) {
+    const closedSubs = await deps.github.listClosedSubIssues(repo, epicNumber);
+    const targetSub = closedSubs[0]; // gateway contract: most-recently-closed first
+    if (targetSub) {
+      await deps.github.reopenIssue(repo, targetSub.number, {
+        comment: renderSubIssueReopenComment(prNumber, epicNumber),
+      });
+    }
   }
 
   // Dual-surface escalation. Same marker on both surfaces gates re-posts.
   const escalationBody = renderDemoteEscalation(epicNumber, prNumber, conflictingPaths);
-  const marker = demoteMarker(epicNumber);
 
   for (const issueNumber of [prNumber, epicNumber]) {
-    const existing = await deps.github.listIssueComments(repo, issueNumber);
+    const existing =
+      issueNumber === epicNumber
+        ? epicComments
+        : await deps.github.listIssueComments(repo, issueNumber);
     if (!existing.some((c) => (c.body ?? "").includes(marker))) {
       await deps.github.postComment(repo, issueNumber, escalationBody);
     }
@@ -648,6 +694,11 @@ export type ReconcileOpenPRsResult = {
   reconciled: number;
   /** PRs walked but left as-is (CLEAN or UNKNOWN — nothing to do this pass). */
   passed: number;
+  /** PRs whose chain threw before completing — observability for transient
+   *  GitHub / git failures the orchestrator's per-PR try/catch logged and
+   *  isolated. Counted alongside `reconciled`/`passed` so a pass of all-failures
+   *  is distinguishable from a pass of all-CLEAN. */
+  failed: number;
   /** True when the whole pass was short-circuited by the rate-limit floor. */
   skippedForBudget: boolean;
 };
@@ -681,7 +732,7 @@ export async function reconcileOpenPRs(
     console.error(
       `[pr-divergence] GitHub budget low (${budget.remaining} < ${buffer}); skipping pass — resets ${new Date(budget.resetAt).toISOString()}`,
     );
-    return { reconciled: 0, passed: 0, skippedForBudget: true };
+    return { reconciled: 0, passed: 0, failed: 0, skippedForBudget: true };
   }
 
   let prs: OpenManagedPr[];
@@ -691,10 +742,15 @@ export async function reconcileOpenPRs(
     console.error(
       `[pr-divergence] list open managed PRs for ${repo} failed: ${(error as Error).message}`,
     );
-    return { reconciled: 0, passed: 0, skippedForBudget: false };
+    return { reconciled: 0, passed: 0, failed: 0, skippedForBudget: false };
   }
   if (prs.length === 0) {
-    return { reconciled: 0, passed: 0, skippedForBudget: false };
+    return { reconciled: 0, passed: 0, failed: 0, skippedForBudget: false };
+  }
+  if (prs.length > maxPerPass) {
+    console.error(
+      `[pr-divergence] ${repo}: ${prs.length} managed PRs > ${maxPerPass} per-pass cap; processing the first ${maxPerPass} (remainder next tick)`,
+    );
   }
 
   // Fetched once per pass so applySuccess's comment marker is consistent across
@@ -710,6 +766,7 @@ export async function reconcileOpenPRs(
 
   let reconciled = 0;
   let passed = 0;
+  let failed = 0;
 
   for (const pr of prs.slice(0, maxPerPass)) {
     try {
@@ -722,7 +779,9 @@ export async function reconcileOpenPRs(
       // BEHIND or CONFLICTED — try rebase first.
       const rebaseResult = await tryRebaseOntoMain(deps, repo, pr.prNumber);
       if (rebaseResult.ok) {
-        if (mainSha) await applySuccess(deps, repo, pr.prNumber, "rebased", mainSha);
+        // applySuccess pushes + records CLEAN regardless of mainSha; the
+        // comment step skips itself when mainSha is null.
+        await applySuccess(deps, repo, pr.prNumber, "rebased", mainSha);
         reconciled++;
         continue;
       }
@@ -730,9 +789,7 @@ export async function reconcileOpenPRs(
       // Rebase loop — try -X ours merge fallback (new-work-as-base).
       const mergeResult = await tryMergeMainNewWorkAsBase(deps, repo, pr.prNumber);
       if (mergeResult.ok) {
-        if (mainSha) {
-          await applySuccess(deps, repo, pr.prNumber, "merged-new-work-as-base", mainSha);
-        }
+        await applySuccess(deps, repo, pr.prNumber, "merged-new-work-as-base", mainSha);
         reconciled++;
         continue;
       }
@@ -755,13 +812,14 @@ export async function reconcileOpenPRs(
       );
       reconciled++;
     } catch (error) {
+      failed++;
       console.error(
         `[pr-divergence] ${repo} PR #${pr.prNumber} reconciliation failed: ${(error as Error).message}`,
       );
     }
   }
 
-  return { reconciled, passed, skippedForBudget: false };
+  return { reconciled, passed, failed, skippedForBudget: false };
 }
 
 // ── Production `gh`-backed gateway (for the daemon) ────────────────────────
@@ -786,7 +844,27 @@ async function ghJson<T>(argv: string[]): Promise<T> {
   if (r.exitCode !== 0) {
     throw new Error(`gh ${argv.join(" ")} failed: ${r.stderr.trim()}`);
   }
-  return JSON.parse(r.stdout) as T;
+  try {
+    return JSON.parse(r.stdout) as T;
+  } catch (error) {
+    throw new Error(
+      `gh ${argv.join(" ")} returned unparseable JSON (${(error as Error).message}): ${r.stdout.trim()}`,
+    );
+  }
+}
+
+/** Parse JSON without throwing — the caller distinguishes null (PR doesn't
+ *  exist OR gh emitted malformed output) from a usable object. Empty `stdout`
+ *  has been observed in the wild when `gh` interleaves auth-warning text on a
+ *  successful-exit; we want to log and continue, not throw. */
+function safeJsonParse<T>(stdout: string): T | null {
+  const trimmed = stdout.trim();
+  if (trimmed === "") return null;
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -830,7 +908,7 @@ export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | 
       "mergeable,mergeStateStatus",
     ]);
     if (r.exitCode !== 0) return null;
-    return JSON.parse(r.stdout) as MergeabilityView;
+    return safeJsonParse<MergeabilityView>(r.stdout);
   },
   async getPrHeadRef(repo, prNumber) {
     const r = await ghSpawn([
@@ -851,7 +929,7 @@ export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | 
   async getPullRequest(repo, prNumber) {
     const r = await ghSpawn(["pr", "view", String(prNumber), "--repo", repo, "--json", "isDraft"]);
     if (r.exitCode !== 0) return null;
-    return JSON.parse(r.stdout) as { isDraft: boolean };
+    return safeJsonParse<{ isDraft: boolean }>(r.stdout);
   },
   async convertPrToDraft(repo, prNumber) {
     const r = await ghSpawn(["pr", "ready", String(prNumber), "--repo", repo, "--undo"]);
@@ -867,10 +945,15 @@ export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | 
       "--jq",
       '[.[] | select(.state == "closed") | {number, closed_at}]',
     ]);
-    const out: ClosedSubIssue[] = rows.map((s) => ({
-      number: s.number,
-      closedAt: s.closed_at ? Date.parse(s.closed_at) : null,
-    }));
+    const out: ClosedSubIssue[] = rows.map((s) => {
+      // Coerce malformed `closed_at` (hand-edited rows, weird timezones) to
+      // null rather than NaN — NaN sort comparisons are V8-unstable.
+      const parsed = s.closed_at ? Date.parse(s.closed_at) : Number.NaN;
+      return {
+        number: s.number,
+        closedAt: Number.isFinite(parsed) ? parsed : null,
+      };
+    });
     // Newest-first by closed_at; nulls sink to the end so a hand-edited row
     // doesn't shadow a real recent close.
     out.sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));

@@ -383,6 +383,45 @@ describe("applyDemoteToWork", () => {
     expect(getDivergenceState(db, REPO, 99)).toBe(null);
   });
 
+  test("manual recovery: an Epic that already carries the demote marker skips the reopen call (self-review hardening)", async () => {
+    // Scenario: prior demote landed → marker on Epic 32. Human reviewed,
+    // manually fixed conflicts, marked PR ready, closed the reopened sub-issue.
+    // Now a fresh divergence emerges and reconciler runs applyDemoteToWork.
+    // PR.isDraft = false (human marked ready), so the early-exit doesn't fire,
+    // but the Epic-marker gate must suppress the reopen so the human's manual
+    // sub-issue close isn't undone.
+    const spy = makeDemoteSpy({
+      comments: new Map([
+        [32, ["…earlier demote escalation… <!-- middle-divergence-demoted: 32 -->"]],
+      ]),
+    });
+    const enqueues: Array<[string, number]> = [];
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async (r, e) => {
+          enqueues.push([r, e]);
+        },
+        now: () => 100,
+      },
+      REPO,
+      99,
+      ["x"],
+    );
+
+    // PR is re-drafted + state→DEMOTED + Epic is re-enqueued (all expected on a
+    // fresh divergence) — but reopenIssue must NOT fire (the marker says we
+    // already escalated this Epic; don't fight the human's manual recovery).
+    expect(spy.calls.convertPrToDraft).toEqual([[REPO, 99]]);
+    expect(spy.calls.reopenIssue).toEqual([]);
+    expect(enqueues).toEqual([[REPO, 32]]);
+    expect(getDivergenceState(db, REPO, 99)?.state).toBe("DEMOTED");
+    // The marker on the Epic also gates the duplicate Epic comment — only PR
+    // gets a fresh comment (its marker is absent).
+    expect(new Set(spy.calls.postComment.map((c) => c.issueNumber))).toEqual(new Set([99]));
+  });
+
   test("PR doesn't exist (gateway returns null) → no-op", async () => {
     const spy = makeDemoteSpy();
     // Override getPullRequest to return null.
