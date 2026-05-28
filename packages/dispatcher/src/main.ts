@@ -716,8 +716,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
 
   // Anti-staleness reconciliation (Epic #143): an hourly sweep that closes
   // landed-but-open issues (with an evidence comment) and files proposal-first
-  // tasks for spec lines describing a now-merged phase as future work.
-  const stopStalenessCron = await startStalenessCron({ db, github: ghGitHub });
+  // tasks for spec lines describing a now-merged phase as future work. Each repo's
+  // spec path comes from its own `[staleness] spec_path` (#164), layered on the
+  // same global config the daemon booted with.
+  const stopStalenessCron = await startStalenessCron({
+    db,
+    github: ghGitHub,
+    globalConfigPath: process.env.MIDDLE_CONFIG,
+  });
 
   // Startup kick: don't idle until the first cron tick / next interval. Run one
   // recommender due-check pass NOW — any overdue managed repo fires immediately

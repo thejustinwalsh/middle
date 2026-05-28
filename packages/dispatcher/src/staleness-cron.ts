@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import { loadConfig } from "@middle/core";
 import { Bunqueue } from "bunqueue/client";
 import type { GitHubGateway } from "./github.ts";
 import { isPaused, listManagedRepos } from "./repo-config.ts";
@@ -14,17 +15,17 @@ import { reconcileStaleness } from "./staleness.ts";
 export const STALENESS_CRON_INTERVAL_MS = 60 * 60_000;
 
 /**
- * The repo-relative build-spec path the drift check reads. A default convention;
- * a repo without this file simply gets the landed-issue reconcile and no drift
- * check (the spec read returns null).
+ * The repo-relative build-spec path the drift check reads when a repo declares no
+ * `[staleness] spec_path`. A default convention; a repo without this file simply
+ * gets the landed-issue reconcile and no drift check (the spec read returns null).
  */
 export const DEFAULT_SPEC_PATH = join("planning", "middle-management-build-spec.md");
 
 /**
  * Dependencies for a staleness cron pass over the managed-repo registry: the
  * SQLite handle the registry lives in, the GitHub gateway each repo's
- * reconciliation reads/mutates, and the spec path + clock (both injectable for
- * tests).
+ * reconciliation reads/mutates, and the global-config path + clock (both
+ * injectable for tests).
  */
 export type StalenessCronDeps = {
   /** The dispatcher DB holding the managed-repo registry. */
@@ -33,25 +34,48 @@ export type StalenessCronDeps = {
     GitHubGateway,
     "listOpenIssues" | "listMergedPrsClosingRefs" | "closeIssue" | "createIssue"
   >;
-  /** The build-spec path, repo-relative (default {@link DEFAULT_SPEC_PATH}). */
-  specPath?: string;
+  /**
+   * The global config path threaded into each repo's config load — the daemon
+   * passes `process.env.MIDDLE_CONFIG` so per-repo loads see the same global layer
+   * `mm start` booted with. Each repo's spec path comes from its own merged config
+   * (`[staleness] spec_path` in `.middle/config.toml`/`policy.toml`), falling back
+   * to {@link DEFAULT_SPEC_PATH}. Omit (or point at a missing file) for defaults.
+   */
+  globalConfigPath?: string;
   /** Injectable clock for the paused-repo check (default `Date.now`). */
   now?: () => number;
 };
 
 /**
+ * Resolve a repo's build-spec path from its merged config (`[staleness] spec_path`
+ * in `.middle/config.toml`/`policy.toml`, layered on the daemon's global config),
+ * falling back to {@link DEFAULT_SPEC_PATH} when unset. Reading config can throw on
+ * a malformed TOML; callers run it inside the per-repo guard so one bad config
+ * logs-and-continues rather than aborting the sweep.
+ */
+function resolveSpecPath(checkoutPath: string, globalConfigPath: string | undefined): string {
+  const config = loadConfig({
+    globalPath: globalConfigPath,
+    repoPath: join(checkoutPath, ".middle", "config.toml"),
+  });
+  return config.staleness?.specPath ?? DEFAULT_SPEC_PATH;
+}
+
+/**
  * One reconciliation pass over the managed-repo registry: for each managed,
  * non-paused repo, run {@link reconcileStaleness} (close landed-but-open issues,
- * flag spec drift). Per-repo failures are isolated. Returns the total number of
- * issues closed across all repos.
+ * flag spec drift) against that repo's configured (or default) spec path. Per-repo
+ * failures are isolated. Returns the total number of issues closed across all repos.
  */
 export async function runStalenessCronPass(deps: StalenessCronDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
-  const specPath = deps.specPath ?? DEFAULT_SPEC_PATH;
   let closed = 0;
   for (const managed of listManagedRepos(deps.db)) {
     if (isPaused(deps.db, managed.repo, now)) continue;
     try {
+      // Inside the guard: a malformed per-repo config.toml shouldn't abort the
+      // whole sweep — it logs as that repo's failure and the others still run.
+      const specPath = resolveSpecPath(managed.checkoutPath, deps.globalConfigPath);
       const result = await reconcileStaleness({
         repo: managed.repo,
         github: deps.github,

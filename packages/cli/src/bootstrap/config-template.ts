@@ -16,10 +16,11 @@ export type LocalConfigValues = {
 
 /**
  * Render `<repo>/.middle/policy.toml` — the **committed**, shareable repo policy
- * (issue #103). Holds `[repo]` identity, `[limits]`, `[recommender]`, and the
- * `[docs]` harvester block, all matching the build spec's "Per-repo config"
- * defaults verbatim (auto_dispatch and docs `write` default OFF — opt-in). A team
- * edits this file in version control to agree on e.g. `complexity_ceiling`.
+ * (issue #103). Holds `[repo]` identity, `[limits]`, `[recommender]`, the `[docs]`
+ * harvester block, and a commented `[staleness]` spec-path override (#164), all
+ * matching the build spec's "Per-repo config" defaults verbatim (auto_dispatch and
+ * docs `write` default OFF — opt-in). A team edits this file in version control to
+ * agree on e.g. `complexity_ceiling`.
  *
  * The keys here are the keys `@middle/core`'s `loadConfig` reads back, so this
  * template is the inverse of that mapper. Volatile/per-machine fields live in the
@@ -50,6 +51,12 @@ enabled = true
 interval_minutes = 1440
 adapter = "claude"
 write = false
+
+[staleness]
+# Repo-relative path to this repo's build spec, read by the anti-staleness drift
+# check (#164). Omit to use middle's default (planning/middle-management-build-spec.md);
+# a repo with no spec at the path still gets the landed-issue reconcile, just no drift check.
+# spec_path = "planning/middle-management-build-spec.md"
 `;
 }
 
