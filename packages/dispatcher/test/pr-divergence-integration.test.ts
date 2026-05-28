@@ -774,6 +774,45 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     expect(getDivergenceState(db, "o/r", 201)?.state).toBe("CLEAN" satisfies DivergenceState); // classifier wrote CLEAN
   });
 
+  test("per-PR throw increments `failed` and the pass continues on subsequent PRs (self-review hardening)", async () => {
+    // Two PRs: the first throws inside the chain, the second runs cleanly.
+    // The failed counter must increment, the pass must not abort, and the
+    // second PR's outcome must be unaffected.
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [
+        { prNumber: 300, headRefName: "middle-issue-32" },
+        { prNumber: 301, headRefName: "middle-issue-99" },
+      ],
+      headRefs: { 300: "middle-issue-32", 301: "middle-issue-99" },
+      mergeability: {
+        300: { mergeStateStatus: "CLEAN", mergeable: "MERGEABLE" },
+        301: { mergeStateStatus: "CLEAN", mergeable: "MERGEABLE" },
+      },
+    });
+    // Make the first PR throw during classification.
+    const originalGetMergeability = fixture.gateway.getMergeability;
+    fixture.gateway.getMergeability = async (repo, prNumber) => {
+      if (prNumber === 300) throw new Error("transient classify boom");
+      return originalGetMergeability(repo, prNumber);
+    };
+
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    // The throwing PR shows up as `failed: 1`; the clean PR is `passed: 1`.
+    expect(r).toEqual({ reconciled: 0, passed: 1, failed: 1, skippedForBudget: false });
+  });
+
   test("listOpenManagedPrs throws → pass returns 0s and logs, no orchestration", async () => {
     const fixture = makeOrchestratorGateway({
       openPrs: [],

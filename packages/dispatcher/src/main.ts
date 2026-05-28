@@ -660,27 +660,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
           await reconcileOpenPRsForRepo(repo);
         }
       },
-      // Per-repo de-dup: multiple MERGED transitions observed in one pass
-      // would otherwise fire N concurrent full-repo sweeps; sweep at most once
-      // per repo per pass. Cleared at the start of each invocation so the next
-      // pass picks up a fresh set.
-      onMergedTransition: (() => {
-        let firedThisPass = new Set<string>();
-        let resetTimer: ReturnType<typeof setTimeout> | null = null;
-        return async (repo: string) => {
-          if (firedThisPass.has(repo)) return;
-          firedThisPass.add(repo);
-          // Reset the dedup set on the next tick so subsequent passes don't
-          // inherit it; this is best-effort coalescing within one pass.
-          if (resetTimer === null) {
-            resetTimer = setTimeout(() => {
-              firedThisPass = new Set();
-              resetTimer = null;
-            }, 0);
-          }
-          await reconcileOpenPRsForRepo(repo);
-        };
-      })(),
+      // Per-pass dedup lives inside `reconcileMergedParks` (it's the natural
+      // boundary; a caller-side timer would race against the loop's await
+      // points). Here we just forward to the per-repo sweep — at most one fire
+      // per repo per pass is already guaranteed by the upstream contract.
+      onMergedTransition: (repo) => reconcileOpenPRsForRepo(repo),
     },
   );
 

@@ -425,9 +425,10 @@ function reconciledMarker(resolution: ReconciliationResolution, mainCommitSha: s
  *    text stays clean. When `mainCommitSha` is null (a transient
  *    `getMainCommitSha` failure during the same pass), the comment step is
  *    **skipped** — the marker would be ambiguous — but the push + state-row
- *    write still happen. A later pass with a readable main SHA posts the
- *    announcement; the sha-keyed marker prevents a duplicate once the SHA
- *    settles.
+ *    write still happen. A later reconciliation pass announces against
+ *    *whatever main it reads then* (which may be a newer SHA than the one
+ *    this pass would have used); the sha-keyed marker prevents a duplicate
+ *    when the SHA matches and allows a fresh announcement when main moved.
  *  - **State row:** upserted to `CLEAN` — idempotent by construction.
  *
  * Force-pushing uses `--force-with-lease` (never plain `--force`), so a

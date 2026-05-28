@@ -353,12 +353,13 @@ export type ReconcileDeps = {
   /** Cap on rows reconciled per pass. Defaults to {@link DEFAULT_MAX_POLLS_PER_PASS}. */
   maxPollsPerPass?: number;
   /**
-   * Fired once per repo whose parked workflow was finalized because its PR
-   * transitioned to MERGED. The daemon wires this to an immediate
-   * `reconcileOpenPRs` sweep (Epic #168), so divergence on sibling Epic PRs is
-   * healed at the moment of merge rather than up to a tick later. Per-repo
-   * de-duplication is the caller's job — multiple MERGED transitions on the
-   * same repo this pass fire `onMergedTransition` once per row.
+   * Fired *at most once per repo per pass* when a parked workflow's PR is
+   * observed transitioning to MERGED. The daemon wires this to an immediate
+   * `reconcileOpenPRs` sweep (Epic #168) so divergence on sibling Epic PRs is
+   * healed at the moment of merge rather than up to a tick later. Per-pass
+   * de-duplication is enforced inside `reconcileMergedParks` (not the
+   * caller) — a timer- or microtask-based dedup at the call site would race
+   * against the `await` boundaries inside the iteration loop.
    */
   onMergedTransition?: (repo: string) => Promise<void>;
 };
@@ -379,6 +380,12 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
   }
 
   let reconciled = 0;
+  // Per-pass dedup for the `onMergedTransition` hook. Done here (not at the
+  // call site) because a timer- or microtask-based dedup in the caller would
+  // race against the `await deps.removeWorktree` / `await deps.onMergedTransition`
+  // boundaries below — a `setTimeout(0)` reset can fire between iterations and
+  // let a second sweep through for the same repo.
+  const mergedRepos = new Set<string>();
   for (const wf of parked.slice(0, maxPerPass)) {
     try {
       const life = await deps.github.findEpicPrLifecycle(wf.repo, wf.epicNumber);
@@ -404,9 +411,12 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
         }
       }
       // Epic #168 hook: a MERGED transition is the moment divergence may have
-      // emerged on sibling Epic PRs. Best-effort and isolated — a throw here
-      // never blocks the rest of the parks pass.
-      if (life.state === "MERGED" && deps.onMergedTransition) {
+      // emerged on sibling Epic PRs. Fires at most once per repo per pass
+      // (`mergedRepos` guard) so a pass with N MERGED rows on the same repo
+      // doesn't fire N concurrent reconcile sweeps. Best-effort and isolated —
+      // a throw here never blocks the rest of the parks pass.
+      if (life.state === "MERGED" && deps.onMergedTransition && !mergedRepos.has(wf.repo)) {
+        mergedRepos.add(wf.repo);
         try {
           await deps.onMergedTransition(wf.repo);
         } catch (error) {

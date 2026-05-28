@@ -142,7 +142,7 @@ describe("reconcileMergedParks", () => {
     expect(getWorkflow(db, id)?.state).toBe("waiting-human"); // untouched — budget-gated
   });
 
-  test("fires onMergedTransition once per MERGED transition observed (Epic #168 wiring)", async () => {
+  test("fires onMergedTransition at most once per repo per pass (Epic #168 wiring)", async () => {
     seedParked(70);
     seedParked(71);
     seedParked(72);
@@ -160,9 +160,10 @@ describe("reconcileMergedParks", () => {
       },
     });
 
-    // Two MERGED transitions observed → hook fired twice (per-pass de-dup is
-    // the caller's job; the daemon's reconcileOpenPRsForRepo is itself idempotent).
-    expect(triggered).toEqual([REPO, REPO]);
+    // Two MERGED rows on the same repo → hook fires once (dedup inside
+    // `reconcileMergedParks` — a per-pass Set guards against the burst that
+    // a caller-side timer would race against the await points and miss).
+    expect(triggered).toEqual([REPO]);
   });
 
   test("a thrown onMergedTransition is isolated — the merged-parks pass still finishes", async () => {
@@ -182,7 +183,9 @@ describe("reconcileMergedParks", () => {
         },
       }),
     ).toBe(2);
-    expect(triggered.length).toBe(2);
+    // Per-pass dedup: same repo, two MERGED rows → hook fires once but the
+    // throw is still isolated and both rows finalize.
+    expect(triggered.length).toBe(1);
     expect(getWorkflow(db, idA)?.state).toBe("completed");
     expect(getWorkflow(db, idB)?.state).toBe("completed");
   });
