@@ -39,6 +39,7 @@ export type {
   StateIssueSettings,
   BootstrapSettings,
   DocsSettings,
+  StalenessSettings,
   MiddleConfig,
   LoadConfigOptions,
 } from "./config.ts";
