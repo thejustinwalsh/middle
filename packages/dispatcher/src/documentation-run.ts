@@ -88,6 +88,13 @@ export async function resolveDocumentationOptions(
   } catch (error) {
     return { ok: false, error: (error as Error).message };
   }
+  // Dispatchable = implemented (above) AND enabled in config — mirror the
+  // daemon's manual-dispatch + recommender-validator gates so a
+  // `[docs] adapter = "x"` pointing at a disabled adapter can't sneak through
+  // the daemon's documentation route below the CLI's enabled-check.
+  if (!(config.adapters[adapterName]?.enabled ?? false)) {
+    return { ok: false, error: `adapter ${adapterName} is disabled in config` };
+  }
 
   let target: DocsTargetSummary;
   try {

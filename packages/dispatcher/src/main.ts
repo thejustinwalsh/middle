@@ -99,6 +99,22 @@ function readVersion(): string {
 export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
 
+  // The single source of truth for "is this adapter dispatchable right now,
+  // and if not, why?" Used by `dispatchEpicManual` (the dashboard's direct
+  // hostExtras path) and the hook server's `/control/dispatch` route via
+  // `ControlPlane.adapterRejection`, so both surfaces gate AND format the
+  // diagnostic identically — the user trying to dispatch on a disabled adapter
+  // sees the real reason, never a misleading "unknown" message. `isKnownAdapter`
+  // alone gates only on "implemented"; the CLI does its own gating, but a
+  // direct route POST or a dashboard call lands here without the CLI's check.
+  const adapterRejectionReason = (name: string): string | null => {
+    if (!isKnownAdapter(name)) return `unknown adapter: ${name}`;
+    if (!(config.adapters[name]?.enabled ?? false)) {
+      return `adapter ${name} is disabled in config`;
+    }
+    return null;
+  };
+
   mkdirSync(dirname(config.global.dbPath), { recursive: true });
   const db = openAndMigrate(config.global.dbPath);
 
@@ -345,8 +361,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (repoPath === undefined) {
       return { status: 400, body: JSON.stringify({ error: `unknown repo: ${normalizedRepo}` }) };
     }
-    if (!isKnownAdapter(adapter)) {
-      return { status: 400, body: JSON.stringify({ error: `unknown adapter: ${adapter}` }) };
+    const reject = adapterRejectionReason(adapter);
+    if (reject !== null) {
+      return { status: 400, body: JSON.stringify({ error: reject }) };
     }
     const input = { repo: normalizedRepo, repoPath, epicNumber, adapter };
     if (!slotAvailable(input)) {
@@ -476,7 +493,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       const control: ControlPlane = {
         hub,
         version,
-        knownAdapter: isKnownAdapter,
+        // The control-route guard mirrors `dispatchEpicManual` — only configured,
+        // enabled, implemented adapters are dispatchable from `/control/dispatch`,
+        // and the message distinguishes "unknown" from "disabled" identically.
+        adapterRejection: adapterRejectionReason,
         // A route dispatch is a manual `mm dispatch` — recorded `source: 'manual'`.
         startDispatch: (input) => startDispatchImpl(input, "manual"),
         // Manual dispatch respects slot limits (the loop does its own accounting).

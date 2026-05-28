@@ -99,7 +99,10 @@ function baseOptions(
   };
 }
 
-/** A minimal config with the global defaults and the given `[docs]` block. */
+/** A minimal config with the global defaults and the given `[docs]` block.
+ *  The adapter table mirrors the production-loaded defaults (`loadConfig` fills
+ *  these from the schema) so `resolveDocumentationOptions`'s enabled-gate sees
+ *  realistic data. */
 function configWith(docs?: MiddleConfig["docs"]): MiddleConfig {
   return {
     global: {
@@ -110,7 +113,10 @@ function configWith(docs?: MiddleConfig["docs"]): MiddleConfig {
       worktreeRoot: join(scratch, "worktrees"),
       dbPath: join(scratch, "db.sqlite3"),
     },
-    adapters: {},
+    adapters: {
+      claude: { enabled: true, binary: "claude", extraArgs: [] },
+      codex: { enabled: true, binary: "codex", extraArgs: [] },
+    },
     dashboard: { windowed: false, theme: "auto" },
     docs,
   };
@@ -180,6 +186,23 @@ describe("resolveDocumentationOptions", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("unknown adapter: ghost");
+  });
+
+  test("rejects an implemented-but-disabled adapter — mirrors the daemon's dispatch gate", async () => {
+    // The daemon's manual-dispatch route already gates on configured+enabled+
+    // implemented (`adapterRejectionReason` in main.ts); the docs validator must match so
+    // a `[docs] adapter = "x"` pointing at a disabled adapter can't sneak in
+    // through `/control/dispatch` (CLI gates earlier, the dashboard hits here).
+    const config = configWith({
+      enabled: true,
+      intervalMinutes: 60,
+      adapter: "codex",
+      write: false,
+    });
+    config.adapters.codex = { enabled: false, binary: "codex", extraArgs: [] };
+    const result = await resolveDocumentationOptions(repoPath, config, stubAdapter);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("adapter codex is disabled in config");
   });
 
   test("resolves the markdown fallback target for a plain repo", async () => {

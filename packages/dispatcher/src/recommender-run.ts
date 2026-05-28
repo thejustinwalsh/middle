@@ -118,6 +118,13 @@ export async function resolveRecommenderOptions(
   } catch (error) {
     return { ok: false, error: (error as Error).message };
   }
+  // Dispatchable = implemented (above) AND enabled in config — mirror the
+  // daemon's manual-dispatch gate so a `[recommender] adapter = "x"` pointing
+  // at a disabled adapter can't sneak through the `/trigger/recommender`
+  // entry point (the CLI gates earlier, the dashboard hits this directly).
+  if (!(config.adapters[adapterName]?.enabled ?? false)) {
+    return { ok: false, error: `adapter ${adapterName} is disabled in config` };
+  }
   const schemaPath = join(repoPath, "schemas", "state-issue.v1.md");
   if (!existsSync(schemaPath)) {
     return {

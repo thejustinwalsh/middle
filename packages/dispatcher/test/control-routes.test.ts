@@ -19,7 +19,7 @@ function makeControl(overrides: Partial<ControlPlane> = {}): ControlPlane {
   return {
     hub,
     version: "1.2.3",
-    knownAdapter: (name) => name === "claude",
+    adapterRejection: (name) => (name === "claude" ? null : `unknown adapter: ${name}`),
     startDispatch: async (input) => {
       // `startDispatch` is the single source of truth for the 409 guard: a
       // colliding Epic resolves `null`. The stub drives that off `collisionEpics`.
@@ -99,6 +99,36 @@ describe("HookServer control routes", () => {
     const garbled = await fetch(`${base}/control/dispatch`, { method: "POST", body: "{not json" });
     expect(garbled.status).toBe(400);
     expect(startCalls).toEqual([]);
+  });
+
+  test("POST /control/dispatch surfaces the disabled-vs-unknown distinction in the 400 body", async () => {
+    // `ControlPlane.adapterRejection` is the single source of truth for the
+    // wording, so the route's 400 message must reflect *why* the adapter was
+    // rejected — never the misleading "unknown adapter" for a disabled-but-
+    // implemented adapter. The wiring in main.ts threads `adapterRejectionReason`.
+    startWith(
+      makeControl({
+        adapterRejection: (name) => {
+          if (name === "claude") return null;
+          if (name === "codex") return `adapter ${name} is disabled in config`;
+          return `unknown adapter: ${name}`;
+        },
+      }),
+    );
+
+    const disabled = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({ repo: "o/r", repoPath: "/abs", epicNumber: 1, adapter: "codex" }),
+    });
+    expect(disabled.status).toBe(400);
+    expect(await disabled.json()).toEqual({ error: "adapter codex is disabled in config" });
+
+    const unknown = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({ repo: "o/r", repoPath: "/abs", epicNumber: 1, adapter: "ghost" }),
+    });
+    expect(unknown.status).toBe(400);
+    expect(await unknown.json()).toEqual({ error: "unknown adapter: ghost" });
   });
 
   test("POST /control/dispatch refuses with 429 when no slot is available (manual respects limits)", async () => {

@@ -6,10 +6,12 @@ import type { AgentAdapter, HookPayload } from "@middle/core";
 import { renderStateIssue } from "@middle/state-issue";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
+import type { MiddleConfig } from "@middle/core";
 import {
   dispatchRecommender,
   type DispatchRecommenderOptions,
   type RecommenderRunOverrides,
+  resolveRecommenderOptions,
 } from "../src/recommender-run.ts";
 import type { RecommenderContext } from "../src/workflows/recommender.ts";
 
@@ -202,5 +204,48 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
     const result = await dispatchRecommender(opts);
     expect(result.state).toBe("completed");
     expect(calls).toEqual([]);
+  });
+});
+
+describe("resolveRecommenderOptions", () => {
+  function configWithAdapters(overrides?: Partial<MiddleConfig["adapters"]>): MiddleConfig {
+    return {
+      global: {
+        dispatcherPort: 0,
+        maxConcurrent: 4,
+        defaultAdapter: "claude",
+        logDir: "/tmp/logs",
+        worktreeRoot: join(scratch, "worktrees"),
+        dbPath: join(scratch, "db.sqlite3"),
+      },
+      adapters: {
+        claude: { enabled: true, binary: "claude", extraArgs: [] },
+        codex: { enabled: true, binary: "codex", extraArgs: [] },
+        ...overrides,
+      },
+      dashboard: { windowed: false, theme: "auto" },
+      stateIssue: { number: 1, label: "agent:dispatch" },
+    };
+  }
+
+  test("rejects an implemented-but-disabled adapter — mirrors the daemon's dispatch gate", async () => {
+    // Same class of bug as the main.ts manual-dispatch check: a daemon route
+    // (`/trigger/recommender` or the dashboard's "run recommender now") hits
+    // this validator below the CLI's enabled-check, so the validator must
+    // refuse a disabled adapter rather than silently dispatching on it.
+    const schemaDir = join(repoPath, "schemas");
+    await Bun.write(join(schemaDir, "state-issue.v1.md"), "schema stub\n");
+    const config = configWithAdapters({
+      codex: { enabled: false, binary: "codex", extraArgs: [] },
+    });
+    config.recommender = {
+      enabled: true,
+      adapter: "codex",
+      intervalMinutes: 15,
+      autoDispatch: false,
+    };
+    const result = await resolveRecommenderOptions(repoPath, config, () => stubAdapter());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("adapter codex is disabled in config");
   });
 });
