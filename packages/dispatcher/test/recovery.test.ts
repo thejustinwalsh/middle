@@ -233,9 +233,7 @@ describe("createDurableEngine (transient-queue env guard)", () => {
   test("names every offending var when several are set at once", () => {
     withEnv("DATA_PATH", "/tmp/a", () => {
       withEnv("SQLITE_PATH", "/tmp/b", () => {
-        expect(() => createDurableEngine("/tmp/ignored.sqlite3")).toThrow(
-          /DATA_PATH.*SQLITE_PATH/,
-        );
+        expect(() => createDurableEngine("/tmp/ignored.sqlite3")).toThrow(/DATA_PATH.*SQLITE_PATH/);
       });
     });
   });
