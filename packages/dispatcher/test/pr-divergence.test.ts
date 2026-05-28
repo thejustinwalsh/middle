@@ -10,7 +10,9 @@ import {
   type DivergenceGateway,
   getDivergenceState,
   type MergeabilityView,
+  parseEpicFromHeadRef,
   recordDivergenceState,
+  worktreePathFor,
 } from "../src/reconcilers/pr-divergence.ts";
 
 let scratch: string;
@@ -129,6 +131,35 @@ describe("classifyDivergence", () => {
     const github = makeGateway({}); // no entry for prNumber → returns null
     expect(await classifyDivergence({ db, github, now: () => 4_000 }, REPO, 99)).toBe("UNKNOWN");
     expect(getDivergenceState(db, REPO, 99)?.state).toBe("UNKNOWN");
+  });
+});
+
+describe("parseEpicFromHeadRef", () => {
+  test("parses `middle-issue-<N>` to the integer N", () => {
+    expect(parseEpicFromHeadRef("middle-issue-32")).toBe(32);
+    expect(parseEpicFromHeadRef("middle-issue-1")).toBe(1);
+    expect(parseEpicFromHeadRef("middle-issue-12345")).toBe(12345);
+  });
+
+  test("a non-managed head ref → null (the helper skips it)", () => {
+    expect(parseEpicFromHeadRef("feature/foo")).toBe(null);
+    expect(parseEpicFromHeadRef("main")).toBe(null);
+    expect(parseEpicFromHeadRef("")).toBe(null);
+  });
+
+  test("a malformed managed ref → null (defends against an inadvertent rename)", () => {
+    expect(parseEpicFromHeadRef("middle-issue-")).toBe(null);
+    expect(parseEpicFromHeadRef("middle-issue-abc")).toBe(null);
+    expect(parseEpicFromHeadRef("middle-issue-32.5")).toBe(null);
+    // Negative / zero are not valid Epic numbers (issue numbers start at 1).
+    expect(parseEpicFromHeadRef("middle-issue-0")).toBe(null);
+    expect(parseEpicFromHeadRef("middle-issue--1")).toBe(null);
+  });
+});
+
+describe("worktreePathFor", () => {
+  test("uses <root>/<repo>/issue-<n> — the same layout createWorktree writes", () => {
+    expect(worktreePathFor("owner/repo", 32, "/wt-root")).toBe("/wt-root/owner/repo/issue-32");
   });
 });
 
