@@ -2,14 +2,17 @@ import { Bunqueue } from "bunqueue/client";
 import { type PollerDeps, reconcileMergedParks, runPoller } from "./poller.ts";
 
 /**
- * Default cadence for the GitHub poller. Much slower than the watchdog (30s) —
- * a human reply or a review verdict is not latency-sensitive, and a gentler
- * cadence is kinder to GitHub rate limits. The poller spends ~1 `gh` call per
- * parked workflow per tick and has no backoff yet (see #122), so a conservative
- * default keeps a many-parked-workflow / multi-repo deployment well clear of
- * the 5000/hr ceiling and of secondary (burst) limits. Override via `startPoller`.
+ * Default cadence for the GitHub poller. Slower than the watchdog (30s) — a
+ * human reply or a review verdict isn't latency-sensitive at the second scale,
+ * and a gentler cadence is kinder to GitHub rate limits. The poller spends ~1
+ * `gh` call per parked workflow per tick and has no backoff yet (see #122), so
+ * 60s keeps a many-parked-workflow / multi-repo deployment well clear of the
+ * 5000/hr ceiling and of secondary (burst) limits while still healing
+ * MERGED-transition divergence within one tick (Epic #168). Override via
+ * `startPoller`. Pinned by the dispatcher's CLAUDE.md cadence contract — keep
+ * the value and the doc in sync there.
  */
-export const POLLER_INTERVAL_MS = 120_000;
+export const POLLER_INTERVAL_MS = 60_000;
 
 /**
  * Extra reconciliation work the daemon hangs off each poller tick (Epic #168).
