@@ -58,3 +58,30 @@ resolution + `globalConfigPath`.
 a vestigial test-injection knob. Keeping both a global `specPath` and per-repo resolution
 would have created an ambiguous precedence with no caller to justify it. `reconcileStaleness`
 keeps its own `specPath` arg (that's the algorithm input, fed the resolved value per repo).
+
+## Constrain a configured spec_path to the repo checkout (review round 1)
+**File(s):** `packages/dispatcher/src/staleness-cron.ts:56`
+**Date:** 2026-05-28
+
+**Decision:** `resolveSpecPath` validates the configured `[staleness] spec_path` against the
+checkout and **throws** if it escapes — an absolute path, or one that climbs out via `..`.
+The boundary test matches the `..` path segment exactly (`rel === ".."` or `rel.startsWith(".." + sep)`),
+not a naive `startsWith("..")`, so a literal filename segment like `..foo` is still allowed.
+Validation joins with the same `join(checkoutPath, specPath)` that `readSpec` reads with, so
+there is no validate-vs-read divergence.
+
+**Why:** CodeRabbit (PR #176, Major) flagged that `spec_path` is read off disk via
+`readFileSync(join(checkoutPath, specPath))` with no checkout bound, so a committed `policy.toml`
+or local `config.toml` could read files outside the repo (and a matched line is quoted into a
+filed reconcile-task body — a disclosure path). The field is documented repo-relative and the
+config mapper does **not** tilde-expand it, so an absolute value is never intended; rejecting is
+the contract. Throwing (rather than silently falling back to the default) reuses the existing
+per-repo guard: one repo's bad spec_path logs as that repo's failure and the sweep continues —
+the same isolation a malformed `config.toml` already gets. Symlink TOCTOU (a spec path inside the
+checkout that symlinks out) is a different, filesystem-level class and out of this fix's blast radius.
+
+**Evidence:** Four added tests in `packages/dispatcher/test/staleness-cron.test.ts` — a `..`
+escape and a deeper `../../` escape (both with an out-of-checkout drift file that is provably
+never read: `closed===0`, `created===[]`, repo logged as "pass failed"), an absolute path
+rejected, and the `..foo`-segment regression guard that a non-escaping `..`-prefixed name is
+still read. Full suite: 534 pass / 0 fail; typecheck + lint clean.

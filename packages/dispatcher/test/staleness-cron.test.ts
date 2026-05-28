@@ -182,3 +182,111 @@ describe("runStalenessCronPass — per-repo spec path", () => {
     expect(gh.created).toEqual([]); // no spec → no drift check → no reconcile task
   });
 });
+
+describe("runStalenessCronPass — spec_path is constrained to the checkout", () => {
+  /** Capture console.error during `fn` and return the lines logged. */
+  async function captureErrors(fn: () => Promise<unknown>): Promise<string[]> {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(" "));
+    };
+    try {
+      await fn();
+    } finally {
+      console.error = origError;
+    }
+    return errors;
+  }
+
+  test("a `..` traversal spec_path is rejected — the pass never reads outside the checkout", async () => {
+    // Plant a spec OUTSIDE the checkout that *would* drift if read, and aim the
+    // configured spec_path up-and-over at it. The escape must be refused: no file
+    // outside the repo is read, so the per-repo pass fails closed (logs, closes
+    // nothing, files nothing) rather than leaking the out-of-checkout content.
+    const repo = join(scratch, "escaper");
+    writeAt(scratch, "outside-spec.md", "The dashboard lands in Phase 9.");
+    writeRepoConfig(repo, `[staleness]\nspec_path = "../outside-spec.md"\n`);
+    registerManagedRepo(db, "o/escaper", repo);
+
+    const gh = fakeGithub(
+      [{ number: 50, title: "SPA", body: "", labels: ["phase:9"] }],
+      [{ number: 88, closes: [50] }],
+    );
+
+    let closed = 0;
+    const errors = await captureErrors(async () => {
+      closed = await runStalenessCronPass({ db, github: gh, globalConfigPath });
+    });
+    expect(closed).toBe(0); // resolveSpecPath threw before any reconcile work
+    expect(gh.created).toEqual([]); // the out-of-checkout drift line was never read
+    expect(errors.some((e) => e.includes("o/escaper") && e.includes("pass failed"))).toBe(true);
+  });
+
+  test("a deeper `../../` traversal is rejected too", async () => {
+    const repo = join(scratch, "deep", "nested");
+    mkdirSync(repo, { recursive: true });
+    writeAt(scratch, "secret.md", "The dashboard lands in Phase 9.");
+    writeRepoConfig(repo, `[staleness]\nspec_path = "../../secret.md"\n`);
+    registerManagedRepo(db, "o/deep", repo);
+
+    const gh = fakeGithub(
+      [{ number: 50, title: "SPA", body: "", labels: ["phase:9"] }],
+      [{ number: 88, closes: [50] }],
+    );
+
+    let closed = 0;
+    const errors = await captureErrors(async () => {
+      closed = await runStalenessCronPass({ db, github: gh, globalConfigPath });
+    });
+    expect(closed).toBe(0);
+    expect(gh.created).toEqual([]);
+    expect(errors.some((e) => e.includes("o/deep") && e.includes("pass failed"))).toBe(true);
+  });
+
+  test("an absolute spec_path is rejected (the field is repo-relative by contract)", async () => {
+    // An absolute path is never intended: `[staleness] spec_path` is documented
+    // repo-relative and the config mapper does not tilde-expand it. `join` would
+    // otherwise quietly re-root it under the checkout; rejecting is the contract.
+    const repo = join(scratch, "absolute");
+    const outside = join(scratch, "abs-spec.md");
+    writeFileSync(outside, "The dashboard lands in Phase 9.");
+    writeRepoConfig(repo, `[staleness]\nspec_path = ${JSON.stringify(outside)}\n`);
+    registerManagedRepo(db, "o/absolute", repo);
+
+    const gh = fakeGithub(
+      [{ number: 50, title: "SPA", body: "", labels: ["phase:9"] }],
+      [{ number: 88, closes: [50] }],
+    );
+
+    let closed = 0;
+    const errors = await captureErrors(async () => {
+      closed = await runStalenessCronPass({ db, github: gh, globalConfigPath });
+    });
+    expect(closed).toBe(0);
+    expect(gh.created).toEqual([]);
+    expect(errors.some((e) => e.includes("o/absolute") && e.includes("pass failed"))).toBe(true);
+  });
+
+  test("a filename whose segment merely starts with `..` is allowed (not a traversal)", async () => {
+    // Regression guard for the boundary check: `..specs` is a literal directory
+    // name, not a climb out of the repo. A naive `rel.startsWith("..")` would
+    // wrongly reject it; the segment-exact check must let it through and read it.
+    const repo = join(scratch, "dotdotname");
+    writeRepoConfig(repo, `[staleness]\nspec_path = "..specs/build.md"\n`);
+    writeAt(repo, join("..specs", "build.md"), "The dashboard lands in Phase 9.");
+    registerManagedRepo(db, "o/dotdotname", repo);
+
+    const gh = fakeGithub(
+      [{ number: 50, title: "SPA", body: "", labels: ["phase:9"] }],
+      [{ number: 88, closes: [50] }],
+    );
+
+    const closed = await runStalenessCronPass({ db, github: gh, globalConfigPath });
+    expect(closed).toBe(1); // read succeeded, landed issue closed
+    expect(gh.created.map((i) => i.title)).toEqual([
+      'chore(spec): reconcile stale "Phase 9" reference',
+    ]);
+    expect(gh.created[0]!.body).toContain("..specs/build.md");
+  });
+});

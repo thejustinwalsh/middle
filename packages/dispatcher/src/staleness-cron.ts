@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { loadConfig } from "@middle/core";
 import { Bunqueue } from "bunqueue/client";
@@ -52,13 +52,30 @@ export type StalenessCronDeps = {
  * falling back to {@link DEFAULT_SPEC_PATH} when unset. Reading config can throw on
  * a malformed TOML; callers run it inside the per-repo guard so one bad config
  * logs-and-continues rather than aborting the sweep.
+ *
+ * `spec_path` is repo-relative by contract and is later joined onto the checkout
+ * and read off disk, so it is **constrained to the checkout**: an absolute path or
+ * one that escapes via `..` throws here (caught by the per-repo guard as that
+ * repo's logged failure) rather than letting a committed/local config read files
+ * outside the repo. The returned value stays repo-relative — `readSpec` joins it
+ * onto the checkout and the reconcile-task body names it verbatim.
  */
 function resolveSpecPath(checkoutPath: string, globalConfigPath: string | undefined): string {
   const config = loadConfig({
     globalPath: globalConfigPath,
     repoPath: join(checkoutPath, ".middle", "config.toml"),
   });
-  return config.staleness?.specPath ?? DEFAULT_SPEC_PATH;
+  const specPath = config.staleness?.specPath ?? DEFAULT_SPEC_PATH;
+  // Bound it to the checkout. `relative` of the resolved pair tells us whether the
+  // target stays inside: a `..`-only segment or `..<sep>` prefix means it climbed
+  // out, and an absolute result means `specPath` was itself absolute. A literal
+  // segment like `..foo` is NOT an escape, so match the `..` segment exactly rather
+  // than a naive `startsWith("..")` that would also reject such names.
+  const rel = relative(checkoutPath, join(checkoutPath, specPath));
+  if (isAbsolute(specPath) || rel === ".." || rel.startsWith(".." + sep)) {
+    throw new Error(`[staleness] spec_path escapes the repo checkout: ${specPath}`);
+  }
+  return specPath;
 }
 
 /**
