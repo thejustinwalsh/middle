@@ -175,6 +175,14 @@ export type GitOps = {
    *  conflict `-X ours` can't auto-resolve (rare; rename/rename, modify/delete),
    *  aborts with `git merge --abort` and reports the unmerged paths. */
   mergeOurs(cwd: string, ref: string): Promise<GitResolutionResult>;
+  /** `git rev-parse <ref>` — the SHA the ref points at, or null if it doesn't
+   *  resolve (e.g. no remote-tracking ref yet). */
+  revParse(cwd: string, ref: string): Promise<string | null>;
+  /** `git push --force-with-lease origin <branch>` — agent-managed branches only.
+   *  Throws on push failure (a real conflict caught by the lease, or a permission
+   *  / network error); `applySuccess` propagates so the trigger sibling retries
+   *  next pass instead of silently advancing state. */
+  pushForceWithLease(cwd: string, branch: string): Promise<void>;
 };
 
 async function spawnGit(
@@ -229,6 +237,20 @@ export const gitOps: GitOps = {
     const conflictingPaths = await readConflictingPaths(cwd);
     await spawnGit(cwd, ["merge", "--abort"]);
     return { ok: false, conflictingPaths };
+  },
+  async revParse(cwd: string, ref: string): Promise<string | null> {
+    // `--verify` keeps `rev-parse` from emitting a "fail-silent" fallback string
+    // for an unknown ref; we want null, not "<ref-string>".
+    const r = await spawnGit(cwd, ["rev-parse", "--verify", "--quiet", ref]);
+    if (r.exitCode !== 0) return null;
+    const sha = r.stdout.trim();
+    return sha === "" ? null : sha;
+  },
+  async pushForceWithLease(cwd: string, branch: string): Promise<void> {
+    const r = await spawnGit(cwd, ["push", "--force-with-lease", "origin", branch]);
+    if (r.exitCode !== 0) {
+      throw new Error(`git push --force-with-lease origin ${branch} failed: ${r.stderr.trim()}`);
+    }
   },
 };
 
@@ -341,4 +363,86 @@ export async function tryMergeMainNewWorkAsBase(
   if (!resolved) return { ok: false, conflictingPaths: [] };
   await deps.git.fetch(resolved.worktreePath, "main");
   return deps.git.mergeOurs(resolved.worktreePath, "origin/main");
+}
+
+// ── Phase 4: applySuccess ───────────────────────────────────────────────────
+
+/** Resolution kind passed to {@link applySuccess}; mirrored verbatim in the PR
+ *  comment so reviewers can see which path landed the reconciliation. */
+export type ReconciliationResolution = "rebased" | "merged-new-work-as-base";
+
+/** The narrow comment surface `applySuccess` needs — listing for idempotency,
+ *  posting for the one announcement. Matches the existing
+ *  {@link "../github.ts".GitHubGateway} method names so the daemon-side
+ *  composition is a thin `Pick`. */
+export type PrCommentGateway = {
+  listIssueComments(repo: string, issueNumber: number): Promise<{ body: string }[]>;
+  postComment(repo: string, issueNumber: number, body: string): Promise<void>;
+};
+
+/** Deps for `applySuccess` — the union of worktree resolution (head ref +
+ *  git) and PR-comment ops, plus the SQLite handle for the state update. */
+export type ApplySuccessDeps = WorktreeOpsDeps & {
+  db: Database;
+  github: PrHeadRefGateway & PrCommentGateway;
+  now?: () => number;
+};
+
+/** Render the hidden HTML marker that makes comment-posting idempotent across
+ *  consecutive `applySuccess` calls for the *same* reconciliation
+ *  (resolution + main sha). A future main sha re-allows a fresh announcement. */
+function reconciledMarker(resolution: ReconciliationResolution, mainCommitSha: string): string {
+  return `<!-- middle-divergence: ${mainCommitSha.slice(0, 9)}:${resolution} -->`;
+}
+
+/**
+ * Apply the success path of a reconciliation: push the rebased / merged
+ * worktree back to its PR branch, post a single announcement on the PR, and
+ * record `CLEAN` in `pr_divergence_state`. Idempotent across consecutive
+ * invocations for the same reconciliation:
+ *
+ *  - **Push:** `git fetch origin <branch>` first, then push only if the local
+ *    HEAD differs from `origin/<branch>` — so a re-call when the branch is
+ *    already at the target state is a no-op (per #172's spec).
+ *  - **Comment:** scans existing comments for the resolution+sha marker; posts
+ *    only if absent. The marker is hidden HTML in the body, so the visible
+ *    text stays clean.
+ *  - **State row:** upserted to `CLEAN` — idempotent by construction.
+ *
+ * Force-pushing uses `--force-with-lease` (never plain `--force`), so a
+ * concurrent push from a human collaborator surfaces as a push failure rather
+ * than silently overwriting their work.
+ *
+ * A non-managed head ref (the PR isn't `middle-issue-<N>`) short-circuits as a
+ * no-op — `applySuccess` is never the right action for a non-managed PR.
+ */
+export async function applySuccess(
+  deps: ApplySuccessDeps,
+  repo: string,
+  prNumber: number,
+  resolution: ReconciliationResolution,
+  mainCommitSha: string,
+): Promise<void> {
+  const resolved = await resolveWorktreePath(deps, repo, prNumber);
+  if (!resolved) return;
+  const branch = `${HEAD_REF_PREFIX}${resolved.epicNumber}`;
+
+  // Sync the remote-tracking ref so the local-vs-remote comparison reflects
+  // the live origin state, not whatever was last cached.
+  await deps.git.fetch(resolved.worktreePath, branch);
+  const localSha = await deps.git.revParse(resolved.worktreePath, "HEAD");
+  const remoteSha = await deps.git.revParse(resolved.worktreePath, `refs/remotes/origin/${branch}`);
+  if (localSha !== null && localSha !== remoteSha) {
+    await deps.git.pushForceWithLease(resolved.worktreePath, branch);
+  }
+
+  const marker = reconciledMarker(resolution, mainCommitSha);
+  const existing = await deps.github.listIssueComments(repo, prNumber);
+  const alreadyPosted = existing.some((c) => (c.body ?? "").includes(marker));
+  if (!alreadyPosted) {
+    const body = `🔁 Reconciled with main (${resolution}) after ${mainCommitSha.slice(0, 9)}\n\n${marker}`;
+    await deps.github.postComment(repo, prNumber, body);
+  }
+
+  recordDivergenceState(deps.db, repo, prNumber, "CLEAN", (deps.now ?? Date.now)());
 }

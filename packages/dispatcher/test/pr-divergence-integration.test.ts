@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type Database } from "bun:sqlite";
+import { openAndMigrate } from "../src/db.ts";
 import {
+  applySuccess,
+  getDivergenceState,
   gitOps,
   tryMergeMainNewWorkAsBase,
   tryRebaseOntoMain,
@@ -46,6 +50,7 @@ let scratch: string;
 let remote: string; // bare repo
 let work: string; // main-side working checkout (pushes to `remote`)
 let worktree: string; // feature-side working checkout (the rebase target)
+let db: Database; // for applySuccess persistence checks
 
 async function writeAndCommit(
   cwd: string,
@@ -81,9 +86,15 @@ beforeEach(async () => {
   // seeded remote; the branch is the managed `middle-issue-<N>` convention.
   await git(scratch, ["clone", "-b", "main", remote, "worktree"]);
   await git(worktree, ["checkout", "-b", "middle-issue-32"]);
+  // Push the feature branch so `git fetch origin middle-issue-32` succeeds in
+  // applySuccess — the remote-tracking ref needs to exist before we compare.
+  await git(worktree, ["push", "-u", "origin", "middle-issue-32"]);
+
+  db = openAndMigrate(join(scratch, "db.sqlite3"));
 });
 
 afterEach(() => {
+  db.close();
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -252,6 +263,9 @@ describe("tryMergeMainNewWorkAsBase — fixture repo", () => {
     expect(parents.length).toBeGreaterThanOrEqual(3); // child + ≥2 parents
   });
 
+  // applySuccess integration tests live alongside the git helpers so they
+  // share the fixture; declared here so the shared describe block stays one
+  // unit. (See the `applySuccess` describe block below.)
   test("residual conflict -X ours can't auto-resolve (rename/rename) → abort, paths reported", async () => {
     // Seed a baseline file, reset feature to it.
     await writeAndCommit(work, "shared.txt", "baseline\n", "main: seed shared");
@@ -284,5 +298,122 @@ describe("tryMergeMainNewWorkAsBase — fixture repo", () => {
     // Worktree clean after abort: HEAD back at feature, no leftover MERGE_HEAD.
     expect((await git(worktree, ["rev-parse", "HEAD"])).stdout.trim()).toBe(featureSha);
     expect(existsSync(join(worktree, ".git", "MERGE_HEAD"))).toBe(false);
+  });
+});
+
+describe("applySuccess — fixture repo", () => {
+  /**
+   * Spy on PR-comment listing + posting. Mirrors the existing
+   * `GitHubGateway` subset {@link applySuccess} consumes.
+   */
+  function makeCommentSpy(): {
+    listIssueComments: (repo: string, prNumber: number) => Promise<{ body: string }[]>;
+    postComment: (repo: string, prNumber: number, body: string) => Promise<void>;
+    posted: string[];
+  } {
+    const posted: string[] = [];
+    return {
+      posted,
+      async listIssueComments() {
+        return posted.map((body) => ({ body }));
+      },
+      async postComment(_repo, _prNumber, body) {
+        posted.push(body);
+      },
+    };
+  }
+
+  test("pushes the rebased branch, posts one PR comment, and records CLEAN — twice = idempotent", async () => {
+    // Make the feature branch ahead of origin/middle-issue-32: do a rebase
+    // first (simulating Phase 2 having run) so the local branch differs from
+    // its already-pushed remote.
+    await writeAndCommit(work, "main-file.txt", "main only\n", "main: add file");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const rebaseResult = await tryRebaseOntoMain(deps(), "o/r", 999);
+    expect(rebaseResult).toEqual({ ok: true });
+
+    const comments = makeCommentSpy();
+    const baseDeps = deps();
+    const successDeps = {
+      ...baseDeps,
+      db,
+      github: { ...baseDeps.github, ...comments },
+      now: () => 1_700_000_000_000,
+    };
+
+    // First invocation: pushes (local was ahead) and posts the announcement.
+    await applySuccess(successDeps, "o/r", 999, "rebased", "abcdef1234567890");
+
+    expect(comments.posted.length).toBe(1);
+    expect(comments.posted[0]).toContain("🔁 Reconciled with main (rebased) after abcdef123");
+    expect(comments.posted[0]).toContain("<!-- middle-divergence: abcdef123:rebased -->");
+    expect(getDivergenceState(db, "o/r", 999)).toEqual({
+      state: "CLEAN",
+      classifiedAt: 1_700_000_000_000,
+    });
+
+    // The branch landed on origin (force-with-lease push succeeded — the bare
+    // remote now has the rebased HEAD).
+    const localSha = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    const remoteSha = (await git(remote, ["rev-parse", "middle-issue-32"])).stdout.trim();
+    expect(remoteSha).toBe(localSha);
+
+    // Second invocation for the same reconciliation: no double-comment, no
+    // error. The state row's classified_at re-stamps (upsert) so the row stays
+    // fresh; that's expected, not a duplication issue.
+    await applySuccess(
+      { ...successDeps, now: () => 1_700_000_001_000 },
+      "o/r",
+      999,
+      "rebased",
+      "abcdef1234567890",
+    );
+    expect(comments.posted.length).toBe(1);
+    expect(getDivergenceState(db, "o/r", 999)?.classifiedAt).toBe(1_700_000_001_000);
+  });
+
+  test("a different mainCommitSha allows a fresh announcement (the marker is sha-keyed)", async () => {
+    // Feature is already in sync; no push needed. But a *new* reconciliation
+    // against a different main sha is a different event and should re-announce.
+    await aliasFixtureUnderRoot("o/r", 32);
+    const comments = makeCommentSpy();
+    const baseDeps = deps();
+    const successDeps = {
+      ...baseDeps,
+      db,
+      github: { ...baseDeps.github, ...comments },
+      now: () => 100,
+    };
+
+    await applySuccess(successDeps, "o/r", 999, "merged-new-work-as-base", "aaaaaaaaa11111");
+    await applySuccess(successDeps, "o/r", 999, "merged-new-work-as-base", "aaaaaaaaa11111");
+    expect(comments.posted.length).toBe(1); // same sha → skipped
+
+    await applySuccess(successDeps, "o/r", 999, "merged-new-work-as-base", "bbbbbbbbb22222");
+    expect(comments.posted.length).toBe(2); // new sha → re-announced
+    expect(comments.posted[1]).toContain("merged-new-work-as-base");
+    expect(comments.posted[1]).toContain("bbbbbbbbb");
+  });
+
+  test("a non-managed head ref is a no-op (no push, no comment, no row)", async () => {
+    const comments = makeCommentSpy();
+    const baseDeps = deps();
+    const successDeps = {
+      ...baseDeps,
+      db,
+      github: {
+        ...baseDeps.github,
+        ...comments,
+        async getPrHeadRef() {
+          return "feature/random";
+        },
+      },
+      now: () => 100,
+    };
+    await applySuccess(successDeps, "o/r", 999, "rebased", "deadbeef00000");
+    expect(comments.posted).toEqual([]);
+    expect(getDivergenceState(db, "o/r", 999)).toBe(null);
   });
 });
