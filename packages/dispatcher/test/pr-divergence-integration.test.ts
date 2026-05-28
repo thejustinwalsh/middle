@@ -6,8 +6,14 @@ import { type Database } from "bun:sqlite";
 import { openAndMigrate } from "../src/db.ts";
 import {
   applySuccess,
+  type ClosedSubIssue,
+  type DivergenceState,
   getDivergenceState,
   gitOps,
+  type MergeabilityView,
+  type OpenManagedPr,
+  reconcileOpenPRs,
+  type ReconcilerGateway,
   tryMergeMainNewWorkAsBase,
   tryRebaseOntoMain,
 } from "../src/reconcilers/pr-divergence.ts";
@@ -415,5 +421,294 @@ describe("applySuccess — fixture repo", () => {
     await applySuccess(successDeps, "o/r", 999, "rebased", "deadbeef00000");
     expect(comments.posted).toEqual([]);
     expect(getDivergenceState(db, "o/r", 999)).toBe(null);
+  });
+});
+
+describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
+  /**
+   * Build a fully-stubbed `ReconcilerGateway` keyed by PR number for the
+   * orchestrator's read paths, and recording counters for its write paths.
+   * Comments + open PR list + closed sub-issues are driven by the per-test
+   * setup; the git operations (rebase / merge / push) run against the real
+   * fixture worktree.
+   */
+  function makeOrchestratorGateway(opts: {
+    openPrs: OpenManagedPr[];
+    mergeability: Record<number, MergeabilityView | null>;
+    headRefs: Record<number, string | null>;
+    closedSubIssues?: ClosedSubIssue[];
+    mainSha?: string;
+  }) {
+    const calls = {
+      listOpenManagedPrs: 0,
+      getMainCommitSha: 0,
+      getMergeability: 0 as number,
+      getPrHeadRef: 0 as number,
+      postComment: [] as { issueNumber: number; body: string }[],
+      convertPrToDraft: [] as number[],
+      reopenIssue: [] as { issueNumber: number; comment: string | undefined }[],
+    };
+    const comments = new Map<number, string[]>();
+    const drafts = new Set<number>();
+    const gateway: ReconcilerGateway = {
+      async listOpenManagedPrs() {
+        calls.listOpenManagedPrs++;
+        return opts.openPrs;
+      },
+      async getMainCommitSha() {
+        calls.getMainCommitSha++;
+        return opts.mainSha ?? "main-sha-123";
+      },
+      async getMergeability(_repo, prNumber) {
+        calls.getMergeability++;
+        return opts.mergeability[prNumber] ?? null;
+      },
+      async getPrHeadRef(_repo, prNumber) {
+        calls.getPrHeadRef++;
+        return opts.headRefs[prNumber] ?? null;
+      },
+      async getPullRequest(_repo, prNumber) {
+        return { isDraft: drafts.has(prNumber) };
+      },
+      async convertPrToDraft(_repo, prNumber) {
+        calls.convertPrToDraft.push(prNumber);
+        drafts.add(prNumber);
+      },
+      async listClosedSubIssues() {
+        return opts.closedSubIssues ?? [];
+      },
+      async reopenIssue(_repo, issueNumber, options) {
+        calls.reopenIssue.push({ issueNumber, comment: options?.comment });
+      },
+      async listIssueComments(_repo, issueNumber) {
+        return (comments.get(issueNumber) ?? []).map((body) => ({ body }));
+      },
+      async postComment(_repo, issueNumber, body) {
+        calls.postComment.push({ issueNumber, body });
+        const bucket = comments.get(issueNumber) ?? [];
+        bucket.push(body);
+        comments.set(issueNumber, bucket);
+      },
+    };
+    return { gateway, calls, comments, drafts };
+  }
+
+  test("BEHIND PR rebases cleanly on the next tick, applies success, and a re-tick is idempotent", async () => {
+    // Set up the fixture: main advances by one disjoint commit so the feature
+    // branch is BEHIND but conflict-free (the rebase helper's clean path).
+    await writeAndCommit(work, "main.txt", "main\n", "main: add file");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 100, headRefName: "middle-issue-32" }],
+      headRefs: { 100: "middle-issue-32" },
+      mergeability: {
+        // First tick sees BEHIND; second tick sees CLEAN (the rebase landed).
+        100: { mergeStateStatus: "BEHIND", mergeable: "MERGEABLE" },
+      },
+    });
+
+    const baseDeps = deps();
+    const enqueues: Array<[string, number]> = [];
+    const orchDeps = {
+      ...baseDeps,
+      db,
+      github: fixture.gateway,
+      enqueueEpic: async (r: string, e: number) => {
+        enqueues.push([r, e]);
+      },
+      getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      now: () => 1_700_000_000_000,
+    };
+
+    const r1 = await reconcileOpenPRs(orchDeps, "o/r");
+    expect(r1).toEqual({ reconciled: 1, passed: 0, skippedForBudget: false });
+    // The rebase moved feature on top of main; applySuccess pushed and posted.
+    expect(fixture.calls.postComment.length).toBe(1);
+    expect(fixture.calls.postComment[0]?.issueNumber).toBe(100);
+    expect(fixture.calls.postComment[0]?.body).toContain("(rebased)");
+    expect(getDivergenceState(db, "o/r", 100)?.state).toBe("CLEAN");
+
+    // Second tick: simulate GitHub now reporting CLEAN (the push landed there).
+    // The orchestrator classifies CLEAN → passed, no further side effects.
+    fixture.calls.postComment = []; // reset to verify no new posts
+    const orchDeps2 = {
+      ...orchDeps,
+      github: {
+        ...fixture.gateway,
+        async getMergeability() {
+          return { mergeStateStatus: "CLEAN", mergeable: "MERGEABLE" } as MergeabilityView;
+        },
+      },
+    };
+    const r2 = await reconcileOpenPRs(orchDeps2, "o/r");
+    expect(r2).toEqual({ reconciled: 0, passed: 1, skippedForBudget: false });
+    expect(fixture.calls.postComment).toEqual([]);
+    expect(fixture.calls.convertPrToDraft).toEqual([]);
+    expect(enqueues).toEqual([]);
+  });
+
+  test("CONFLICTED PR rebase-fails → merge fallback lands → applySuccess('merged-new-work-as-base')", async () => {
+    // Same-line edits on both sides — rebase will conflict, -X ours will resolve.
+    await writeAndCommit(work, "shared.txt", "line\n", "main: seed shared");
+    await git(work, ["push", "origin", "main"]);
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+    await git(worktree, ["checkout", "-B", "middle-issue-32"]);
+    await git(worktree, ["push", "-f", "origin", "middle-issue-32"]);
+
+    await writeAndCommit(worktree, "shared.txt", "feature edit\n", "feature: edit shared");
+    await writeAndCommit(work, "shared.txt", "main edit\n", "main: edit shared");
+    await git(work, ["push", "origin", "main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 101, headRefName: "middle-issue-32" }],
+      headRefs: { 101: "middle-issue-32" },
+      mergeability: {
+        101: { mergeStateStatus: "DIRTY", mergeable: "CONFLICTING" },
+      },
+    });
+
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    expect(r.reconciled).toBe(1);
+    expect(fixture.calls.postComment.length).toBe(1);
+    expect(fixture.calls.postComment[0]?.body).toContain("(merged-new-work-as-base)");
+  });
+
+  test("CONFLICTED PR both attempts fail (rename/rename) → applyDemoteToWork fires", async () => {
+    // Rename/rename: -X ours can't resolve.
+    await writeAndCommit(work, "shared.txt", "baseline\n", "main: seed shared");
+    await git(work, ["push", "origin", "main"]);
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+    await git(worktree, ["checkout", "-B", "middle-issue-32"]);
+    await git(worktree, ["push", "-f", "origin", "middle-issue-32"]);
+
+    await git(worktree, ["mv", "shared.txt", "feature-name.txt"]);
+    await git(worktree, ["commit", "-m", "feature: rename"]);
+    await git(work, ["mv", "shared.txt", "main-name.txt"]);
+    await git(work, ["commit", "-m", "main: rename"]);
+    await git(work, ["push", "origin", "main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 102, headRefName: "middle-issue-32" }],
+      headRefs: { 102: "middle-issue-32" },
+      mergeability: {
+        102: { mergeStateStatus: "DIRTY", mergeable: "CONFLICTING" },
+      },
+      closedSubIssues: [{ number: 50, closedAt: 1_700_000_000_000 }],
+    });
+
+    const baseDeps = deps();
+    const enqueues: Array<[string, number]> = [];
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async (repo, epicNumber) => {
+          enqueues.push([repo, epicNumber]);
+        },
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    expect(r.reconciled).toBe(1);
+
+    // Demote landed: draft conversion + sub-issue reopen + dual-surface comments + enqueue.
+    expect(fixture.calls.convertPrToDraft).toEqual([102]);
+    expect(fixture.calls.reopenIssue.length).toBe(1);
+    expect(fixture.calls.reopenIssue[0]?.issueNumber).toBe(50);
+    expect(new Set(fixture.calls.postComment.map((c) => c.issueNumber))).toEqual(
+      new Set([102, 32]),
+    );
+    for (const c of fixture.calls.postComment) {
+      expect(c.body).toContain("<!-- middle-divergence-demoted: 32 -->");
+    }
+    expect(enqueues).toEqual([["o/r", 32]]);
+    expect(getDivergenceState(db, "o/r", 102)?.state).toBe("DEMOTED");
+  });
+
+  test("rate-limit floor short-circuits the pass; no listing happens", async () => {
+    const fixture = makeOrchestratorGateway({
+      openPrs: [],
+      headRefs: {},
+      mergeability: {},
+    });
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 10, resetAt: Date.now() + 60_000 }),
+        rateLimitBuffer: 100,
+      },
+      "o/r",
+    );
+    expect(r).toEqual({ reconciled: 0, passed: 0, skippedForBudget: true });
+    expect(fixture.calls.listOpenManagedPrs).toBe(0);
+  });
+
+  test("CLEAN PR → walked but unchanged; nothing posted, no state advance", async () => {
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 103, headRefName: "middle-issue-32" }],
+      headRefs: { 103: "middle-issue-32" },
+      mergeability: { 103: { mergeStateStatus: "CLEAN", mergeable: "MERGEABLE" } },
+    });
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    expect(r).toEqual({ reconciled: 0, passed: 1, skippedForBudget: false });
+    expect(fixture.calls.postComment).toEqual([]);
+    // Classifier still wrote a row (the recording invariant from Phase 1).
+    expect(getDivergenceState(db, "o/r", 103)?.state).toBe("CLEAN" satisfies DivergenceState);
+  });
+
+  test("listOpenManagedPrs throws → pass returns 0s and logs, no orchestration", async () => {
+    const fixture = makeOrchestratorGateway({
+      openPrs: [],
+      headRefs: {},
+      mergeability: {},
+    });
+    fixture.gateway.listOpenManagedPrs = async () => {
+      throw new Error("transient gh outage");
+    };
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    expect(r).toEqual({ reconciled: 0, passed: 0, skippedForBudget: false });
   });
 });

@@ -28,6 +28,7 @@ import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from
 import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
+import { ghReconcilerGateway, gitOps, reconcileOpenPRs } from "./reconcilers/pr-divergence.ts";
 import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
@@ -591,19 +592,77 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     getAdapter,
   });
 
+  // Open-PR divergence reconciler (Epic #168). Sweep every known managed repo
+  // for open PRs that drifted from main; rebase first, -X ours merge fallback
+  // second, demote-to-work as the escalation. Composed across the existing
+  // `ghGitHub` (comment ops) and the reconciler-specific `ghReconcilerGateway`
+  // (head ref, mergeability, draft conversion, sub-issue listing, reopen).
+  // Re-enqueue routes through the recommender so ranking still applies.
+  const reconcilerGithub = { ...ghGitHub, ...ghReconcilerGateway };
+  async function reconcileOpenPRsForRepo(repo: string): Promise<void> {
+    const repoPath = repoPaths.get(repo);
+    if (repoPath === undefined) return;
+    try {
+      const result = await reconcileOpenPRs(
+        {
+          db,
+          github: reconcilerGithub,
+          git: gitOps,
+          resolveRepoPath: () => repoPath,
+          worktreeRoot: config.global.worktreeRoot,
+          enqueueEpic: async (r, epicNumber) => {
+            const result = await runRecommenderForRepo(repoPaths.get(r) ?? repoPath);
+            if (result.status >= 400) {
+              console.error(
+                `[pr-divergence] re-enqueue recommender for ${r} #${epicNumber} failed (${result.status}): ${result.body}`,
+              );
+            }
+            scheduleAutoDispatch(r);
+          },
+          getRateLimit: () => ghPollGateway.getRateLimit(),
+        },
+        repo,
+      );
+      if (result.reconciled > 0 || result.skippedForBudget) {
+        console.log(
+          `[pr-divergence] ${repo}: reconciled=${result.reconciled} passed=${result.passed} skippedForBudget=${result.skippedForBudget}`,
+        );
+      }
+    } catch (error) {
+      console.error(`[pr-divergence] ${repo} failed: ${(error as Error).message}`);
+    }
+  }
+
   // GitHub poller: every 60s, for each parked workflow with an armed wait, fire
   // its resume signal when the unblocking event appears (a human reply, or a PR
   // review verdict). `fireSignal` delivers it to this engine — the one that now
-  // hosts the parked executions, so review-resume actually fires.
-  const stopPoller = await startPoller({
-    db,
-    github: ghPollGateway,
-    fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
-    // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
-    // and best-effort tear down its worktree (repo checkout from the registry).
-    removeWorktree: (repo, worktreePath) =>
-      worktreePath ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath) : Promise.resolve(),
-  });
+  // hosts the parked executions, so review-resume actually fires. The poller
+  // tick also runs the open-PR divergence reconciler (Epic #168) once per
+  // managed repo; a MERGED-transition observed inside `reconcileMergedParks`
+  // additionally triggers an immediate sweep so siblings aren't left stale for
+  // up to a full interval.
+  const stopPoller = await startPoller(
+    {
+      db,
+      github: ghPollGateway,
+      fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
+      // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
+      // and best-effort tear down its worktree (repo checkout from the registry).
+      removeWorktree: (repo, worktreePath) =>
+        worktreePath
+          ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath)
+          : Promise.resolve(),
+    },
+    undefined,
+    {
+      perTickSweep: async () => {
+        for (const repo of repoPaths.keys()) {
+          await reconcileOpenPRsForRepo(repo);
+        }
+      },
+      onMergedTransition: (repo) => reconcileOpenPRsForRepo(repo),
+    },
+  );
 
   // Recommender cron (#135): every minute, run the recommender for each managed
   // repo whose `[recommender] interval_minutes` has elapsed — the periodic source

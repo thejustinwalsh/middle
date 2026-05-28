@@ -586,3 +586,304 @@ export async function applyDemoteToWork(
 
   recordDivergenceState(deps.db, repo, prNumber, "DEMOTED", (deps.now ?? Date.now)());
 }
+
+// ── Phase 6: reconcileOpenPRs + production gateway ─────────────────────────
+
+/** Header info for a managed open PR — drives the per-PR reconciliation chain. */
+export type OpenManagedPr = {
+  prNumber: number;
+  /** Always starts with `middle-issue-`; the reconciler's listing filter enforces it. */
+  headRefName: string;
+};
+
+/** The narrow GitHub surface the orchestrator needs on top of the per-phase
+ *  gateways: listing the managed PRs to walk + reading the current main HEAD
+ *  SHA (used by `applySuccess` so the comment names the main the reconciliation
+ *  caught up to). */
+export type OrchestratorGateway = {
+  /** Open PRs whose head ref is a managed `middle-issue-<N>` branch.
+   *  Implementations list and filter — the gh PR search syntax can't strictly
+   *  pin a prefix. Capped at 100 by `gh pr list --limit 100`; a backlog past
+   *  that is the rate-limit floor's problem, not the orchestrator's. */
+  listOpenManagedPrs(repo: string): Promise<OpenManagedPr[]>;
+  /** The current SHA of `main` on origin — embedded in `applySuccess`'s
+   *  comment marker so a future reconciliation against a newer main re-announces. */
+  getMainCommitSha(repo: string): Promise<string | null>;
+};
+
+/** Composite gateway the orchestrator needs end-to-end. */
+export type ReconcilerGateway = OrchestratorGateway & DivergenceGateway & ApplyDemoteGateway;
+
+/** GitHub's REST budget status — mirrors {@link "../poller.ts".RateLimitStatus}.
+ *  Re-stated here so the reconciler doesn't import from `poller.ts` for one type. */
+export type RestBudget = { remaining: number; resetAt: number };
+
+/** Skip the pass when GitHub's remaining REST budget is below this. Matches
+ *  the resume poller's default ({@link "../poller.ts".DEFAULT_RATE_LIMIT_BUFFER})
+ *  so the two reconcilers exercise the same restraint. */
+export const DEFAULT_RECONCILER_BUDGET_FLOOR = 100;
+
+/** Cap on PRs reconciled in one pass — bounds the burst when many PRs accumulate. */
+export const DEFAULT_MAX_PRS_PER_PASS = 25;
+
+/** Deps the orchestrator pulls together — the per-phase deps + gateway +
+ *  rate-limit read + the recommender enqueue seam. Daemon-wired in Phase 6. */
+export type ReconcileOpenPRsDeps = WorktreeOpsDeps & {
+  db: Database;
+  github: ReconcilerGateway;
+  /** Re-enqueue the Epic for dispatch (drives `applyDemoteToWork`). */
+  enqueueEpic: (repo: string, epicNumber: number) => Promise<void>;
+  /** GitHub REST budget — checking it costs no budget. */
+  getRateLimit: () => Promise<RestBudget>;
+  /** Skip the pass when `getRateLimit().remaining < rateLimitBuffer`. */
+  rateLimitBuffer?: number;
+  /** Cap on PRs reconciled per pass. */
+  maxPrsPerPass?: number;
+  now?: () => number;
+};
+
+/** Counters returned from one `reconcileOpenPRs` pass. */
+export type ReconcileOpenPRsResult = {
+  /** PRs that the chain advanced (rebased / merged / demoted), summed. */
+  reconciled: number;
+  /** PRs walked but left as-is (CLEAN or UNKNOWN — nothing to do this pass). */
+  passed: number;
+  /** True when the whole pass was short-circuited by the rate-limit floor. */
+  skippedForBudget: boolean;
+};
+
+/**
+ * Walk one repo's open managed PRs and apply the reconciliation chain:
+ *
+ *   classifyDivergence → if BEHIND/CONFLICTED →
+ *     tryRebaseOntoMain → ok → applySuccess('rebased')
+ *                       → conflict →
+ *       tryMergeMainNewWorkAsBase → ok → applySuccess('merged-new-work-as-base')
+ *                                 → conflict → applyDemoteToWork(union of paths)
+ *
+ * Per-PR failures are isolated and logged; the pass continues. Skipped wholesale
+ * when GitHub's REST budget is below `rateLimitBuffer` — the (free) `rate_limit`
+ * read is the only call that costs nothing. Per-pass burst is capped at
+ * `maxPrsPerPass`; the remainder is picked up next tick.
+ *
+ * Returns counters for logging/tests. Does not throw — the cron wrapper that
+ * calls this never has to guard.
+ */
+export async function reconcileOpenPRs(
+  deps: ReconcileOpenPRsDeps,
+  repo: string,
+): Promise<ReconcileOpenPRsResult> {
+  const buffer = deps.rateLimitBuffer ?? DEFAULT_RECONCILER_BUDGET_FLOOR;
+  const maxPerPass = deps.maxPrsPerPass ?? DEFAULT_MAX_PRS_PER_PASS;
+
+  const budget = await deps.getRateLimit();
+  if (budget.remaining < buffer) {
+    console.error(
+      `[pr-divergence] GitHub budget low (${budget.remaining} < ${buffer}); skipping pass — resets ${new Date(budget.resetAt).toISOString()}`,
+    );
+    return { reconciled: 0, passed: 0, skippedForBudget: true };
+  }
+
+  let prs: OpenManagedPr[];
+  try {
+    prs = await deps.github.listOpenManagedPrs(repo);
+  } catch (error) {
+    console.error(
+      `[pr-divergence] list open managed PRs for ${repo} failed: ${(error as Error).message}`,
+    );
+    return { reconciled: 0, passed: 0, skippedForBudget: false };
+  }
+  if (prs.length === 0) {
+    return { reconciled: 0, passed: 0, skippedForBudget: false };
+  }
+
+  // Fetched once per pass so applySuccess's comment marker is consistent across
+  // every PR the pass advances. Failures (transient GitHub) leave the marker
+  // unset — applySuccess simply skips its comment step in that case (the marker
+  // would be ambiguous), but the rebase/merge state already landed.
+  let mainSha: string | null = null;
+  try {
+    mainSha = await deps.github.getMainCommitSha(repo);
+  } catch (error) {
+    console.error(`[pr-divergence] read main SHA for ${repo} failed: ${(error as Error).message}`);
+  }
+
+  let reconciled = 0;
+  let passed = 0;
+
+  for (const pr of prs.slice(0, maxPerPass)) {
+    try {
+      const divergence = await classifyDivergence(deps, repo, pr.prNumber);
+      if (divergence === "CLEAN" || divergence === "UNKNOWN") {
+        passed++;
+        continue;
+      }
+
+      // BEHIND or CONFLICTED — try rebase first.
+      const rebaseResult = await tryRebaseOntoMain(deps, repo, pr.prNumber);
+      if (rebaseResult.ok) {
+        if (mainSha) await applySuccess(deps, repo, pr.prNumber, "rebased", mainSha);
+        reconciled++;
+        continue;
+      }
+
+      // Rebase loop — try -X ours merge fallback (new-work-as-base).
+      const mergeResult = await tryMergeMainNewWorkAsBase(deps, repo, pr.prNumber);
+      if (mergeResult.ok) {
+        if (mainSha) {
+          await applySuccess(deps, repo, pr.prNumber, "merged-new-work-as-base", mainSha);
+        }
+        reconciled++;
+        continue;
+      }
+
+      // Both failed — demote. Union the conflict paths so the escalation surfaces
+      // every file either attempt tripped on.
+      const conflictingPaths = Array.from(
+        new Set([...rebaseResult.conflictingPaths, ...mergeResult.conflictingPaths]),
+      );
+      await applyDemoteToWork(
+        {
+          db: deps.db,
+          github: deps.github,
+          enqueueEpic: deps.enqueueEpic,
+          now: deps.now,
+        },
+        repo,
+        pr.prNumber,
+        conflictingPaths,
+      );
+      reconciled++;
+    } catch (error) {
+      console.error(
+        `[pr-divergence] ${repo} PR #${pr.prNumber} reconciliation failed: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  return { reconciled, passed, skippedForBudget: false };
+}
+
+// ── Production `gh`-backed gateway (for the daemon) ────────────────────────
+
+async function ghSpawn(
+  argv: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const proc = Bun.spawn(["gh", ...argv], {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { stdout, stderr, exitCode: await proc.exited };
+}
+
+async function ghJson<T>(argv: string[]): Promise<T> {
+  const r = await ghSpawn(argv);
+  if (r.exitCode !== 0) {
+    throw new Error(`gh ${argv.join(" ")} failed: ${r.stderr.trim()}`);
+  }
+  return JSON.parse(r.stdout) as T;
+}
+
+/**
+ * Production gateway backing {@link reconcileOpenPRs}. Composes with
+ * `ghGitHub`'s comment ops at the daemon-wiring site; methods that overlap
+ * (`listIssueComments`, `postComment`) are intentionally absent here so the
+ * daemon's spread keeps `ghGitHub` as the canonical comment poster.
+ */
+export const ghReconcilerGateway: Omit<ReconcilerGateway, "listIssueComments" | "postComment"> = {
+  async listOpenManagedPrs(repo) {
+    const rows = await ghJson<Array<{ number: number; headRefName: string }>>([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--json",
+      "number,headRefName",
+      "--limit",
+      "100",
+    ]);
+    return rows
+      .filter((p) => p.headRefName.startsWith(HEAD_REF_PREFIX))
+      .map((p) => ({ prNumber: p.number, headRefName: p.headRefName }));
+  },
+  async getMainCommitSha(repo) {
+    const r = await ghSpawn(["api", `/repos/${repo}/branches/main`, "--jq", ".commit.sha"]);
+    if (r.exitCode !== 0) return null;
+    const sha = r.stdout.trim();
+    return sha === "" ? null : sha;
+  },
+  async getMergeability(repo, prNumber) {
+    const r = await ghSpawn([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "mergeable,mergeStateStatus",
+    ]);
+    if (r.exitCode !== 0) return null;
+    return JSON.parse(r.stdout) as MergeabilityView;
+  },
+  async getPrHeadRef(repo, prNumber) {
+    const r = await ghSpawn([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "headRefName",
+      "--jq",
+      ".headRefName",
+    ]);
+    if (r.exitCode !== 0) return null;
+    const ref = r.stdout.trim();
+    return ref === "" ? null : ref;
+  },
+  async getPullRequest(repo, prNumber) {
+    const r = await ghSpawn(["pr", "view", String(prNumber), "--repo", repo, "--json", "isDraft"]);
+    if (r.exitCode !== 0) return null;
+    return JSON.parse(r.stdout) as { isDraft: boolean };
+  },
+  async convertPrToDraft(repo, prNumber) {
+    const r = await ghSpawn(["pr", "ready", String(prNumber), "--repo", repo, "--undo"]);
+    if (r.exitCode !== 0) {
+      throw new Error(`gh pr ready --undo #${prNumber} failed: ${r.stderr.trim()}`);
+    }
+  },
+  async listClosedSubIssues(repo, epicNumber) {
+    const rows = await ghJson<Array<{ number: number; closed_at: string | null }>>([
+      "api",
+      `/repos/${repo}/issues/${epicNumber}/sub_issues`,
+      "--paginate",
+      "--jq",
+      '[.[] | select(.state == "closed") | {number, closed_at}]',
+    ]);
+    const out: ClosedSubIssue[] = rows.map((s) => ({
+      number: s.number,
+      closedAt: s.closed_at ? Date.parse(s.closed_at) : null,
+    }));
+    // Newest-first by closed_at; nulls sink to the end so a hand-edited row
+    // doesn't shadow a real recent close.
+    out.sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
+    return out;
+  },
+  async reopenIssue(repo, issueNumber, options) {
+    const argv = ["issue", "reopen", String(issueNumber), "--repo", repo];
+    if (options?.comment !== undefined) {
+      argv.push("--comment", options.comment);
+    }
+    const r = await ghSpawn(argv);
+    if (r.exitCode !== 0) {
+      throw new Error(`gh issue reopen #${issueNumber} failed: ${r.stderr.trim()}`);
+    }
+  },
+};

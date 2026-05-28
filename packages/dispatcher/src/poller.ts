@@ -352,6 +352,15 @@ export type ReconcileDeps = {
   rateLimitBuffer?: number;
   /** Cap on rows reconciled per pass. Defaults to {@link DEFAULT_MAX_POLLS_PER_PASS}. */
   maxPollsPerPass?: number;
+  /**
+   * Fired once per repo whose parked workflow was finalized because its PR
+   * transitioned to MERGED. The daemon wires this to an immediate
+   * `reconcileOpenPRs` sweep (Epic #168), so divergence on sibling Epic PRs is
+   * healed at the moment of merge rather than up to a tick later. Per-repo
+   * de-duplication is the caller's job — multiple MERGED transitions on the
+   * same repo this pass fire `onMergedTransition` once per row.
+   */
+  onMergedTransition?: (repo: string) => Promise<void>;
 };
 
 export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number> {
@@ -391,6 +400,18 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
         } catch (error) {
           console.error(
             `[reconcile] worktree cleanup failed for ${wf.id} (continuing): ${(error as Error).message}`,
+          );
+        }
+      }
+      // Epic #168 hook: a MERGED transition is the moment divergence may have
+      // emerged on sibling Epic PRs. Best-effort and isolated — a throw here
+      // never blocks the rest of the parks pass.
+      if (life.state === "MERGED" && deps.onMergedTransition) {
+        try {
+          await deps.onMergedTransition(wf.repo);
+        } catch (error) {
+          console.error(
+            `[reconcile] onMergedTransition for ${wf.repo} failed (continuing): ${(error as Error).message}`,
           );
         }
       }
