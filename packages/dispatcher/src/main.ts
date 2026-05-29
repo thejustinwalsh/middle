@@ -10,8 +10,8 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { MiddleConfig } from "@middle/core";
 import { loadConfig } from "@middle/core";
+import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import type { Database } from "bun:sqlite";
-import { Engine } from "bunqueue/workflow";
 import { getAdapter, isKnownAdapter } from "./adapters.ts";
 import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
@@ -29,11 +29,14 @@ import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.t
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { ghReconcilerGateway, gitOps, reconcileOpenPRs } from "./reconcilers/pr-divergence.ts";
+import { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
 import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
+import { startAuditCron } from "./audit-cron.ts";
+import { startStalenessCron } from "./staleness-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
-import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
+import { capturePane, killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import { createWorktree, destroyWorktree, pruneWorktreeAt } from "./worktree.ts";
 import { buildRecommenderContext, createRecommenderWorkflow } from "./workflows/recommender.ts";
@@ -131,9 +134,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const hub = new EventHub();
 
   // The one long-lived engine. Parked executions live here so the poller can
-  // resume them; it is in-memory (durable persistence across restart is deferred,
-  // #116) — do NOT add a no-op engine.recover() against the in-memory store.
-  const engine = new Engine({ embedded: true });
+  // resume them. `createDurableEngine` gives it a persistent execution store
+  // (a SQLite db alongside `db.sqlite3` under the middle data dir) so a parked
+  // `waiting` execution survives a daemon restart and is re-armed by
+  // `recoverEngine` on boot (#116) — while keeping the step queue in-memory (see
+  // that factory + this package's CLAUDE.md for why the queue must NOT persist).
+  // Its parent dir is the `mkdirSync` above.
+  const queuePath = join(dirname(config.global.dbPath), "queue.sqlite3");
+  const engine = createDurableEngine(queuePath);
 
   // Declared up front: `scheduleAutoDispatch` (hoisted below) reads it, and a
   // slot-freeing broadcast can fire that path the moment the engine observers
@@ -590,7 +598,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
           throw new Error(`recommender: repo ${repo} is not registered/configured`);
         }
         return {
-          schemaPath: join(repoPath, "schemas", "state-issue.v1.md"),
+          // Resolved from the middle install, not repoPath — see issue #107.
+          schemaPath: STATE_ISSUE_SCHEMA_PATH,
           config: {
             defaultAdapter: cfg.global.defaultAdapter,
             autoDispatch: cfg.recommender?.autoDispatch ?? false,
@@ -603,12 +612,55 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     }),
   );
 
-  // Watchdog cron: every 30s, correct transcript drift then reconcile every
-  // launching/running workflow (launch-timeout, tmux liveness, idle detection,
-  // sentinel re-arm). The reconcile logic is adapter-agnostic via getAdapter.
+  // Durable recovery (#116): the workflow store survived this restart. Drop
+  // mid-drive (`running`/`compensating`) executions — re-driving them would
+  // double-launch a session that the restart left alive; their rows are the
+  // watchdog's domain — then re-arm parked `waiting` executions so the poller can
+  // resume them. Runs AFTER the registers (recover needs the definitions) and
+  // BEFORE the poller (so it never signals an exec recover hasn't re-armed).
+  const recovery = await recoverEngine(engine);
+  if (recovery.cleared > 0 || recovery.recovered.total > 0) {
+    console.log(
+      `[recover] dropped ${recovery.cleared} mid-drive exec(s); re-armed ${recovery.recovered.waiting} parked / ${recovery.recovered.total} total`,
+    );
+  }
+  // Reconcile orphaned signals: a parked `waiting-human` row whose execution the
+  // store no longer has (a park from before persistence shipped, or a wiped queue
+  // db) can never resume — finalize it and surface it so the poller stops firing
+  // at a dead execution and the work isn't silently stuck.
+  const orphans = await reconcileOrphanedSignals({
+    db,
+    hasExecution: (id) => engine.getExecution(id) !== null,
+    surface: ({ workflowId, repo, epicNumber, signalName }) => {
+      console.error(
+        `[recover] orphaned parked signal '${signalName}' for ${repo}#${epicNumber ?? "?"} (workflow ${workflowId}) — no recoverable execution; finalized failed`,
+      );
+      if (epicNumber === null) return;
+      return ghGitHub
+        .postComment(
+          repo,
+          epicNumber,
+          `⚠️ middle could not recover this Epic's parked workflow after a daemon restart (no durable execution for \`${workflowId}\`). The run was finalized as \`failed\`; re-dispatch the Epic to continue.`,
+        )
+        .catch((error: unknown) => {
+          console.error(
+            `[recover] orphan Epic comment for ${repo}#${epicNumber} failed: ${(error as Error).message}`,
+          );
+        });
+    },
+  });
+  if (orphans.length > 0) {
+    console.error(`[recover] reconciled ${orphans.length} orphaned parked signal(s)`);
+  }
+
+  // Watchdog cron: every 30s, correct transcript drift, rescue an agent stuck on
+  // a Notification (#128), then reconcile every launching/running workflow
+  // (launch-timeout, tmux liveness, idle detection, sentinel re-arm). The
+  // reconcile logic is adapter-agnostic via getAdapter. capturePane/sendText/
+  // sendEnter back the notification failsafe's capture + nudge.
   const stopWatchdog = await startWatchdog({
     db,
-    tmux: { status, killSession },
+    tmux: { status, killSession, capturePane, sendText, sendEnter },
     getAdapter,
   });
 
@@ -653,14 +705,17 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     }
   }
 
-  // GitHub poller: every 60s, for each parked workflow with an armed wait, fire
-  // its resume signal when the unblocking event appears (a human reply, or a PR
-  // review verdict). `fireSignal` delivers it to this engine — the one that now
-  // hosts the parked executions, so review-resume actually fires. The poller
-  // tick also runs the open-PR divergence reconciler (Epic #168) once per
-  // managed repo; a MERGED-transition observed inside `reconcileMergedParks`
-  // additionally triggers an immediate sweep so siblings aren't left stale for
-  // up to a full interval.
+  // GitHub poller: every POLLER_INTERVAL_MS (the pinned constant in
+  // poller-cron.ts; the dispatcher's CLAUDE.md cadence contract holds it
+  // and this doc in sync), for each parked workflow with an armed wait,
+  // fire its resume signal when the unblocking event appears (a human reply,
+  // or a PR review verdict). `fireSignal` delivers it to this engine — the
+  // one that now hosts the parked executions, so review-resume actually fires.
+  // Each tick also runs the checkbox-revert trigger (#101) over running
+  // workflows whose Epic PR head SHA advanced, and the open-PR divergence
+  // reconciler (Epic #168) once per managed repo; a MERGED-transition
+  // observed inside `reconcileMergedParks` additionally triggers an immediate
+  // sibling sweep so siblings aren't left stale for up to a full interval.
   const stopPoller = await startPoller(
     {
       db,
@@ -673,18 +728,31 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
           ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath)
           : Promise.resolve(),
     },
-    undefined,
     {
-      perTickSweep: async () => {
-        for (const repo of repoPaths.keys()) {
-          await reconcileOpenPRsForRepo(repo);
-        }
+      // Checkbox-revert trigger (#101): each tick, over running workflows whose
+      // Epic PR head SHA advanced, run the declared gates and revert a failing
+      // Status checkbox. Uses the write-capable `gh` gateway (body edits + the
+      // revert comment) and the free rate-limit read shared with the poller.
+      checkboxRevert: {
+        db,
+        github: ghGitHub,
+        getRateLimit: () => ghPollGateway.getRateLimit(),
       },
-      // Per-pass dedup lives inside `reconcileMergedParks` (it's the natural
-      // boundary; a caller-side timer would race against the loop's await
-      // points). Here we just forward to the per-repo sweep — at most one fire
-      // per repo per pass is already guaranteed by the upstream contract.
-      onMergedTransition: (repo) => reconcileOpenPRsForRepo(repo),
+      // Open-PR divergence reconciler (Epic #168) — wired to the per-tick sweep
+      // and the immediate-on-MERGED hook so siblings of a just-landed Epic PR
+      // are reconciled at the moment of merge rather than up to a tick later.
+      // Per-pass dedup lives inside `reconcileMergedParks` (the natural boundary;
+      // a caller-side timer would race against the loop's await points). Here we
+      // just forward to the per-repo sweep — at most one fire per repo per pass
+      // is already guaranteed by the upstream contract.
+      reconcilers: {
+        perTickSweep: async () => {
+          for (const repo of repoPaths.keys()) {
+            await reconcileOpenPRsForRepo(repo);
+          }
+        },
+        onMergedTransition: (repo) => reconcileOpenPRsForRepo(repo),
+      },
     },
   );
 
@@ -717,6 +785,15 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     },
   };
   const stopRecommenderCron = await startRecommenderCron(recommenderCronDeps);
+
+  // Standing backlog audit (Epic #143): an hourly sweep that flags open feature
+  // issues whose acceptance criteria fail the integration rubric `needs-design`.
+  const stopAuditCron = await startAuditCron({ db, github: ghGitHub });
+
+  // Anti-staleness reconciliation (Epic #143): an hourly sweep that closes
+  // landed-but-open issues (with an evidence comment) and files proposal-first
+  // tasks for spec lines describing a now-merged phase as future work.
+  const stopStalenessCron = await startStalenessCron({ db, github: ghGitHub });
 
   // Startup kick: don't idle until the first cron tick / next interval. Run one
   // recommender due-check pass NOW — any overdue managed repo fires immediately
@@ -774,6 +851,16 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       await stopRecommenderCron();
     } catch (error) {
       console.error(`shutdown: stopRecommenderCron failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopAuditCron();
+    } catch (error) {
+      console.error(`shutdown: stopAuditCron failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopStalenessCron();
+    } catch (error) {
+      console.error(`shutdown: stopStalenessCron failed — ${(error as Error).message}`);
     }
     try {
       hookServer.stop();

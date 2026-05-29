@@ -2,11 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentAdapter, HookPayload } from "@middle/core";
-import { renderStateIssue } from "@middle/state-issue";
+import type { AgentAdapter, HookPayload, MiddleConfig } from "@middle/core";
+import { renderStateIssue, STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
-import type { MiddleConfig } from "@middle/core";
 import {
   dispatchRecommender,
   type DispatchRecommenderOptions,
@@ -207,7 +206,7 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
   });
 });
 
-describe("resolveRecommenderOptions", () => {
+describe("resolveRecommenderOptions — adapter enabled-gate", () => {
   function configWithAdapters(overrides?: Partial<MiddleConfig["adapters"]>): MiddleConfig {
     return {
       global: {
@@ -247,5 +246,38 @@ describe("resolveRecommenderOptions", () => {
     const result = await resolveRecommenderOptions(repoPath, config, () => stubAdapter());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("adapter codex is disabled in config");
+  });
+});
+
+describe("resolveRecommenderOptions — schema resolution (issue #107)", () => {
+  // A target repo with NO `schemas/` dir — the realistic case once auto-dispatch
+  // runs the recommender against bootstrapped repos that `mm init` set up.
+  function targetConfig(): MiddleConfig {
+    return {
+      stateIssue: { number: 42 },
+      recommender: { adapter: "claude" },
+      // `enabled: true` is required by the adapter-gate in resolveRecommenderOptions
+      // — added in PR #175 (per-CLI adapter selection); see the adapter-enabled
+      // describe block above.
+      adapters: { claude: { enabled: true } },
+      limits: {},
+      global: {
+        defaultAdapter: "claude",
+        dbPath: join(scratch, "db.sqlite3"),
+        worktreeRoot: join(scratch, "worktrees"),
+        dispatcherPort: 0,
+        maxConcurrent: 4,
+      },
+    } as unknown as MiddleConfig;
+  }
+
+  test("resolves schemaPath from the middle install, not from repoPath", async () => {
+    const resolved = await resolveRecommenderOptions(repoPath, targetConfig(), stubAdapter);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error(resolved.error);
+    // The fix: the schema comes from the package, so it is found even though the
+    // target repo (created in beforeEach) has no schemas/ directory of its own.
+    expect(resolved.options.schemaPath).toBe(STATE_ISSUE_SCHEMA_PATH);
+    expect(resolved.options.schemaPath.startsWith(repoPath)).toBe(false);
   });
 });

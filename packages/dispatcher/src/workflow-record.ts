@@ -12,6 +12,17 @@ export type WorkflowState =
   | "failed"
   | "cancelled";
 
+/**
+ * The terminal workflow states — settled, owns no session, accepts no further transition.
+ * A strict subset of {@link WorkflowState}. Finalizers take this (not `WorkflowState`) so a
+ * non-terminal value (`"running"`, `"waiting-human"`, …) can't be written as a "final"
+ * state: that would consume the wait row yet strand the workflow with no recovery path.
+ */
+export type TerminalWorkflowState = Extract<
+  WorkflowState,
+  "completed" | "compensated" | "failed" | "cancelled"
+>;
+
 export type WorkflowRecord = {
   id: string;
   kind: "implementation" | "recommender" | "documentation";
@@ -45,14 +56,29 @@ export type CreateWorkflowRecordInput = {
   source?: "manual" | "auto";
 };
 
-/** Insert a fresh `pending` workflow row. `id` doubles as the bunqueue execution id. */
+/**
+ * Insert a fresh `pending` workflow row. `id` doubles as the bunqueue execution id.
+ *
+ * Idempotent on the `id` PK (`ON CONFLICT(id) DO NOTHING`): the workflow steps
+ * that call this run under bunqueue's retry, and a retried step re-runs the
+ * INSERT for the *same* execution id. A plain INSERT would throw `UNIQUE
+ * constraint failed` and mask the real downstream error that triggered the
+ * retry (#108). The only way the PK collides is a same-execution retry —
+ * exactly the case we want to no-op — so the second call leaves the existing
+ * (possibly already advanced) row untouched and lets the real error surface.
+ *
+ * Scoped to the PK conflict (not a blanket `INSERT OR IGNORE`) on purpose: a
+ * genuine CHECK/NOT-NULL violation is a real bug and must still throw, not be
+ * silently swallowed.
+ */
 export function createWorkflowRecord(db: Database, input: CreateWorkflowRecordInput): void {
   const now = Date.now();
   const metaJson = input.source === undefined ? null : JSON.stringify({ source: input.source });
   db.run(
     `INSERT INTO workflows
        (id, kind, repo, epic_number, adapter, state, created_at, updated_at, bunqueue_execution_id, meta_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
     [
       input.id,
       input.kind,
@@ -67,18 +93,104 @@ export function createWorkflowRecord(db: Database, input: CreateWorkflowRecordIn
   );
 }
 
-/** Read a workflow's `meta_json.source` (`'manual'`/`'auto'`), or null if unset. */
-export function getWorkflowSource(db: Database, id: string): "manual" | "auto" | null {
+/** Per-pass state the checkbox-revert reconciler persists between poller ticks. */
+export type CheckboxReconcileState = {
+  /** The Epic PR head SHA observed at the last reconcile; null until first seen. */
+  headSha: string | null;
+  /** The Status checkboxes' checked-state map after the last pass (the diff base). */
+  state: Record<number, boolean>;
+};
+
+/**
+ * The typed shape of a workflow row's `meta_json` scratch. Every key is optional:
+ * different subsystems own different keys (`source` at creation, `checkboxReconcile`
+ * on the poller), so reads tolerate any subset and writes merge rather than clobber.
+ */
+export type WorkflowMeta = {
+  source?: "manual" | "auto";
+  checkboxReconcile?: CheckboxReconcileState;
+};
+
+/**
+ * Parse a workflow's `meta_json` into {@link WorkflowMeta}. A null/absent/malformed
+ * value reads as `{}` — the column is best-effort scratch, never load-bearing for
+ * a row's existence, so an unparseable blob must not throw into a caller.
+ */
+export function readWorkflowMeta(db: Database, id: string): WorkflowMeta {
   const row = db.query("SELECT meta_json FROM workflows WHERE id = ?").get(id) as {
     meta_json: string | null;
   } | null;
-  if (!row?.meta_json) return null;
+  if (!row?.meta_json) return {};
   try {
-    const source = (JSON.parse(row.meta_json) as { source?: unknown }).source;
-    return source === "manual" || source === "auto" ? source : null;
+    const parsed = JSON.parse(row.meta_json) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as WorkflowMeta) : {};
   } catch {
-    return null;
+    return {};
   }
+}
+
+/**
+ * Merge `patch` into a workflow's `meta_json`, preserving keys it doesn't set
+ * (read-merge-write). Single-writer-per-key in practice — `source` is written
+ * once at creation, `checkboxReconcile` only by the (single-worker) poller pass —
+ * so the read-modify-write needs no cross-key locking.
+ *
+ * Deliberately does **not** touch `updated_at`: `meta_json` is scratch, not an
+ * activity signal, and the watchdog folds `updated_at` into its idle-freshness
+ * baseline (see this package's CLAUDE.md). Bumping it here would let the poller's
+ * checkbox-revert persist reset a running agent's idle-timeout clock — masking a
+ * genuinely wedged agent (e.g. on first observation after a daemon restart).
+ */
+export function patchWorkflowMeta(db: Database, id: string, patch: Partial<WorkflowMeta>): void {
+  const merged = { ...readWorkflowMeta(db, id), ...patch };
+  db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", [JSON.stringify(merged), id]);
+}
+
+/** Read a workflow's `meta_json.source` (`'manual'`/`'auto'`), or null if unset. */
+export function getWorkflowSource(db: Database, id: string): "manual" | "auto" | null {
+  const source = readWorkflowMeta(db, id).source;
+  return source === "manual" || source === "auto" ? source : null;
+}
+
+/**
+ * The checkbox-revert pass's persisted diff base for a workflow. Defaults to
+ * `{ headSha: null, state: {} }` when unset, so a first observation always treats
+ * the PR as advanced and every checkbox as a fresh transition.
+ *
+ * `readWorkflowMeta` only guards the top-level JSON shape, so the nested
+ * `checkboxReconcile` is still untrusted (a hand-edited row, a forward/backward
+ * version skew). This sanitizes it back to the {@link CheckboxReconcileState}
+ * contract rather than trusting it — mirroring {@link getWorkflowSource}'s
+ * validate-don't-trust posture: a non-object (or array) reads as the default, a
+ * non-string `headSha` as null, and `state` is rebuilt keeping only boolean
+ * entries (a non-object/array `state`, or any non-boolean value, is dropped).
+ */
+export function getCheckboxReconcileState(db: Database, id: string): CheckboxReconcileState {
+  const raw = readWorkflowMeta(db, id).checkboxReconcile as unknown;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { headSha: null, state: {} };
+
+  const candidate = raw as { headSha?: unknown; state?: unknown };
+  const headSha = typeof candidate.headSha === "string" ? candidate.headSha : null;
+  const rawState = candidate.state;
+  const state =
+    rawState && typeof rawState === "object" && !Array.isArray(rawState)
+      ? (Object.fromEntries(
+          Object.entries(rawState as Record<string, unknown>).filter(
+            ([, value]) => typeof value === "boolean",
+          ),
+        ) as Record<number, boolean>)
+      : {};
+
+  return { headSha, state };
+}
+
+/** Persist the checkbox-revert pass's diff base for the next tick (merges into `meta_json`). */
+export function setCheckboxReconcileState(
+  db: Database,
+  id: string,
+  value: CheckboxReconcileState,
+): void {
+  patchWorkflowMeta(db, id, { checkboxReconcile: value });
 }
 
 export type WorkflowPatch = {
@@ -182,7 +294,7 @@ export function updateWorkflow(db: Database, id: string, patch: WorkflowPatch): 
 export function finalizeParkedWorkflow(
   db: Database,
   id: string,
-  finalState: WorkflowState,
+  finalState: TerminalWorkflowState,
 ): boolean {
   const res = db.run(
     "UPDATE workflows SET state = ?, updated_at = ? WHERE id = ? AND state = 'waiting-human'",
@@ -199,7 +311,12 @@ export function finalizeParkedWorkflow(
  * for a *new* dispatch reusing a deterministic session name would otherwise
  * attach to the corpse.
  */
-const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as const;
+const TERMINAL_STATES = [
+  "completed",
+  "compensated",
+  "failed",
+  "cancelled",
+] as const satisfies readonly TerminalWorkflowState[];
 
 export type ActiveWorkflow = { id: string; sessionToken: string | null };
 
@@ -260,6 +377,14 @@ export function hasEventOfType(db: Database, workflowId: string, type: string): 
 export function firstEventTs(db: Database, workflowId: string, type: string): number | null {
   const row = db
     .query("SELECT ts FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts ASC LIMIT 1")
+    .get(workflowId, type) as { ts: number } | null;
+  return row?.ts ?? null;
+}
+
+/** Timestamp of the most recent `events` row of this type for the workflow, or null. */
+export function lastEventTs(db: Database, workflowId: string, type: string): number | null {
+  const row = db
+    .query("SELECT ts FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC LIMIT 1")
     .get(workflowId, type) as { ts: number } | null;
   return row?.ts ?? null;
 }
@@ -558,6 +683,43 @@ export function listParkedImplementationWorkflows(db: Database): ParkedWorkflow[
     repo: string;
     epic_number: number;
     worktree_path: string | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    repo: r.repo,
+    epicNumber: r.epic_number,
+    worktreePath: r.worktree_path,
+  }));
+}
+
+/** A running `implementation` workflow the checkbox-revert pass considers. */
+export type RunningWorkflow = {
+  id: string;
+  repo: string;
+  epicNumber: number;
+  worktreePath: string;
+};
+
+/**
+ * Running `kind = 'implementation'` workflows that own both an Epic and a worktree
+ * — the set the checkbox-revert pass walks after a push. An Epic is required to
+ * find the PR; a worktree is required to run the gates, so rows missing either are
+ * excluded (the pass would have nothing to act on). Ordered oldest-first so the
+ * burst cap services the longest-running rows first.
+ */
+export function listRunningImplementationWorkflows(db: Database): RunningWorkflow[] {
+  const rows = db
+    .query(
+      `SELECT id, repo, epic_number, worktree_path FROM workflows
+        WHERE kind = 'implementation' AND state = 'running'
+          AND epic_number IS NOT NULL AND worktree_path IS NOT NULL
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all() as {
+    id: string;
+    repo: string;
+    epic_number: number;
+    worktree_path: string;
   }[];
   return rows.map((r) => ({
     id: r.id,

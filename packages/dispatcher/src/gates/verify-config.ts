@@ -17,6 +17,12 @@ import { parse as parseToml } from "smol-toml";
 /** Default per-gate wall-clock timeout (seconds) when none is declared. */
 export const DEFAULT_GATE_TIMEOUT_SECONDS = 300;
 
+/** A gate's category: a plain `unit` gate, or an `integration` gate that exercises the real product. */
+export type GateCategory = "unit" | "integration";
+
+/** The allowed `category` values (default `unit` when omitted). */
+export const GATE_CATEGORIES: readonly GateCategory[] = ["unit", "integration"];
+
 /** A single resolved gate: a named command with a timeout and optional phase scope. */
 export type Gate = {
   name: string;
@@ -25,6 +31,12 @@ export type Gate = {
   timeoutSeconds: number;
   /** Sub-issue numbers this gate is scoped to; undefined = runs for every phase. */
   phases?: number[];
+  /**
+   * Gate category (Epic #143, sub-issue #145). `integration` gates exercise the
+   * running product (boot/serve/invoke the real path), distinct from `unit` gates.
+   * Defaults to `unit`.
+   */
+  category: GateCategory;
 };
 
 export type VerifyConfig = {
@@ -44,7 +56,7 @@ export function verifyConfigPath(worktreeRoot: string): string {
   return join(worktreeRoot, ".middle", "verify.toml");
 }
 
-const KNOWN_GATE_KEYS = new Set(["name", "command", "timeout_seconds", "phases"]);
+const KNOWN_GATE_KEYS = new Set(["name", "command", "timeout_seconds", "phases", "category"]);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -57,13 +69,15 @@ function validateGate(raw: unknown, index: number): Gate {
   }
   for (const key of Object.keys(raw)) {
     if (!KNOWN_GATE_KEYS.has(key)) {
+      // Build the suggestion from the live key set so it never drifts stale as
+      // keys are added (it omitted `category` before this was made dynamic).
       throw new VerifyConfigError(
-        `${where}: unknown key "${key}" (did you mean one of name, command, timeout_seconds, phases?)`,
+        `${where}: unknown key "${key}" (did you mean one of ${[...KNOWN_GATE_KEYS].join(", ")}?)`,
       );
     }
   }
 
-  const { name, command, timeout_seconds: timeoutSeconds, phases } = raw;
+  const { name, command, timeout_seconds: timeoutSeconds, phases, category } = raw;
 
   if (typeof name !== "string" || name.trim() === "") {
     throw new VerifyConfigError(`${where}: "name" is required and must be a non-empty string`);
@@ -103,7 +117,22 @@ function validateGate(raw: unknown, index: number): Gate {
     resolvedPhases = phases as number[];
   }
 
-  const gate: Gate = { name: name.trim(), command, timeoutSeconds: resolvedTimeout };
+  let resolvedCategory: GateCategory = "unit";
+  if (category !== undefined) {
+    if (typeof category !== "string" || !GATE_CATEGORIES.includes(category as GateCategory)) {
+      throw new VerifyConfigError(
+        `gate "${name}": "category" must be one of ${GATE_CATEGORIES.map((c) => `"${c}"`).join(", ")}`,
+      );
+    }
+    resolvedCategory = category as GateCategory;
+  }
+
+  const gate: Gate = {
+    name: name.trim(),
+    command,
+    timeoutSeconds: resolvedTimeout,
+    category: resolvedCategory,
+  };
   if (resolvedPhases !== undefined) gate.phases = resolvedPhases;
   return gate;
 }
@@ -152,4 +181,14 @@ export function loadVerifyConfig(path: string): VerifyConfig {
  */
 export function gatesForPhase(config: VerifyConfig, subIssue: number): Gate[] {
   return config.gates.filter((g) => g.phases === undefined || g.phases.includes(subIssue));
+}
+
+/**
+ * The `integration`-category gates in a config (Epic #143, sub-issue #145) — the
+ * gates that exercise the real product. Lets callers (verify-on-stop, the
+ * reviewer brief) recognise whether a repo declares an integration gate distinct
+ * from its unit gates.
+ */
+export function integrationGates(config: VerifyConfig): Gate[] {
+  return config.gates.filter((g) => g.category === "integration");
 }

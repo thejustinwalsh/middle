@@ -7,6 +7,8 @@ node_modules/
 
 # middle's per-repo bootstrap dir is local-only (mm init step 7). Skills under
 # .claude/skills/ stay committed; the operational .middle/ does not — except
-# verify.toml, which IS the committed gate config the dispatcher reads.
+# verify.toml (the committed gate config the dispatcher reads) and policy.toml
+# (the committed shared repo policy — issue #103).
 .middle/*
 !.middle/verify.toml
+!.middle/policy.toml

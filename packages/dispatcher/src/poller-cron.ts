@@ -1,4 +1,8 @@
 import { Bunqueue } from "bunqueue/client";
+import {
+  type CheckboxRevertPassDeps,
+  runCheckboxRevertPass,
+} from "./gates/checkbox-revert-pass.ts";
 import { type PollerDeps, reconcileMergedParks, runPoller } from "./poller.ts";
 
 /**
@@ -27,23 +31,43 @@ export type ReconcilerHooks = {
   onMergedTransition?: (repo: string) => Promise<void>;
 };
 
+/** Optional extra passes the poller cron runs alongside the resume/reconcile core. */
+export type StartPollerOptions = {
+  /**
+   * The checkbox-revert production trigger (#101). When provided, each tick also
+   * runs {@link runCheckboxRevertPass} over running workflows. Omitted (e.g. tests)
+   * → the pass doesn't run.
+   */
+  checkboxRevert?: CheckboxRevertPassDeps;
+  /** Tick cadence override (default {@link POLLER_INTERVAL_MS}). */
+  intervalMs?: number;
+  /**
+   * Open-PR divergence reconciler hooks (Epic #168). When provided, each tick
+   * runs `perTickSweep` after the resume + merged-parks reconciliation, and
+   * `onMergedTransition` is wired into `reconcileMergedParks` so a freshly-merged
+   * Epic PR triggers an immediate sibling-sweep. Omitted → no reconciliation.
+   */
+  reconcilers?: ReconcilerHooks;
+};
+
 /**
  * Stand up the GitHub poller as a bunqueue cron: every `intervalMs` (default
  * {@link POLLER_INTERVAL_MS}) it runs one {@link runPoller} pass over parked
  * workflows with an armed wait, firing the resume signal when the unblocking
- * event appears, then runs one {@link reconcileMergedParks} pass to finalize
- * parked workflows whose Epic PR has landed/closed, then an optional
- * `reconcilers.perTickSweep` for the open-PR divergence reconciler (Epic #168).
- *
- * Returns a stop function that tears the cron down. Each pass is resilient on
- * its own (per-workflow failures are isolated); this wrapper guards each so a
- * thrown pass never crashes the cron worker — and isolates them from each other
- * so a failed resume poll still lets reconciliation run, and vice versa.
+ * event appears, then one {@link reconcileMergedParks} pass to finalize parked
+ * workflows whose Epic PR has landed/closed, optionally one
+ * `opts.reconcilers.perTickSweep` for the open-PR divergence reconciler (Epic
+ * #168), and — when `opts.checkboxRevert` is wired — one
+ * {@link runCheckboxRevertPass} over running workflows to revert a Status
+ * checkbox whose verification gates failed after a push. Returns a stop function
+ * that tears the cron down. Each pass is resilient on its own (per-workflow
+ * failures are isolated); this wrapper guards each so a thrown pass never
+ * crashes the cron worker — and isolates them from one another so one failed
+ * pass still lets the others run.
  */
 export async function startPoller(
   deps: PollerDeps,
-  intervalMs: number = POLLER_INTERVAL_MS,
-  reconcilers: ReconcilerHooks = {},
+  opts: StartPollerOptions = {},
 ): Promise<() => Promise<void>> {
   const queue = new Bunqueue("middle-poller", {
     embedded: true,
@@ -54,20 +78,30 @@ export async function startPoller(
         console.error(`[poller] pass failed: ${(error as Error).message}`);
       }
       try {
-        await reconcileMergedParks({ ...deps, onMergedTransition: reconcilers.onMergedTransition });
+        await reconcileMergedParks({
+          ...deps,
+          onMergedTransition: opts.reconcilers?.onMergedTransition,
+        });
       } catch (error) {
         console.error(`[reconcile] pass failed: ${(error as Error).message}`);
       }
-      if (reconcilers.perTickSweep) {
+      if (opts.reconcilers?.perTickSweep) {
         try {
-          await reconcilers.perTickSweep();
+          await opts.reconcilers.perTickSweep();
         } catch (error) {
           console.error(`[pr-divergence] tick sweep failed: ${(error as Error).message}`);
         }
       }
+      if (opts.checkboxRevert) {
+        try {
+          await runCheckboxRevertPass(opts.checkboxRevert);
+        } catch (error) {
+          console.error(`[checkbox-revert] pass failed: ${(error as Error).message}`);
+        }
+      }
     },
   });
-  await queue.every("poller-tick", intervalMs);
+  await queue.every("poller-tick", opts.intervalMs ?? POLLER_INTERVAL_MS);
   return async () => {
     await queue.close(true);
   };

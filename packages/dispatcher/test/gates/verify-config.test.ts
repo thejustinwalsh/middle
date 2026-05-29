@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   DEFAULT_GATE_TIMEOUT_SECONDS,
   gatesForPhase,
+  integrationGates,
   loadVerifyConfig,
   parseVerifyConfig,
   VerifyConfigError,
@@ -38,8 +39,9 @@ describe("parseVerifyConfig — valid", () => {
         name: "typecheck",
         command: "bun run typecheck",
         timeoutSeconds: DEFAULT_GATE_TIMEOUT_SECONDS,
+        category: "unit",
       },
-      { name: "test", command: "bun test", timeoutSeconds: 600 },
+      { name: "test", command: "bun test", timeoutSeconds: 600, category: "unit" },
     ]);
   });
 
@@ -50,6 +52,24 @@ describe("parseVerifyConfig — valid", () => {
       ),
     );
     expect(config.gates[0]!.phases).toEqual([40, 41]);
+  });
+
+  test("category defaults to unit and accepts integration; integrationGates filters", () => {
+    const config = parseVerifyConfig(
+      [
+        "[[gate]]",
+        'name = "test"',
+        'command = "bun test"',
+        "",
+        "[[gate]]",
+        'name = "smoke"',
+        'command = "bun test:smoke"',
+        'category = "integration"',
+      ].join("\n"),
+    );
+    expect(config.gates[0]!.category).toBe("unit");
+    expect(config.gates[1]!.category).toBe("integration");
+    expect(integrationGates(config).map((g) => g.name)).toEqual(["smoke"]);
   });
 });
 
@@ -92,6 +112,7 @@ describe("parseVerifyConfig — malformed fails loudly", () => {
     // "fails loudly, never a silent zero-gate run" class as a typo'd key.
     ["empty phases", '[[gate]]\nname = "x"\ncommand = "a"\nphases = []'],
     ["unknown key", '[[gate]]\nname = "x"\ncommand = "a"\ncomand = "typo"'],
+    ["invalid category", '[[gate]]\nname = "x"\ncommand = "a"\ncategory = "e2e"'],
     ["invalid toml", "[[gate]\nname = "],
   ];
   for (const [label, toml] of cases) {
@@ -99,6 +120,14 @@ describe("parseVerifyConfig — malformed fails loudly", () => {
       expect(() => parseVerifyConfig(toml)).toThrow(VerifyConfigError);
     });
   }
+
+  test("the unknown-key message lists the live key set (incl. `category`)", () => {
+    // The suggestion is built from KNOWN_GATE_KEYS, so it never drifts stale as
+    // keys are added — `category` must appear now that it's a valid key.
+    expect(() => parseVerifyConfig('[[gate]]\nname = "x"\ncommand = "a"\ncomand = "typo"')).toThrow(
+      /category/,
+    );
+  });
 });
 
 describe("loadVerifyConfig — file IO", () => {

@@ -262,7 +262,14 @@ windowed = false                          # if true, also launch webview-bun win
 theme = "auto"
 ```
 
-### Per-repo config: `<repo>/.middle/config.toml` (created by `mm init`)
+### Per-repo config — split into committed policy + local cache (created by `mm init`)
+
+Per-repo config lives in two files (issue #103), so a team can share repo policy in
+version control while per-machine/volatile fields stay out of it:
+
+**`<repo>/.middle/policy.toml`** — COMMITTED, shared across contributors. The
+gitignore un-ignores it (`.middle/*` + `!.middle/policy.toml`, same as `verify.toml`).
+`mm init` writes it only when absent, so a re-init never clobbers a team's edits.
 
 ```toml
 [repo]
@@ -282,8 +289,20 @@ interval_minutes = 15
 adapter = "claude"                   # which CLI runs the recommender itself
 auto_dispatch = false                     # SAFE DEFAULT — opt in per repo
 
+[docs]
+enabled = true
+interval_minutes = 1440
+adapter = "claude"
+write = false                             # read-only audit until opted in
+```
+
+**`<repo>/.middle/config.toml`** — GITIGNORED, per-machine local operational cache.
+Holds only volatile fields: the `[state_issue]` number (GitHub is its source of
+truth, per #102) and `[bootstrap]` install metadata.
+
+```toml
 [state_issue]
-number = 0                                # filled in by `mm init` after issue creation
+number = 0                                # filled in by `mm init` after issue creation; GitHub is the source of truth
 label = "agent-queue:state"
 
 [bootstrap]
@@ -291,7 +310,11 @@ version = 1                               # schema version; `mm uninit` knows wh
 installed_at = "2026-05-13T15:00:00Z"
 ```
 
-The dispatcher reads both files at startup and merges. Per-repo overrides global.
+The dispatcher reads global + policy + local cache at startup and merges, lowest to
+highest precedence: documented defaults < global file < `policy.toml` < `config.toml`.
+The most-local value wins on a colliding key, so the local cache can override shared
+policy for one machine (and `mm config` writes there); absent an override, the team's
+committed policy value holds for everyone.
 
 ---
 
@@ -306,13 +329,14 @@ This is the most important command for the user-facing surface. It does the foll
    - Copy `bootstrap-assets/skills/recommending-github-issues/` to `<repo>/.claude/skills/recommending-github-issues/`
    - For Codex parity: also write `<repo>/.codex/skills/` mirrors (Codex doesn't read `.claude/`).
    - Copy `bootstrap-assets/hooks/hook.sh` to `<repo>/.middle/hooks/hook.sh` (chmod +x)
-   - Write `<repo>/.middle/config.toml` from the template, filled in
+   - Write `<repo>/.middle/policy.toml` (committed shared policy) — only when absent, so a re-init never clobbers a team's edits
+   - Write `<repo>/.middle/config.toml` (gitignored local cache: `[state_issue]` + `[bootstrap]`)
 4. **Write per-CLI hook config** referencing the universal `hook.sh`:
    - `<repo>/.claude/settings.json` with hook entries (see "Hook installation" below)
    - `<repo>/.codex/config.toml` `[hooks]` section
-5. **Create the state issue on GitHub** with `gh issue create --label agent-queue:state --title "agent-queue: dispatch state" --body "<initial empty schema-conforming body>"`. Capture the issue number; write it into `<repo>/.middle/config.toml`.
+5. **Create the state issue on GitHub** with `gh issue create --label agent-queue:state --title "agent-queue: dispatch state" --body "<initial empty schema-conforming body>"`. Capture the issue number; write it into the local cache `<repo>/.middle/config.toml`.
 6. **Create the label** if it doesn't exist: `gh label create agent-queue:state --color 6f42c1 --description "Maintained by middle-management"`.
-7. **Update target repo's `.gitignore`**: add `.middle/` (so the per-repo middle dir is ignored). Skills under `.claude/skills/` SHOULD be committed (they're shared with collaborators); the bootstrap status under `.middle/` is local-only.
+7. **Update target repo's `.gitignore`**: add `.middle/*` with `!.middle/policy.toml` and `!.middle/verify.toml` exceptions (the per-repo middle dir is ignored except the committed shared policy + gate config). Skills under `.claude/skills/` SHOULD be committed (they're shared with collaborators); the rest under `.middle/` is local-only.
 8. **Print a summary**:
    ```
    ✓ middle initialized for thejustinwalsh/middle

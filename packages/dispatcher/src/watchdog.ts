@@ -2,11 +2,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { TranscriptState } from "@middle/core";
+import { classifyNotification, type NotificationKind } from "./notification-classify.ts";
 import {
   armWaitForSignal,
   firstEventTs,
   hasEventOfType,
   isWaitForArmed,
+  lastEventTs,
   latestEventType,
   recordEvent,
   updateWorkflow,
@@ -43,6 +45,16 @@ import {
 export type WatchdogTmux = {
   status(sessionName: string): Promise<{ alive: boolean; paneCount: number }>;
   killSession(sessionName: string): Promise<void>;
+  /**
+   * Capture the visible pane text — the notification failsafe's state snapshot.
+   * Optional: when unwired (gate-only/test scenarios), `reconcileNotifications`
+   * no-ops rather than half-acting.
+   */
+  capturePane?(sessionName: string): Promise<string>;
+  /** Type literal text into the session — the notification failsafe's nudge. Optional (see `capturePane`). */
+  sendText?(sessionName: string, text: string): Promise<void>;
+  /** Press Enter — submits the `sendText` nudge. Optional (see `capturePane`). */
+  sendEnter?(sessionName: string): Promise<void>;
 };
 
 export type WatchdogDeps = {
@@ -54,6 +66,18 @@ export type WatchdogDeps = {
   launchTimeoutMs?: number;
   idleThresholdMs?: number;
   idleKillThresholdMs?: number;
+  /**
+   * How long after an `agent.notification` with no newer activity before the
+   * notification failsafe captures the pane + nudges the agent. A grace window so
+   * a transient notification the agent resolves itself isn't acted on. Default 60s.
+   */
+  notificationGraceMs?: number;
+  /**
+   * How long after the failsafe's nudge, still with no newer activity, before it
+   * fast-fails the workflow (`notification-block:<kind>`). The "never hang
+   * headless" backstop when the nudge doesn't take. Default 120s.
+   */
+  notificationKillGraceMs?: number;
   /** Engine-side rollback hook; invoked when the watchdog fails a workflow. */
   triggerCompensation?: (workflowId: string, reason: string) => void;
   /** Override the blocked-sentinel path resolver (tests). */
@@ -63,6 +87,10 @@ export type WatchdogDeps = {
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
 const DEFAULT_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
 const DEFAULT_IDLE_KILL_THRESHOLD_MS = 15 * 60 * 1000;
+const DEFAULT_NOTIFICATION_GRACE_MS = 60 * 1000;
+const DEFAULT_NOTIFICATION_KILL_GRACE_MS = 2 * 60 * 1000;
+/** Pane snapshot is clipped to this many bytes on the captured event (audit, not source of truth). */
+const PANE_SNAPSHOT_MAX_BYTES = 8 * 1024;
 
 /** Event type written when the watchdog marks a workflow idle (dashboard yellow). */
 export const IDLE_EVENT = "watchdog.idle";
@@ -74,6 +102,14 @@ export const FAILED_EVENT = "watchdog.failed";
  * session so the drive's liveness race wakes and parks it for human resume.
  */
 export const BLOCKED_HANDOFF_EVENT = "watchdog.blocked-handoff";
+/**
+ * Event written when the notification failsafe captures a stuck agent's state.
+ * Payload: `{ kind, message, pane }` — the classification, the Notification
+ * message, and the clipped pane snapshot. This is AC1's "record it on the workflow".
+ */
+export const NOTIFICATION_CAPTURED_EVENT = "notification.captured";
+/** Event written when the failsafe nudges the agent. Payload: `{ kind }`. */
+export const NOTIFICATION_INTERVENED_EVENT = "notification.intervened";
 
 type ReconcilableRow = {
   id: string;
@@ -294,4 +330,196 @@ export function reconcileTranscriptDrift(deps: WatchdogDeps): number {
     }
   }
   return corrected;
+}
+
+/** Clip pane text to a byte bound for the audit event; mark it so a reader knows. */
+function clipPane(pane: string): string {
+  if (Buffer.byteLength(pane, "utf8") <= PANE_SNAPSHOT_MAX_BYTES) return pane;
+  const clipped = Buffer.from(pane, "utf8").subarray(0, PANE_SNAPSHOT_MAX_BYTES).toString("utf8");
+  return `${clipped}…[truncated]`;
+}
+
+/** Parse the most recent `events` row of a type, returning its payload object (or null). */
+function latestEventPayload(
+  db: Database,
+  workflowId: string,
+  type: string,
+): Record<string, unknown> | null {
+  // `id DESC` breaks a `ts` tie deterministically (the failsafe can write events
+  // sharing a ts in one tick). Today `idx_events_workflow_ts` happens to return
+  // the highest id first within a ts group, but that's a query-plan accident — the
+  // explicit tie-breaker pins "latest row wins" independent of the index/plan.
+  const row = db
+    .query(
+      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC, id DESC LIMIT 1",
+    )
+    .get(workflowId, type) as { payload_json: string | null } | null;
+  if (!row?.payload_json) return null;
+  try {
+    const parsed = JSON.parse(row.payload_json) as unknown;
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    // A truncated/garbled payload is an audit record, not a contract — treat as empty.
+    return null;
+  }
+}
+
+/** The `message` of the latest `agent.notification` event, or "" if absent/unparseable. */
+function latestNotificationMessage(db: Database, workflowId: string): string {
+  const payload = latestEventPayload(db, workflowId, "agent.notification");
+  return typeof payload?.message === "string" ? payload.message : "";
+}
+
+/** The recorded `kind` of the latest `notification.captured` event, defaulting to idle-unknown. */
+function latestNotificationKind(db: Database, workflowId: string): NotificationKind {
+  const kind = latestEventPayload(db, workflowId, NOTIFICATION_CAPTURED_EVENT)?.kind;
+  return kind === "permission" || kind === "input" ? kind : "idle-unknown";
+}
+
+/**
+ * The instruction the failsafe types into a stuck session. Tells the agent it's
+ * headless (no human will answer) and gives it the two legitimate exits: continue
+ * the task, or write `.middle/blocked.json` and stop — which routes a genuine
+ * block into the existing asked-question park. A permission/env-repair block gets
+ * an extra line steering it off that (the #129 off-task-repair failure mode).
+ */
+function buildNotificationNudge(kind: NotificationKind): string {
+  const head =
+    "[middle] You appear to be waiting for human input, but you are running headless under middle — no human will respond.";
+  const repair =
+    kind === "permission"
+      ? " Do not wait for permission and do not try to repair your environment (chmod, settings.json, hooks)."
+      : "";
+  const tail =
+    'If you can continue your task, do so now. If you genuinely cannot proceed without a human decision, write .middle/blocked.json (with a "question" and "context") and then stop.';
+  return `${head}${repair} ${tail}`;
+}
+
+/** Capture the pane, swallowing a tmux error (a dead/unreadable pane → empty snapshot). */
+async function safeCapturePane(tmux: WatchdogTmux, sessionName: string): Promise<string> {
+  try {
+    return (await tmux.capturePane!(sessionName)).trim();
+  } catch (error) {
+    console.error(`[watchdog] capturePane failed for ${sessionName}: ${(error as Error).message}`);
+    return "";
+  }
+}
+
+/** Type + submit the nudge; returns whether it landed (a tmux error → false, logged). */
+async function safeNudge(tmux: WatchdogTmux, sessionName: string, text: string): Promise<boolean> {
+  try {
+    await tmux.sendText!(sessionName, text);
+    await tmux.sendEnter!(sessionName);
+    return true;
+  } catch (error) {
+    console.error(`[watchdog] nudge failed for ${sessionName}: ${(error as Error).message}`);
+    return false;
+  }
+}
+
+/**
+ * The notification failsafe (#128): rescue a headless agent stuck on a Claude
+ * `Notification` before it burns to the 15-min idle-kill ceiling. A peer of
+ * `runWatchdog` — same staleness discipline, same `launching`/`running` sweep,
+ * so it covers **every** spawn kind (implementation, recommender, documentation).
+ * Run it before `runWatchdog` so a notification-block is handled faster (and more
+ * informatively) than the generic idle-timeout would.
+ *
+ * Per running, middle-driven session with a live pane:
+ *
+ *   1. **Detect** — the latest event is `agent.notification` and nothing has been
+ *      active since (no transcript/heartbeat newer than it). A grace window
+ *      (`notificationGraceMs`) lets a transient notification the agent clears
+ *      itself pass untouched.
+ *   2. **Capture + classify + intervene** (once per notification) — snapshot the
+ *      pane (`notification.captured`), classify it, and nudge the agent to
+ *      proceed-or-block (`notification.intervened`). The nudge is the same
+ *      `sendText`+`sendEnter` mechanism the bare-stop nudge uses — no synthetic
+ *      dialog-approval keystrokes.
+ *   3. **Fast-fail** — if the agent is *still* idle `notificationKillGraceMs`
+ *      after the nudge, fail the workflow (`notification-block:<kind>`) via the
+ *      proven idle-kill terminus, with the captured context on the row. This is
+ *      the "never hang headless" guarantee.
+ *
+ * Skipped while `controlled_by = 'human'` (a human will answer the notification)
+ * and a no-op when the tmux surface lacks `capturePane`/`sendText`/`sendEnter`.
+ * State is derived from event rows (no per-row columns): a stall is "handled"
+ * once a `notification.captured` row is newer than the last real activity, so a
+ * stuck agent re-emitting the same notification can't reset the kill clock — only
+ * genuine activity, then a fresh stall, re-arms capture.
+ */
+export async function reconcileNotifications(deps: WatchdogDeps): Promise<number> {
+  const tmux = deps.tmux;
+  if (!tmux.capturePane || !tmux.sendText || !tmux.sendEnter) return 0;
+  const now = (deps.now ?? Date.now)();
+  const grace = deps.notificationGraceMs ?? DEFAULT_NOTIFICATION_GRACE_MS;
+  const killGrace = deps.notificationKillGraceMs ?? DEFAULT_NOTIFICATION_KILL_GRACE_MS;
+
+  let acted = 0;
+  for (const row of loadReconcilable(deps.db)) {
+    // Only a live, middle-driven, running session can be stuck on a notification.
+    if (row.state !== "running" || !row.session_name || row.controlled_by === "human") continue;
+
+    const notifTs = lastEventTs(deps.db, row.id, "agent.notification");
+    if (notifTs === null) continue;
+
+    // Anchor on real agent activity: heartbeat (tool.pre/post, and drift-corrected
+    // from the transcript) and the transcript itself. NOT `updated_at` — drift
+    // bookkeeping bumps that to wall-clock `now`, which would mask a genuine
+    // notification-idle. A notification bumps neither, so a quiet agent's activity
+    // stays older than the notification; one that resumed reads newer.
+    const transcriptMs = transcriptActivityMs(deps, row.adapter, row.transcript_path);
+    const activityMs = Math.max(row.last_heartbeat ?? 0, transcriptMs ?? 0);
+    // No notification since the agent was last active → not stuck on one.
+    if (notifTs <= activityMs) continue;
+
+    // "Handled this streak" is anchored on activity, not on `notifTs`: a stuck
+    // agent that keeps re-emitting the *same* "waiting" notification must NOT
+    // re-arm capture each time (that would reset the kill clock forever and the
+    // run would never fast-fail). Only real activity since the capture (a genuine
+    // resume, then a fresh stall) re-arms it.
+    const capturedTs = lastEventTs(deps.db, row.id, NOTIFICATION_CAPTURED_EVENT);
+    const handled = capturedTs !== null && capturedTs > activityMs;
+
+    if (!handled) {
+      if (now - notifTs < grace) continue; // within the grace window — let it settle.
+      const pane = await safeCapturePane(tmux, row.session_name);
+      const message = latestNotificationMessage(deps.db, row.id);
+      const kind = classifyNotification({ message, pane });
+      recordEvent(deps.db, {
+        workflowId: row.id,
+        ts: now,
+        type: NOTIFICATION_CAPTURED_EVENT,
+        payloadJson: JSON.stringify({ kind, message, pane: clipPane(pane) }),
+      });
+      if (await safeNudge(tmux, row.session_name, buildNotificationNudge(kind))) {
+        recordEvent(deps.db, {
+          workflowId: row.id,
+          ts: now,
+          type: NOTIFICATION_INTERVENED_EVENT,
+          payloadJson: JSON.stringify({ kind }),
+        });
+      }
+      acted++;
+      continue;
+    }
+
+    // Captured + nudged this stall, and still idle: if the nudge hasn't taken
+    // within the kill-grace, fast-fail with the captured classification. Anchored
+    // on the intervention ts, so repeat notifications don't push the deadline out.
+    const intervenedTs = lastEventTs(deps.db, row.id, NOTIFICATION_INTERVENED_EVENT);
+    if (now - (intervenedTs ?? capturedTs!) >= killGrace) {
+      await safeKillSession(tmux, row.session_name);
+      failWorkflow(
+        deps,
+        row.id,
+        `notification-block:${latestNotificationKind(deps.db, row.id)}`,
+        now,
+      );
+      acted++;
+    }
+  }
+  return acted;
 }

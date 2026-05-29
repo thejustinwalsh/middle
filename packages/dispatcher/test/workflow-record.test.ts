@@ -9,11 +9,17 @@ import {
   clearWorkflowObservers,
   countActiveImplementationSlots,
   createWorkflowRecord,
+  type CreateWorkflowRecordInput,
   finalizeParkedWorkflow,
+  getCheckboxReconcileState,
   getWorkflow,
   getWorkflowSource,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
+  listRunningImplementationWorkflows,
+  patchWorkflowMeta,
+  readWorkflowMeta,
+  setCheckboxReconcileState,
   updateWorkflow,
 } from "../src/workflow-record.ts";
 
@@ -63,6 +69,156 @@ describe("dispatch source (#53)", () => {
   });
 });
 
+describe("workflow meta_json accessors", () => {
+  test("readWorkflowMeta returns {} for a missing row, a null meta, and malformed JSON", () => {
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "recommender",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
+    expect(readWorkflowMeta(db, "absent")).toEqual({});
+    expect(readWorkflowMeta(db, "w")).toEqual({}); // created without source → meta_json null
+    db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", ["{not json", "w"]);
+    expect(readWorkflowMeta(db, "w")).toEqual({});
+    // A non-object JSON value (e.g. a bare string) also degrades to {}.
+    db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", ['"a string"', "w"]);
+    expect(readWorkflowMeta(db, "w")).toEqual({});
+  });
+
+  test("patchWorkflowMeta merges, preserving keys it does not set", () => {
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+      source: "manual",
+    });
+    // Adding checkboxReconcile must not clobber the source written at creation.
+    patchWorkflowMeta(db, "w", { checkboxReconcile: { headSha: "abc", state: { 1: true } } });
+    expect(getWorkflowSource(db, "w")).toBe("manual");
+    expect(readWorkflowMeta(db, "w").checkboxReconcile).toEqual({
+      headSha: "abc",
+      state: { 1: true },
+    });
+    // And patching source back must not drop checkboxReconcile.
+    patchWorkflowMeta(db, "w", { source: "auto" });
+    expect(getWorkflowSource(db, "w")).toBe("auto");
+    expect(readWorkflowMeta(db, "w").checkboxReconcile).toEqual({
+      headSha: "abc",
+      state: { 1: true },
+    });
+  });
+
+  test("patchWorkflowMeta does not bump updated_at — meta is scratch, not an activity signal", () => {
+    // The watchdog folds updated_at into its idle-freshness baseline; a meta
+    // write (the poller's checkbox-revert persist) must not reset that clock.
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    const before = getWorkflow(db, "w")!.updatedAt;
+    db.run("UPDATE workflows SET updated_at = ? WHERE id = ?", [before - 60_000, "w"]); // age it
+    patchWorkflowMeta(db, "w", { checkboxReconcile: { headSha: "abc", state: {} } });
+    expect(getWorkflow(db, "w")!.updatedAt).toBe(before - 60_000); // untouched
+  });
+
+  test("checkbox-reconcile state round-trips; defaults when unset", () => {
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    setCheckboxReconcileState(db, "w", { headSha: "deadbeef", state: { 7: true, 8: false } });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({
+      headSha: "deadbeef",
+      state: { 7: true, 8: false },
+    });
+  });
+
+  test("getCheckboxReconcileState sanitizes malformed nested meta back to the contract", () => {
+    // readWorkflowMeta only guards the top-level shape; the nested checkboxReconcile
+    // is still untrusted (hand-edited row / version skew). Inject raw meta_json that
+    // bypasses the typed setter to prove the read sanitizes every malformed shape.
+    createWorkflowRecord(db, {
+      id: "w",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    const setMeta = (meta: unknown) =>
+      db.run("UPDATE workflows SET meta_json = ? WHERE id = ?", [JSON.stringify(meta), "w"]);
+
+    // Non-object nested value → default.
+    setMeta({ checkboxReconcile: "nope" });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    // An array is typeof "object" but not a valid record shape → default (no leakage).
+    setMeta({ checkboxReconcile: [1, 2] });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    // Non-string headSha coerces to null; non-object state coerces to {}.
+    setMeta({ checkboxReconcile: { headSha: 123, state: "x" } });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
+    // A state array is rejected — no index-as-key coercion from Object.entries.
+    setMeta({ checkboxReconcile: { headSha: "abc", state: [true, false] } });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: "abc", state: {} });
+    // Non-boolean state entries are dropped; valid boolean ones survive.
+    setMeta({
+      checkboxReconcile: { headSha: "abc", state: { 1: true, 2: "yes", 3: false, 4: null } },
+    });
+    expect(getCheckboxReconcileState(db, "w")).toEqual({
+      headSha: "abc",
+      state: { 1: true, 3: false },
+    });
+  });
+});
+
+describe("listRunningImplementationWorkflows", () => {
+  const seed = (
+    id: string,
+    opts: {
+      kind?: "implementation" | "recommender" | "documentation";
+      state?: "running" | "waiting-human" | "pending";
+      epicNumber?: number | null;
+      worktreePath?: string | null;
+    } = {},
+  ) => {
+    createWorkflowRecord(db, {
+      id,
+      kind: opts.kind ?? "implementation",
+      repo: "o/r",
+      epicNumber: opts.epicNumber === undefined ? 1 : opts.epicNumber,
+      adapter: "claude",
+    });
+    const patch: Parameters<typeof updateWorkflow>[2] = { state: opts.state ?? "running" };
+    if (opts.worktreePath !== null) patch.worktreePath = opts.worktreePath ?? "/wt/x";
+    updateWorkflow(db, id, patch);
+  };
+
+  test("returns only running implementation rows that own both an epic and a worktree", () => {
+    seed("run-1", { worktreePath: "/wt/1" });
+    seed("run-2", { worktreePath: "/wt/2" });
+    seed("parked", { state: "waiting-human" });
+    seed("pending", { state: "pending" });
+    seed("recommender", { kind: "recommender", epicNumber: null });
+    seed("no-epic", { epicNumber: null });
+    seed("no-worktree", { worktreePath: null });
+
+    const ids = listRunningImplementationWorkflows(db).map((r) => r.id);
+    expect(ids).toEqual(["run-1", "run-2"]);
+    const first = listRunningImplementationWorkflows(db)[0]!;
+    expect(first).toEqual({ id: "run-1", repo: "o/r", epicNumber: 1, worktreePath: "/wt/1" });
+  });
+});
+
 describe("createWorkflowRecord", () => {
   test("inserts a pending implementation row carrying epic_number", () => {
     createWorkflowRecord(db, {
@@ -79,6 +235,59 @@ describe("createWorkflowRecord", () => {
     expect(row!.repo).toBe("thejustinwalsh/middle");
     expect(row!.bunqueueExecutionId).toBe("exec-1");
     expect(row!.controlledBy).toBe("middle");
+  });
+
+  // #108: the step that calls this runs under bunqueue's default retry. A
+  // retried record-creating step re-runs the INSERT for the same execution id;
+  // a plain INSERT would throw UNIQUE and mask the real (downstream) error. The
+  // INSERT must be idempotent so the second call is a no-op.
+  test("a second create with the same id is a no-op (idempotent on retry), not a UNIQUE error", () => {
+    createWorkflowRecord(db, {
+      id: "exec-retry",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 6,
+      adapter: "claude",
+    });
+    // Advance the row the way prepare-worktree does after the INSERT, so we can
+    // prove the retry doesn't reset it.
+    updateWorkflow(db, "exec-retry", { worktreePath: "/wt/exec-retry", state: "launching" });
+
+    // The retry: same id, but with fields that WOULD differ if the INSERT ran.
+    expect(() =>
+      createWorkflowRecord(db, {
+        id: "exec-retry",
+        kind: "recommender",
+        repo: "other/repo",
+        epicNumber: 99,
+        adapter: "codex",
+      }),
+    ).not.toThrow();
+
+    // The original row is untouched — the second INSERT was ignored, not applied.
+    const row = getWorkflow(db, "exec-retry");
+    expect(row!.kind).toBe("implementation");
+    expect(row!.repo).toBe("o/r");
+    expect(row!.epicNumber).toBe(6);
+    expect(row!.adapter).toBe("claude");
+    expect(row!.state).toBe("launching");
+    expect(row!.worktreePath).toBe("/wt/exec-retry");
+  });
+
+  // The no-op is scoped to the id PK conflict, NOT a blanket `INSERT OR IGNORE`:
+  // a genuine CHECK/NOT-NULL violation is a real bug and must still throw rather
+  // than be silently swallowed. (Cast past the typed surface to force one.)
+  test("a non-PK constraint violation (bad kind) still throws — not swallowed", () => {
+    expect(() =>
+      createWorkflowRecord(db, {
+        id: "exec-bad-kind",
+        kind: "nonsense" as CreateWorkflowRecordInput["kind"],
+        repo: "o/r",
+        epicNumber: 1,
+        adapter: "claude",
+      }),
+    ).toThrow();
+    expect(getWorkflow(db, "exec-bad-kind")).toBeNull();
   });
 });
 

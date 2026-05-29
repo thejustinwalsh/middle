@@ -17,9 +17,10 @@ export type RunDocsOptions = {
 /**
  * `mm docs <repo>` — trigger a documentation run for the given repo. Resolves
  * the repo's docs target (Starlight / Docusaurus / MkDocs / TypeDoc, or the
- * markdown fallback), then runs the docs harvester to audit the docs surface.
- * Read-only/dry-run first: the run reports drift but persists nothing. Returns a
- * process exit code: 0 when the run completes, 1 otherwise.
+ * markdown fallback), then runs the docs harvester. With `[docs] write` off
+ * (default) the run audits the surface and persists nothing; with it on, the
+ * agent discovers-or-authors and the run commits the result and opens a draft
+ * PR. Returns a process exit code: 0 when the run completes, 1 otherwise.
  */
 export async function runDocs(repoPath: string, opts: RunDocsOptions = {}): Promise<number> {
   if (!existsSync(join(repoPath, ".git"))) {

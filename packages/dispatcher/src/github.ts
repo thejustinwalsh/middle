@@ -15,6 +15,13 @@ export type PullRequest = {
   number: number;
   body: string;
   isDraft: boolean;
+  /**
+   * The PR's head commit SHA (`headRefOid`). The checkbox-revert pass diffs this
+   * across poller ticks to detect that the agent pushed (so it only re-runs gates
+   * when the PR actually advanced). Optional: a stub gateway may omit it, in which
+   * case the pass falls back to the reconciler's own checkbox-state diff.
+   */
+  headSha?: string;
 };
 
 /** A comment's author, resolved from a comment URL — for the PR-ready deferral check. */
@@ -31,6 +38,27 @@ export type EpicListItem = {
   labels: string[];
   subTotal: number;
   subClosed: number;
+};
+
+/** A plain open issue with the fields the requirements/staleness audits read. */
+export type IssueSummary = {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+};
+
+/** A merged PR and the issue numbers GitHub records it as closing. */
+export type MergedPrRef = {
+  number: number;
+  closes: number[];
+};
+
+/** Fields for filing a new issue (the anti-staleness reconcile task). */
+export type NewIssue = {
+  title: string;
+  body: string;
+  labels?: string[];
 };
 
 /**
@@ -86,6 +114,16 @@ export interface GitHubGateway {
   getIssueLabels(repo: string, issueNumber: number): Promise<string[]>;
   /** Open Epics in a repo (issues with ≥1 sub-issue), each with sub-issue progress. */
   listOpenEpics(repo: string): Promise<EpicListItem[]>;
+  /** Every open issue (not PRs) with body + labels — for the requirements/staleness audits. */
+  listOpenIssues(repo: string): Promise<IssueSummary[]>;
+  /** Add a label to an issue (no-op if already present). */
+  addLabel(repo: string, issueNumber: number, label: string): Promise<void>;
+  /** Recently-merged PRs and the issues each closes — for landed-but-open detection. */
+  listMergedPrsClosingRefs(repo: string): Promise<MergedPrRef[]>;
+  /** Close an issue with an evidence comment (the anti-staleness reconcile trail). */
+  closeIssue(repo: string, issueNumber: number, comment: string): Promise<void>;
+  /** File a new issue (the proposal-first reconcile task). Returns its number. */
+  createIssue(repo: string, issue: NewIssue): Promise<number>;
 }
 
 async function run(
@@ -170,14 +208,27 @@ export const ghGitHub: GitHubGateway = {
       "--state",
       "open",
       "--json",
-      "number,body,isDraft",
+      "number,body,isDraft,headRefOid",
       "--limit",
       "100",
     ]);
     if (result.exitCode !== 0) {
       throw new Error(`gh pr list failed: ${result.stderr.trim()}`);
     }
-    const prs = JSON.parse(result.stdout) as PullRequest[];
+    // `gh` returns `headRefOid`; map it onto the `headSha` field the gateway exposes.
+    const prs: PullRequest[] = (
+      JSON.parse(result.stdout) as Array<{
+        number: number;
+        body: string;
+        isDraft: boolean;
+        headRefOid?: string;
+      }>
+    ).map((pr) => ({
+      number: pr.number,
+      body: pr.body,
+      isDraft: pr.isDraft,
+      headSha: pr.headRefOid,
+    }));
     // The Epic PR is the one that closes the Epic. Match a GitHub closing
     // keyword referencing the exact Epic number (word-boundaried so #27 doesn't
     // match #270).
@@ -229,6 +280,133 @@ export const ghGitHub: GitHubGateway = {
     return parseEpicsList(result.stdout);
   },
 
+  async listOpenIssues(repo) {
+    const result = await run([
+      "gh",
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--limit",
+      "1000",
+      "--json",
+      "number,title,body,labels",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh issue list for ${repo} failed: ${result.stderr.trim()}`);
+    }
+    const rows = JSON.parse(result.stdout) as {
+      number: number;
+      title: string;
+      body: string;
+      labels?: { name: string }[];
+    }[];
+    return rows.map((r) => ({
+      number: r.number,
+      title: r.title,
+      body: r.body ?? "",
+      labels: (r.labels ?? []).map((l) => l.name),
+    }));
+  },
+
+  async addLabel(repo, issueNumber, label) {
+    const result = await run([
+      "gh",
+      "issue",
+      "edit",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--add-label",
+      label,
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `gh issue edit #${issueNumber} --add-label ${label} failed: ${result.stderr.trim()}`,
+      );
+    }
+  },
+
+  async listMergedPrsClosingRefs(repo) {
+    const result = await run([
+      "gh",
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "merged",
+      "--limit",
+      "100",
+      "--json",
+      "number,closingIssuesReferences",
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh pr list --state merged for ${repo} failed: ${result.stderr.trim()}`);
+    }
+    const rows = JSON.parse(result.stdout) as {
+      number: number;
+      closingIssuesReferences?: { number: number }[];
+    }[];
+    return rows.map((r) => ({
+      number: r.number,
+      closes: (r.closingIssuesReferences ?? []).map((c) => c.number),
+    }));
+  },
+
+  async closeIssue(repo, issueNumber, comment) {
+    const result = await run([
+      "gh",
+      "issue",
+      "close",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--reason",
+      "completed",
+      "--comment",
+      comment,
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(`gh issue close #${issueNumber} failed: ${result.stderr.trim()}`);
+    }
+  },
+
+  async createIssue(repo, issue) {
+    const bodyFile = join(tmpdir(), `middle-new-issue-${Date.now()}.md`);
+    await writeFile(bodyFile, issue.body);
+    try {
+      const argv = [
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        repo,
+        "--title",
+        issue.title,
+        "--body-file",
+        bodyFile,
+      ];
+      for (const label of issue.labels ?? []) argv.push("--label", label);
+      const result = await run(argv);
+      if (result.exitCode !== 0) {
+        throw new Error(`gh issue create failed: ${result.stderr.trim()}`);
+      }
+      // gh prints the new issue URL; the trailing path segment is its number.
+      const m = /\/(\d+)\s*$/.exec(result.stdout.trim());
+      if (!m) {
+        throw new Error(
+          `gh issue create: could not parse issue number from "${result.stdout.trim()}"`,
+        );
+      }
+      return Number(m[1]);
+    } finally {
+      await rm(bodyFile, { force: true });
+    }
+  },
+
   async getPullRequest(repo, prNumber) {
     const result = await run([
       "gh",
@@ -238,10 +416,16 @@ export const ghGitHub: GitHubGateway = {
       "--repo",
       repo,
       "--json",
-      "number,body,isDraft",
+      "number,body,isDraft,headRefOid",
     ]);
     if (result.exitCode !== 0) return null;
-    return JSON.parse(result.stdout) as PullRequest;
+    const pr = JSON.parse(result.stdout) as {
+      number: number;
+      body: string;
+      isDraft: boolean;
+      headRefOid?: string;
+    };
+    return { number: pr.number, body: pr.body, isDraft: pr.isDraft, headSha: pr.headRefOid };
   },
 
   async editPullRequestBody(repo, prNumber, body) {

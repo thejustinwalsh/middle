@@ -35,10 +35,10 @@ export type DocsTargetSummary = {
 export type DocumentationRunConfig = {
   defaultAdapter: string;
   /**
-   * Whether writing is enabled in config. Read-only/dry-run first: even when
-   * true, the persist seam stays unwired in this phase, so the run is an audit
-   * regardless — `write` is reported to the agent so its audit notes whether a
-   * maintained surface would be in scope.
+   * Whether writing is enabled in config — the single gate for audit vs author.
+   * `false` (default): the run is a read-only audit (`mode: audit`) and persists
+   * nothing. `true`: the agent runs in `mode: write` — discover-or-author the docs
+   * surface — and the wired `persistDocs` seam commits the result and opens a PR.
    */
   write: boolean;
 };
@@ -64,12 +64,13 @@ export type DocumentationDeps = {
   /** Hard cap on the agent run — the spec's 5-minute ceiling. */
   agentTimeoutMs?: number;
   /**
-   * The write/persist seam (commit/push/PR of generated docs). Read-only/dry-run
-   * first (like the recommender's first phase): the runner leaves this UNWIRED,
-   * so `persist-docs` persists nothing by construction even when `config.write`
-   * is true. Wiring it is the next increment.
+   * The write/persist seam: commit the docs the agent authored into the worktree,
+   * push the branch, and open a draft PR. The runner wires this to the `gh`-backed
+   * `makeGhPersistDocs`; `config.write` is the gate — an audit run (`write:false`)
+   * leaves it unrun even though it is wired. A test injects a stub here. When the
+   * worktree authored nothing, the seam is a no-op (no empty commit/PR).
    */
-  persistDocs?: (opts: { repo: string; worktreePath: string }) => Promise<void>;
+  persistDocs?: (opts: { repo: string; worktreePath: string; branch: string }) => Promise<void>;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
@@ -89,11 +90,16 @@ export function sessionNameFor(input: DocumentationInput): string {
 
 /**
  * Assemble the documentation prompt. Reports the resolved docs target and the
- * run mode to the `documenting-the-repo` skill. The mode is **audit** — the
- * read-only/dry-run first pass: the agent audits the docs surface against the
- * resolved target and reports drift, and does not persist changes (the persist
- * seam is unwired). `config.write` is reported so the audit can note whether a
- * maintained surface is in scope. Pure so it is unit-testable without the engine.
+ * run mode to the `documenting-the-repo` skill. `config.write` selects the mode:
+ *
+ * - `write: false` → **audit** (read-only/dry-run): the agent audits the docs
+ *   surface against the resolved target and reports drift; it persists nothing.
+ * - `write: true` → **write**: the agent discovers-or-authors — maintaining an
+ *   existing surface or authoring the initial Diátaxis corpus when none exists —
+ *   and writes files to disk. The dispatcher's `persistDocs` seam commits the
+ *   result and opens a PR; the agent itself does not commit or push.
+ *
+ * Pure so it is unit-testable without the engine.
  */
 export function assembleDocumentationPrompt(parts: {
   repo: string;
@@ -102,6 +108,50 @@ export function assembleDocumentationPrompt(parts: {
 }): string {
   const { repo, target, config } = parts;
   const json = (value: unknown): string => JSON.stringify(value, null, 2);
+  const configBlock = `## config
+\`\`\`json
+${json({ default_adapter: config.defaultAdapter, write: config.write })}
+\`\`\``;
+  const targetBlock = `## docs_target
+The resolver detected this target; route any pages and sample paths through it.
+\`\`\`json
+${json(target)}
+\`\`\``;
+  const llmsTxtLine = target.supportsLlmsTxt
+    ? config.write
+      ? `- maintain the llms.txt surface under \`${target.docsRoot}\`, keeping it in sync with the docs\n`
+      : "- the llms.txt surface, where it has drifted from the docs\n"
+    : "";
+
+  if (config.write) {
+    return `# Documentation run — docs harvester context
+
+You are the docs harvester. Maintain this repo's documentation surface following
+the \`documenting-the-repo\` skill. This is a **write** pass: write your changes to
+disk. Do **not** commit, push, or open a PR — the dispatcher commits everything you
+write under the docs target and opens a draft PR for human review.
+
+- \`repo\`: ${repo}
+- \`mode\`: write
+
+${targetBlock}
+
+${configBlock}
+
+## what to do — discover or author
+Following the skill, work the docs surface rooted at \`${target.docsRoot}\`:
+- **Discover first.** If a docs surface already exists there, maintain and correct
+  it: fix code samples that drift from working source, prune stale/orphaned pages,
+  document public surfaces that are missing, and strip LLM-isms (the skill's blocklist).
+- **Author when none exists.** If \`${target.docsRoot}\` has no surface yet, author the
+  initial corpus per Diátaxis: the human-facing markdown docs (tutorial / how-to /
+  reference / explanation) under \`${target.docsRoot}\`, and the agent-facing surface the
+  skill prescribes (module-index frontmatter and per-folder \`CLAUDE.md\` where the skill's
+  predicate holds).
+- Keep code samples grounded in working source, and avoid LLM-isms.
+${llmsTxtLine}`;
+  }
+
   return `# Documentation run — docs harvester context
 
 You are the docs harvester. Audit this repo's documentation surface following
@@ -111,16 +161,9 @@ drift, do not persist changes. The dispatcher provides everything below.
 - \`repo\`: ${repo}
 - \`mode\`: audit
 
-## docs_target
-The resolver detected this target; route any sample paths through it.
-\`\`\`json
-${json(target)}
-\`\`\`
+${targetBlock}
 
-## config
-\`\`\`json
-${json({ default_adapter: config.defaultAdapter, write: config.write })}
-\`\`\`
+${configBlock}
 
 ## what to audit
 Following the skill's audit pass, flag and report (do not fix in this pass):
@@ -128,7 +171,7 @@ Following the skill's audit pass, flag and report (do not fix in this pass):
 - stale or orphaned pages under \`${target.docsRoot}\`
 - public surfaces missing documentation
 - LLM-isms (the skill's blocklist)
-${target.supportsLlmsTxt ? "- the llms.txt surface, where it has drifted from the docs\n" : ""}`;
+${llmsTxtLine}`;
 }
 
 /**
@@ -139,9 +182,10 @@ ${target.supportsLlmsTxt ? "- the llms.txt surface, where it has drifted from th
  *
  * Linear (no park/resume — a short one-shot). Records its `workflows` row with
  * `kind:"documentation"`, so it runs on its own dedicated slot and is never
- * counted against `maxConcurrent` (same as the recommender). Read-only/dry-run
- * first: `persist-docs` is the write seam, left UNWIRED by the runner. Built as
- * a factory so the dispatcher injects real collaborators and tests inject stubs.
+ * counted against `maxConcurrent` (same as the recommender). `persist-docs` is the
+ * write seam — commit the authored docs, push, open a draft PR — gated on
+ * `config.write` (an audit run never persists). Built as a factory so the
+ * dispatcher injects real collaborators and tests inject stubs.
  */
 export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<DocumentationInput> {
   const launchTimeout = deps.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
@@ -258,11 +302,15 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
 
   async function persistDocs(ctx: StepContext<DocumentationInput>): Promise<void> {
     const { handle } = ctx.steps["prepare-docs-worktree"] as PrepareResult;
-    // Read-only/dry-run first: the runner leaves `persistDocs` unwired, so this
-    // persists nothing regardless of `config.write`. Wiring it (commit/PR of the
-    // maintained surface) is the next increment.
+    // `config.write` gates writing: an audit run never persists. When write is on
+    // and the seam is wired, commit + push + open the draft PR (a clean worktree
+    // is a no-op inside the seam — no empty commit/PR).
     if (!deps.config.write || !deps.persistDocs) return;
-    await deps.persistDocs({ repo: ctx.input.repo, worktreePath: handle.path });
+    await deps.persistDocs({
+      repo: ctx.input.repo,
+      worktreePath: handle.path,
+      branch: handle.branch,
+    });
   }
 
   async function cleanupWorktree(ctx: StepContext<DocumentationInput>): Promise<void> {
@@ -284,7 +332,11 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
         retry: 1,
         timeout: launchTimeout + agentTimeout + 30_000,
       })
-      .step("persist-docs", persistDocs)
+      // retry: 1 — one-shot. The commit happens on the first attempt; a retry
+      // after a push/PR failure would find the worktree already clean, so
+      // commitDocs returns null and the push is silently never re-tried (a
+      // no-PR "success"). A single attempt surfaces the push failure instead.
+      .step("persist-docs", persistDocs, { retry: 1 })
       .step("cleanup-worktree", cleanupWorktree)
   );
 }

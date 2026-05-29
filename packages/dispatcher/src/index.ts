@@ -26,6 +26,9 @@
  *   hook receiver + `/control` + `/health` surface
  * - `startPoller` / `POLLER_INTERVAL_MS`, `startWatchdog` / `WATCHDOG_INTERVAL_MS`
  *   — the reconciliation crons
+ * - `createDurableEngine` / `recoverEngine` / `reconcileOrphanedSignals` — the
+ *   durable workflow engine (persistent store, transient queue) and its boot
+ *   recovery: re-arm parked `waiting` executions, reconcile orphaned signals (#116)
  * - `openDb` / `openAndMigrate` / `MIGRATIONS_DIR` — the dispatcher database
  * - `WorkflowRecord` / `WorkflowState` — workflow persistence types
  *
@@ -44,6 +47,7 @@
  * - `metrics.ts` — queue observability: the `/metrics` (Prometheus) +
  *   `/control/metrics` (JSON) snapshot exports
  * - `poller*.ts` / `watchdog*.ts` — the GitHub-poll + liveness crons
+ * - `recovery.ts` — the durable engine factory + boot recovery/reconciliation
  * - `db.ts`, `db/` — SQLite open/migrate + migrations
  * - `tmux.ts`, `worktree.ts` — session + worktree lifecycle
  * - `state-issue.ts` — the dispatcher's edits to the state issue
@@ -74,6 +78,12 @@ export { EventHub } from "./event-hub.ts";
 export type { Event, WorkflowEventData } from "./event-hub.ts";
 export { POLLER_INTERVAL_MS, startPoller } from "./poller-cron.ts";
 export { startWatchdog, WATCHDOG_INTERVAL_MS } from "./watchdog-cron.ts";
+export { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
+export type {
+  EngineRecoveryResult,
+  OrphanedSignal,
+  ReconcileOrphanedSignalsDeps,
+} from "./recovery.ts";
 export { MIGRATIONS_DIR, openAndMigrate, openDb } from "./db.ts";
 export { HookServer } from "./hook-server.ts";
 export type { ControlDispatchInput, ControlPlane, SessionGate } from "./hook-server.ts";
