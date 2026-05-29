@@ -59,7 +59,16 @@ export function recordRetentionRun(
     db.run(
       `INSERT INTO retention_runs (ran_at, events_deleted, workflows_archived, ok, detail)
        VALUES (?, ?, ?, ?, ?)`,
-      [run.ranAt, run.eventsDeleted, run.workflowsArchived, run.detail ? 0 : 1, run.detail ?? null],
+      // ok is keyed on the *presence* of a detail, not its truthiness: a failure
+      // whose Error.message is "" still records ok=0 (an empty `detail ? …` would
+      // mis-record it as a clean run).
+      [
+        run.ranAt,
+        run.eventsDeleted,
+        run.workflowsArchived,
+        run.detail == null ? 1 : 0,
+        run.detail ?? null,
+      ],
     );
   } catch (error) {
     console.error(`[retention] failed to record run: ${(error as Error).message}`);

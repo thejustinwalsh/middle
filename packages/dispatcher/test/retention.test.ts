@@ -141,6 +141,14 @@ describe("retention_runs recording", () => {
     expect(last!.detail).toBe("boom");
   });
 
+  test("an empty-string detail still marks ok=false (failure presence, not truthiness)", () => {
+    // A thrown Error whose .message is "" must not be recorded as a clean run.
+    recordRetentionRun(db, { ranAt: NOW, eventsDeleted: 0, workflowsArchived: 0, detail: "" });
+    const last = getLatestRetentionRun(db);
+    expect(last!.ok).toBe(false);
+    expect(last!.detail).toBe("");
+  });
+
   test("getLatestRetentionRun returns the most recent by ran_at", () => {
     recordRetentionRun(db, { ranAt: NOW - DAY, eventsDeleted: 1, workflowsArchived: 0 });
     recordRetentionRun(db, { ranAt: NOW, eventsDeleted: 5, workflowsArchived: 2 });

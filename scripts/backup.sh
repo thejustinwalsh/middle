@@ -17,6 +17,8 @@
 #
 # Options:
 #   --home DIR     middle home dir (default: $MIDDLE_HOME, else ~/.middle)
+#   --db PATH      database to back up (default: the configured db_path, else
+#                  <home>/db.sqlite3)
 #   --out DIR      where to write the archive (default: current directory)
 #   --restore ARCH restore from archive ARCH instead of backing up
 #   --yes          skip the restore confirmation prompt
@@ -27,16 +29,20 @@
 # dispatcher (`mm start`); it reopens the restored db and migrates if needed.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="${MIDDLE_HOME:-$HOME/.middle}"
+HOME_EXPLICIT=0
+DB_OVERRIDE=""
 OUT_DIR="."
 RESTORE_ARCHIVE=""
 ASSUME_YES=0
 
-usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --home) HOME_DIR="${2:?--home needs a directory}"; shift 2 ;;
+    --home) HOME_DIR="${2:?--home needs a directory}"; HOME_EXPLICIT=1; shift 2 ;;
+    --db) DB_OVERRIDE="${2:?--db needs a path}"; shift 2 ;;
     --out) OUT_DIR="${2:?--out needs a directory}"; shift 2 ;;
     --restore) RESTORE_ARCHIVE="${2:?--restore needs an archive path}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
@@ -45,8 +51,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-DB_PATH="$HOME_DIR/db.sqlite3"
-CONFIG_PATH="$HOME_DIR/config.toml"
+# Resolve the db path so a relocated `db_path` isn't silently missed. Precedence:
+#   1. --db PATH (explicit)
+#   2. --home DIR → <DIR>/db.sqlite3 (the operator/test pinned a home)
+#   3. the configured global.dbPath (honors MIDDLE_CONFIG + tilde), via the same
+#      loader mm doctor uses; bun runs from the middle checkout so @middle/core resolves
+#   4. <home>/db.sqlite3
+resolve_db_path() {
+  if [ -n "$DB_OVERRIDE" ]; then printf '%s' "$DB_OVERRIDE"; return; fi
+  if [ "$HOME_EXPLICIT" -eq 1 ]; then printf '%s' "$HOME_DIR/db.sqlite3"; return; fi
+  local p
+  p="$(cd "$SCRIPT_DIR/.." && bun -e 'import{loadConfig}from"@middle/core";try{const d=loadConfig({globalPath:process.env.MIDDLE_CONFIG}).global.dbPath;if(d)process.stdout.write(d)}catch{}' 2>/dev/null)" || p=""
+  if [ -n "$p" ]; then printf '%s' "$p"; else printf '%s' "$HOME_DIR/db.sqlite3"; fi
+}
+
+DB_PATH="$(resolve_db_path)"
+CONFIG_PATH="${MIDDLE_CONFIG:-$HOME_DIR/config.toml}"
 PID_FILE="$HOME_DIR/dispatcher.pid"
 
 # Is the recorded dispatcher pid a live process?

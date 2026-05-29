@@ -97,6 +97,25 @@ describe("safety guards", () => {
     expect(existsSync(join(home, "db.sqlite3"))).toBe(true); // untouched
   });
 
+  test("--db points both scripts at a relocated database", async () => {
+    // A db that does NOT live at <home>/db.sqlite3 — the relocated-db case the
+    // config's db_path covers. --home stays a different, empty dir.
+    const relocated = join(out, "elsewhere.sqlite3");
+    const dbA = openAndMigrate(relocated);
+    dbA.run(
+      `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at)
+       VALUES ('wf-reloc', 'implementation', 'o/r', 'claude', 'completed', 1, 1)`,
+    );
+    dbA.close();
+
+    const backup = await run(BACKUP, ["--db", relocated, "--home", home, "--out", out]);
+    expect(backup.code).toBe(0);
+
+    const reset = await run(RESET, ["--db", relocated, "--home", home, "--yes"]);
+    expect(reset.code).toBe(0);
+    expect(existsSync(relocated)).toBe(false); // the relocated db, not <home>/db.sqlite3
+  });
+
   test("restore refuses while the dispatcher pidfile is live", async () => {
     seedDb();
     await run(BACKUP, ["--home", home, "--out", out]);

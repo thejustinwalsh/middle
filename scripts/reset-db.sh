@@ -8,10 +8,12 @@
 # GitHub; a reset loses in-flight workflow rows and the event log, not work.
 #
 # Usage:
-#   scripts/reset-db.sh [--home DIR] [--yes]
+#   scripts/reset-db.sh [--home DIR] [--db PATH] [--yes]
 #
 # Options:
 #   --home DIR   middle home dir (default: $MIDDLE_HOME, else ~/.middle)
+#   --db PATH    database to reset (default: the configured db_path, else
+#                <home>/db.sqlite3)
 #   --yes, -y    skip the confirmation prompt
 #   -h, --help   show this help
 #
@@ -20,21 +22,36 @@
 # Back up first with: scripts/backup.sh
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="${MIDDLE_HOME:-$HOME/.middle}"
+HOME_EXPLICIT=0
+DB_OVERRIDE=""
 ASSUME_YES=0
 
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --home) HOME_DIR="${2:?--home needs a directory}"; shift 2 ;;
+    --home) HOME_DIR="${2:?--home needs a directory}"; HOME_EXPLICIT=1; shift 2 ;;
+    --db) DB_OVERRIDE="${2:?--db needs a path}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage 0 ;;
     *) echo "reset-db.sh: unknown argument: $1" >&2; usage 1 ;;
   esac
 done
 
-DB_PATH="$HOME_DIR/db.sqlite3"
+# Resolve the db path (same precedence as backup.sh) so a relocated `db_path`
+# isn't silently skipped: --db, else an explicit --home, else the configured
+# global.dbPath (via the loader mm doctor uses), else <home>/db.sqlite3.
+resolve_db_path() {
+  if [ -n "$DB_OVERRIDE" ]; then printf '%s' "$DB_OVERRIDE"; return; fi
+  if [ "$HOME_EXPLICIT" -eq 1 ]; then printf '%s' "$HOME_DIR/db.sqlite3"; return; fi
+  local p
+  p="$(cd "$SCRIPT_DIR/.." && bun -e 'import{loadConfig}from"@middle/core";try{const d=loadConfig({globalPath:process.env.MIDDLE_CONFIG}).global.dbPath;if(d)process.stdout.write(d)}catch{}' 2>/dev/null)" || p=""
+  if [ -n "$p" ]; then printf '%s' "$p"; else printf '%s' "$HOME_DIR/db.sqlite3"; fi
+}
+
+DB_PATH="$(resolve_db_path)"
 PID_FILE="$HOME_DIR/dispatcher.pid"
 
 dispatcher_running() {

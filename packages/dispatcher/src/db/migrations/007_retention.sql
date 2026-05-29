@@ -1,4 +1,4 @@
--- 006_retention.sql
+-- 007_retention.sql
 -- Retention bookkeeping. A daily cron deletes `events` older than 14 days and
 -- archives `completed` workflows older than 30 days: their events are dropped
 -- while the row itself — final state plus the config snapshot in meta_json — is
