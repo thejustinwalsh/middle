@@ -114,9 +114,11 @@ function toHandle(repoPath: string, root: string, raw: RawWorktree): WorktreeHan
 }
 
 /**
- * Create a worktree for a dispatch unit on a fresh branch. Idempotent: if the
- * worktree is already registered, the existing handle is returned rather than
- * re-running `git worktree add`.
+ * Create a worktree for a dispatch unit. Idempotent on two axes: if the worktree
+ * is already registered the existing handle is returned without re-running
+ * `git worktree add`; and the branch is *reused* when its ref already exists
+ * (only a first dispatch creates it with `-b`). Reuse is what lets a re-dispatch
+ * succeed after a compensation/prune left the branch behind (issue #179).
  */
 export async function createWorktree(opts: CreateWorktreeOpts): Promise<WorktreeHandle> {
   const repoPath = realpathSync(opts.repoPath);
@@ -137,7 +139,17 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
   if (existing.some((w) => w.path === path)) return handle;
 
   mkdirSync(dirname(path), { recursive: true });
-  const result = await runGit(repoPath, ["worktree", "add", path, "-b", branch]);
+  // Reuse the branch if its ref already exists (e.g. a prior run's compensation
+  // or the reconciler removed the worktree but left the branch); only pass `-b`
+  // to create it on a first dispatch. Passing `-b` against an existing branch
+  // fails with "a branch named '<branch>' already exists", which strands the
+  // dispatch (issue #179).
+  const branchExists =
+    (await runGit(repoPath, ["rev-parse", "--verify", `refs/heads/${branch}`])).exitCode === 0;
+  const addArgs = branchExists
+    ? ["worktree", "add", path, branch]
+    : ["worktree", "add", path, "-b", branch];
+  const result = await runGit(repoPath, addArgs);
   if (result.exitCode !== 0) {
     throw new WorktreeError(`git worktree add failed: ${result.stderr.trim()}`);
   }
@@ -167,9 +179,10 @@ export async function destroyWorktree(handle: WorktreeHandle): Promise<void> {
     if (branchCheck.exitCode === 0) {
       const deleteResult = await runGit(handle.repoPath, ["branch", "-D", handle.branch]);
       if (deleteResult.exitCode !== 0) {
-        // Surface the failure clearly — a silently-undeleted branch makes the
-        // next createWorktree's `git worktree add -b <branch>` fail with a
-        // cryptic "branch already exists" on re-dispatch.
+        // Surface the failure clearly. createWorktree now reuses a surviving
+        // branch (issue #179), so a leftover ref no longer breaks re-dispatch —
+        // but destroyWorktree's contract is to remove the branch, so a failed
+        // delete is still a real error the caller must see, not swallow.
         throw new WorktreeError(
           `git branch -D ${handle.branch} failed: ${deleteResult.stderr.trim()}`,
         );
