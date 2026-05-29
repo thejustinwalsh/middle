@@ -563,6 +563,8 @@ export type ActiveImplementationWorkflow = {
   adapter: string;
   sessionName: string | null;
   state: WorkflowState;
+  /** Epoch ms of the last hook heartbeat, or null if none observed yet. */
+  lastHeartbeat: number | null;
 };
 
 /**
@@ -570,6 +572,10 @@ export type ActiveImplementationWorkflow = {
  * authoritative in-flight set the recommender consumes verbatim (it never
  * recomputes them). The recommender's own row is excluded by the `kind` filter.
  * `repo` scopes the list to one repo (the shared db spans repos); omit it for all.
+ *
+ * `lastHeartbeat` is included because the dispatcher is the only writer of the
+ * canonical In-flight line (`… · last heartbeat <rel> · …`); the recommender
+ * agent never has the heartbeat and so must not author that section (#180).
  */
 export function listActiveImplementationWorkflows(
   db: Database,
@@ -580,7 +586,7 @@ export function listActiveImplementationWorkflows(
   const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
   const rows = db
     .query(
-      `SELECT epic_number, adapter, session_name, state FROM workflows
+      `SELECT epic_number, adapter, session_name, state, last_heartbeat FROM workflows
         WHERE kind = 'implementation' AND state NOT IN (${placeholders})${repoClause}
         ORDER BY created_at ASC, rowid ASC`,
     )
@@ -589,12 +595,14 @@ export function listActiveImplementationWorkflows(
     adapter: string;
     session_name: string | null;
     state: string;
+    last_heartbeat: number | null;
   }[];
   return rows.map((r) => ({
     epicNumber: r.epic_number,
     adapter: r.adapter,
     sessionName: r.session_name,
     state: r.state as WorkflowState,
+    lastHeartbeat: r.last_heartbeat,
   }));
 }
 

@@ -45,6 +45,12 @@ export type InFlightSummary = {
   progress: string;
   /** The tmux session name, or null if not yet launched. */
   session: string | null;
+  /**
+   * Epoch ms of the last hook heartbeat, or null if none observed. The dispatcher
+   * is the only writer of the canonical In-flight line's `last heartbeat <rel>`
+   * field; the agent never authors it (#180).
+   */
+  lastHeartbeat: number | null;
 };
 
 /** Slot capacity as the recommender's `slots` object reports it. */
@@ -285,6 +291,7 @@ export function buildRecommenderContext(opts: {
       adapter: w.adapter,
       progress: w.state === "running" ? "running" : w.state,
       session: w.sessionName,
+      lastHeartbeat: w.lastHeartbeat,
     })),
     slots: {
       perAdapter,
