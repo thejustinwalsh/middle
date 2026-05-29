@@ -199,3 +199,33 @@ match the real rollout schema.
 `payload.type:"message" role:"assistant"`; tool calls are `function_call`
 with `name:"exec_command"`; context usage lives in `event_msg` `token_count`
 `info.total_token_usage` — exactly what the parser reads.
+
+## RESUME (2026-05-29): re-dispatched as "human answered" but no answer content arrived
+**File(s):** `.middle/blocked.json` (re-parked)
+**Date:** 2026-05-29
+
+**What happened:** middle re-spawned me with the brief "a human answered the open
+question," but the resume prompt's reply block was a **verbatim echo of my own
+question** (signed @thejustinwalsh), carrying no A/B selection or new guidance.
+
+**Verification that the answer is genuinely absent:** checked every channel —
+no issue reply comment after the 06:06 question (`gh api .../issues/177/comments`
+shows both comments unedited, created==updated), no PR #182 review
+(`.../pulls/182/reviews` empty), no PR review/issue comment from the human (only
+a CodeRabbit auto-summary), and **no `approved` label** on #177 (labels are just
+`phase:10`, `dogfood`). middle's own protocol uses the `approved` label as the
+"proceed with best-judgment" signal; its absence + no answer comment means the
+decision content never landed.
+
+**Decision:** Do NOT infer approval from a re-quoted question — choosing either A
+or B is a scope change against the issue's hard "no interface change" headline,
+which the skill/CLAUDE.md require written stakeholder authorization to override.
+Re-parked with a **sharpened** `blocked.json`: flagged that the prior resume
+carried no decision, and reduced the ask to a one-tap action (reply "A", reply
+"B", or add the `approved` label = proceed with recommended A).
+
+**Decision-independent work done on resume (keeps the base solid):** re-ran the
+gates — `bun run typecheck` clean, `bun test` 1081 pass / 0 fail; confirmed the
+branch is 0 commits behind `origin/main` and PR #182 reads `MERGEABLE`. Gaps 1–4
+remain green and ready; only criterion 5 (full live dispatch) is gated on the
+decision above.
