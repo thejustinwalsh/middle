@@ -74,21 +74,27 @@ describe("migration 007 — repo_config epic-store columns", () => {
     // Re-run migrations; backfill should populate epic_ref for the new row too.
     // (The migration is idempotent — UPDATE … WHERE epic_ref IS NULL pattern would be
     // tighter, but the simple form here is fine: the test exercises the as-shipped path.)
-    db.run("UPDATE workflows SET epic_ref = CAST(epic_number AS TEXT) WHERE epic_number IS NOT NULL");
-    const row = db
-      .query("SELECT epic_ref FROM workflows WHERE id = 'wf_backfill'")
-      .get() as { epic_ref: string };
+    db.run(
+      "UPDATE workflows SET epic_ref = CAST(epic_number AS TEXT) WHERE epic_number IS NOT NULL",
+    );
+    const row = db.query("SELECT epic_ref FROM workflows WHERE id = 'wf_backfill'").get() as {
+      epic_ref: string;
+    };
     expect(row.epic_ref).toBe("42");
   });
 
   test("a freshly-inserted row defaults epic_store to 'github'", () => {
-    db.run(
-      "INSERT INTO repo_config (repo, config_json, last_synced_at) VALUES (?, '{}', ?)",
-      ["acme/test", Date.now()],
-    );
+    db.run("INSERT INTO repo_config (repo, config_json, last_synced_at) VALUES (?, '{}', ?)", [
+      "acme/test",
+      Date.now(),
+    ]);
     const row = db
       .query("SELECT epic_store, epics_dir, state_file FROM repo_config WHERE repo = ?")
-      .get("acme/test") as { epic_store: string; epics_dir: string | null; state_file: string | null };
+      .get("acme/test") as {
+      epic_store: string;
+      epics_dir: string | null;
+      state_file: string | null;
+    };
     expect(row.epic_store).toBe("github");
     expect(row.epics_dir).toBeNull();
     expect(row.state_file).toBeNull();

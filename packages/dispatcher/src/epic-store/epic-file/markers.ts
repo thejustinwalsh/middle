@@ -29,8 +29,7 @@ export const QUESTION_CLOSE = "<!-- /middle:question -->";
 export const ANSWER_OPEN_RE = /^<!-- middle:answer for=(\d+) -->$/;
 export const ANSWER_CLOSE = "<!-- /middle:answer -->";
 
-export const DISPATCH_EVENT_OPEN_RE =
-  /^<!-- middle:dispatch-event ts=([\dT:Z.-]+) kind=(\w+) -->$/;
+export const DISPATCH_EVENT_OPEN_RE = /^<!-- middle:dispatch-event ts=([\dT:Z.-]+) kind=(\w+) -->$/;
 export const DISPATCH_EVENT_CLOSE = "<!-- /middle:dispatch-event -->";
 
 export const PARSE_ERROR_OPEN_RE = /^<!-- middle:parse-error ts=([\dT:Z.-]+) -->$/;
