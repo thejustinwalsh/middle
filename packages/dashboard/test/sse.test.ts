@@ -162,8 +162,51 @@ describe("dashboard SSE channels", () => {
         () => {
           updateWorkflow(db, "wf-1", { state: "running" });
         },
-      )) as { id: string; repo: string; epic: number | null; state: string };
-      expect(data).toEqual({ id: "wf-1", repo, epic: 7, state: "running" });
+      )) as {
+        id: string;
+        repo: string;
+        epic: number | null;
+        epicRef: string | null;
+        state: string;
+      };
+      // github-mode row: epic set, epic_ref unset (createWorkflowRecord doesn't write it).
+      expect(data).toEqual({ id: "wf-1", repo, epic: 7, epicRef: null, state: "running" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a file-mode transition pushes the epic_ref slug alongside a null epic", async () => {
+    const repo = "o/alpha";
+    seedWorkflow(db, {
+      id: "wf-file",
+      repo,
+      epicNumber: null,
+      epicRef: "rollout-epic-store",
+      state: "launching",
+    });
+    const dispose = bridgeWorkflowsToBus(bus, db);
+    try {
+      const data = (await awaitEvent(
+        `${base}/events/repos/${encodeURIComponent(repo)}`,
+        "workflow",
+        () => {
+          updateWorkflow(db, "wf-file", { state: "running" });
+        },
+      )) as {
+        id: string;
+        repo: string;
+        epic: number | null;
+        epicRef: string | null;
+        state: string;
+      };
+      expect(data).toEqual({
+        id: "wf-file",
+        repo,
+        epic: null,
+        epicRef: "rollout-epic-store",
+        state: "running",
+      });
     } finally {
       dispose();
     }
