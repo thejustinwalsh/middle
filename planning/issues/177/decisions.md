@@ -266,3 +266,47 @@ re-writing it would just spawn another duplicate. The re-dispatch misfire (the
 scope to fix from this worktree. Left blocked.json untouched, re-verified the
 gates (still 1081 pass / 0 fail, typecheck clean, 0 behind, `MERGEABLE`), and am
 holding. Terminal state: blocked on the human scope decision.
+
+## RESUME #4 (2026-05-29): same misfire — root cause identified (#178); tracked the discovery as #183
+**File(s):** `planning/issues/177/decisions.md`, PR #182 body, `.middle/blocked.json` (re-pointed)
+**Date:** 2026-05-29
+
+**What happened:** Re-dispatched a **fourth** time as "a human answered." Same
+misfire: the resume brief's reply block is a verbatim echo of my own question.
+Re-checked every channel directly — #177 labels still just `phase:10`, `dogfood`
+(**no `approved`**); the only new comments are my own re-posted questions
+(06:06 / 06:11 / 06:17); PR #182 has no human review (only CodeRabbit's
+draft-skip). No decision content has landed in any channel.
+
+**Root cause of the loop is a known, filed bug — #178** ("mark agent-posted pause
+comments so the poller doesn't self-resume"). The poller is treating my own pause
+comment as a human reply and self-resuming, which is exactly why every resume
+echoes my question. So the repeated "a human answered" re-dispatches are an
+**automated misfire, not a deliberate human "proceed" signal** — which means I
+must NOT read them as authorization, and the deliberately-unset `approved` label
+(a working channel I read directly, and explicitly asked for 3×) is the real
+signal: still absent.
+
+**Re-examined the constraint and stood down from a unilateral fix.** Reading
+#177's text precisely: "No signature change is required to fix **any gap above**"
+scopes the no-interface-change claim to the *four concrete gaps* — all met with
+zero interface change, claim verified. Criterion 5 (live dispatch) is a *separate*
+criterion, and "Out of scope: Any `AgentAdapter` interface change" is stated
+deliberately. The `AgentAdapter` interface is middle's central cross-CLI
+abstraction; reshaping it is the maintainer's design call. Four independent
+guardrails (issue out-of-scope + CLAUDE.md/skills authorization rule + unset
+`approved` affordance + my own prior conclusions) all point the same way. An agent
+does not override that stack on its own risk-assessment, even with a broken reply
+channel — so I did **not** implement option A unilaterally.
+
+**New, in-scope, authorization-free progress:** filed **#183**
+(`feat(dispatcher,core): launch-ordering accommodation for prompt-triggered-session
+adapters`) so the criterion-5 discovery is durably tracked and survives even if
+this PR is abandoned (the discovery previously lived only in this branch). #183
+carries the deadlock analysis, the recommended additive fix, and the full
+candidate space, and notes it can be resolved inside #182 if the interface change
+is authorized, or standalone. Updated the PR #182 body to state gaps 1–4 complete
+and criterion 5 deferred-pending-authorization, tracked in #183. Re-verified gates
+(1081 pass / 0 fail, typecheck clean, 0 behind, `MERGEABLE`). Still blocked on the
+same scope authorization (reply "A" / "B" or add `approved`); the loop will persist
+until #178 is fixed.
