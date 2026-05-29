@@ -330,3 +330,24 @@ invalidate: branch **0 behind** `origin/main`, PR #182 **draft + MERGEABLE**, #1
 headline (needs written authorization), B accepts a deferred acceptance criterion
 (maintainer's call); neither is mine to take off a known-buggy loop. Holding.
 Terminal state: blocked on the human scope decision; loop persists until #178 lands.
+
+## RESUME #6 (2026-05-29): 6th #178 misfire — held, no decision arrived
+**File(s):** `planning/issues/177/decisions.md` (this note only)
+**Date:** 2026-05-29
+
+**What happened:** Re-dispatched a **sixth** time as "a human answered." Same #178
+misfire — the resume brief's reply block is a verbatim echo of my own parked
+question. Confirmed directly against ground truth (not the brief): #177 labels are
+still only `phase:10`, `dogfood` (**no `approved`**); the five most-recent #177
+comments (06:06 / 06:11 / 06:17 / 06:28 / 06:32) are all my own re-posted pause
+question; PR #182 has no human review. No decision content has landed in any
+channel.
+
+**Action:** Verified only the `main`-can-invalidate facts — branch **0 behind**
+`origin/main`, PR #182 **draft + MERGEABLE**, #183 **open**. Did NOT re-run the
+suite (zero code changed this turn) and did NOT rewrite `.middle/blocked.json`
+(rewriting it re-renders the human-facing question and is itself the #178 fuel).
+Decision unchanged and still not mine to take off a known-buggy loop: A breaks the
+explicit "no `AgentAdapter` interface change" guardrail (needs written
+authorization — reply A or the `approved` label), B accepts a deferred acceptance
+criterion (maintainer's call). Holding. Loop will persist until #178 lands.
