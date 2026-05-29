@@ -1,7 +1,7 @@
 /**
  * Anti-staleness reconciliation (Epic #143, sub-issue #146). The unit tests cover
  * the pure drift detector; the integration test runs the **real
- * `reconcileStaleness` pass** against the real `GitHubGateway` interface (an
+ * `reconcileStaleness` pass** against the real `EpicGateway` interface (an
  * in-memory implementation) plus a drifted fixture spec, asserting the close +
  * the drift flag both fire — exercising the orchestration, not a stub of it.
  */

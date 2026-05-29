@@ -9,7 +9,7 @@
 import type { GateResult, GateRunReport } from "./gate-runner.ts";
 import type { IssueComment } from "./plan-comment.ts";
 
-/** The GitHub seam evidence posting needs (a subset of `GitHubGateway`). */
+/** The GitHub seam evidence posting needs (a subset of `EpicGateway`). */
 export interface EvidenceGateway {
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   postComment(repo: string, issueNumber: number, body: string): Promise<void>;

@@ -395,7 +395,7 @@ export type ReconciliationResolution = "rebased" | "merged-new-work-as-base";
 
 /** The narrow comment surface `applySuccess` needs — listing for idempotency,
  *  posting for the one announcement. Matches the existing
- *  {@link "../github.ts".GitHubGateway} method names so the daemon-side
+ *  {@link "../github.ts".EpicGateway} method names so the daemon-side
  *  composition is a thin `Pick`. */
 export type PrCommentGateway = {
   listIssueComments(repo: string, issueNumber: number): Promise<{ body: string }[]>;

@@ -5,7 +5,7 @@ import type { IssueComment } from "./gates/plan-comment.ts";
 
 /**
  * The GitHub access seam the skill-enforcement gates depend on. Modeled on the
- * `StateIssueGateway` in `state-issue.ts`: a narrow interface the gates take as
+ * `StateGateway` in `state-issue.ts`: a narrow interface the gates take as
  * an injected dependency (so they're testable against in-memory stubs) plus a
  * single `gh`-CLI-backed production implementation (`ghGitHub`).
  *
@@ -95,7 +95,7 @@ export function parseEpicsList(stdout: string): EpicListItem[] {
   return out;
 }
 
-export interface GitHubGateway {
+export interface EpicGateway {
   /** Comments on an issue or PR (PRs are issues for the comments endpoint). */
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   /** The open PR for an Epic — the one whose body closes `#epicNumber`. */
@@ -174,7 +174,7 @@ export async function resolveAgentLogin(): Promise<string | undefined> {
   return login === "" ? undefined : login;
 }
 
-export const ghGitHub: GitHubGateway = {
+export const ghGitHub: EpicGateway = {
   async listIssueComments(repo, issueNumber) {
     const result = await run([
       "gh",

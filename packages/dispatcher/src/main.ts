@@ -37,7 +37,7 @@ import { startAuditCron } from "./audit-cron.ts";
 import { startStalenessCron } from "./staleness-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
-import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
+import { ghStateIssueGateway, readState, type StateGateway } from "./state-issue.ts";
 import { capturePane, killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import { createWorktree, destroyWorktree, pruneWorktreeAt } from "./worktree.ts";
@@ -61,7 +61,7 @@ import { createImplementationWorkflow, RESUME_EVENT } from "./workflows/implemen
 export type DaemonHostContext = {
   db: Database;
   config: MiddleConfig;
-  stateGateway: StateIssueGateway;
+  stateGateway: StateGateway;
   runRecommender: (repo: string) => Promise<{ status: number; body: string }>;
   /** Force-dispatch an Epic with a chosen adapter — same path as `mm dispatch`. */
   dispatch: (

@@ -44,7 +44,7 @@ import type {
 } from "./wire.ts";
 
 /** A repo's read-write state issue location. */
-type StateIssueGateway = {
+type StateGateway = {
   readBody(repo: string, issueNumber: number): Promise<string>;
 };
 
@@ -55,7 +55,7 @@ export type DbDepsOptions = {
   /** The merged middle config — slot caps, default adapter, dispatcher port. */
   config: MiddleConfig;
   /** Reads a repo's state-issue body. Absent → NEXT UP / Needs-You read empty. */
-  stateGateway?: StateIssueGateway;
+  stateGateway?: StateGateway;
   /** The non-terminal lifecycle states (rows holding a slot / in flight). */
   spawnTerminal?: TerminalSpawner;
   /** Probe whether a tmux session is alive. Defaults to `tmux has-session`. */

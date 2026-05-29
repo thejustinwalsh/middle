@@ -335,7 +335,7 @@ describe("tryMergeMainNewWorkAsBase — fixture repo", () => {
 describe("applySuccess — fixture repo", () => {
   /**
    * Spy on PR-comment listing + posting. Mirrors the existing
-   * `GitHubGateway` subset {@link applySuccess} consumes.
+   * `EpicGateway` subset {@link applySuccess} consumes.
    */
   function makeCommentSpy(): {
     listIssueComments: (repo: string, prNumber: number) => Promise<{ body: string }[]>;
