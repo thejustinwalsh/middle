@@ -9,7 +9,7 @@ import {
   classifyReviewOutcome,
   reasonFromSignalName,
   runPoller,
-  type GitHubPollGateway,
+  type PollGateway,
   type IssueComment,
   type PrSnapshot,
   type RateLimitStatus,
@@ -78,7 +78,7 @@ function makeGateway(opts: {
   comments?: IssueComment[];
   pr?: PrSnapshot | null;
   rateLimit?: RateLimitStatus;
-}): GitHubPollGateway & { commentCalls: number; prCalls: number; rateLimitCalls: number } {
+}): PollGateway & { commentCalls: number; prCalls: number; rateLimitCalls: number } {
   const g = {
     commentCalls: 0,
     prCalls: 0,
@@ -418,7 +418,7 @@ describe("runPoller — resilience", () => {
     seedParked("answered-question", 200); // this one's gateway throws
 
     let n = 0;
-    const github: GitHubPollGateway = {
+    const github: PollGateway = {
       async listIssueComments(_repo, epicNumber) {
         n++;
         if (epicNumber === 200) throw new Error("API rate limit exceeded");

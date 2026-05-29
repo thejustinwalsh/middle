@@ -5,7 +5,7 @@
  * out mid-view). `readEpics` returns the open rows the dashboard browses.
  */
 import type { Database } from "bun:sqlite";
-import type { GitHubGateway } from "./github.ts";
+import type { EpicGateway } from "./github.ts";
 
 /** A cached Epic row, projected for the dashboard join. */
 export type EpicRow = {
@@ -23,7 +23,7 @@ export type EpicRow = {
 export async function refreshEpics(
   db: Database,
   repo: string,
-  github: GitHubGateway,
+  github: EpicGateway,
 ): Promise<void> {
   const epics = await github.listOpenEpics(repo);
   const now = Date.now();

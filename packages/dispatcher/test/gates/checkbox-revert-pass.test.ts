@@ -10,7 +10,7 @@ import {
 } from "../../src/gates/checkbox-revert-pass.ts";
 import { evidenceMarker } from "../../src/gates/gate-evidence.ts";
 import { parseVerifyConfig } from "../../src/gates/verify-config.ts";
-import type { GitHubGateway, PullRequest } from "../../src/github.ts";
+import type { EpicGateway, PullRequest } from "../../src/github.ts";
 import {
   createWorkflowRecord,
   getCheckboxReconcileState,
@@ -69,7 +69,7 @@ function fakeGithub(opts: { body: string; headSha?: string; epicNumber?: number 
   const unimplemented = (name: string) => (): never => {
     throw new Error(`fakeGithub.${name} not implemented`);
   };
-  const github: GitHubGateway = {
+  const github: EpicGateway = {
     async findEpicPr(_repo, epic) {
       findCalls++;
       return epic === (opts.epicNumber ?? 1) ? pr : null;
@@ -125,7 +125,7 @@ function seedRunning(id: string, worktreePath: string, epicNumber = 1): void {
 
 /** Build pass deps with the injected gateway + an in-memory config loader. */
 function passDeps(
-  github: GitHubGateway,
+  github: EpicGateway,
   over: Partial<CheckboxRevertPassDeps> = {},
 ): CheckboxRevertPassDeps {
   return {
@@ -276,7 +276,7 @@ describe("runCheckboxRevertPass", () => {
         headSha: "sha1",
         epicNumber: 2,
       });
-      const github: GitHubGateway = {
+      const github: EpicGateway = {
         ...good.github,
         async findEpicPr(repo, epic) {
           if (epic === 1) throw new Error("GitHub down");

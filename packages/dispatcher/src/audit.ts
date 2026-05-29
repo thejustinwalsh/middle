@@ -8,7 +8,7 @@
  * (a visible, reversible flag) and never edits an issue body.
  */
 import { auditIssueBody, isFeatureIssue } from "@middle/core";
-import type { GitHubGateway } from "./github.ts";
+import type { EpicGateway } from "./github.ts";
 
 /** The `needs-design` label applied to issues that fail the integration rubric. */
 export const NEEDS_DESIGN_LABEL = "needs-design";
@@ -20,7 +20,7 @@ const DEFAULT_MAX_FLAGS_PER_PASS = 25;
 export type BacklogAuditDeps = {
   /** The `owner/name` repo slug whose open feature issues are audited. */
   repo: string;
-  github: Pick<GitHubGateway, "listOpenIssues" | "addLabel">;
+  github: Pick<EpicGateway, "listOpenIssues" | "addLabel">;
   /** Cap on issues labelled per pass (default {@link DEFAULT_MAX_FLAGS_PER_PASS}). */
   maxFlagsPerPass?: number;
 };

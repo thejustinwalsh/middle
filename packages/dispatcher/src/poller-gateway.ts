@@ -1,7 +1,7 @@
 import type {
   CiStatus,
   EpicPrLifecycle,
-  GitHubPollGateway,
+  PollGateway,
   IssueComment,
   PrReview,
   PrSnapshot,
@@ -53,7 +53,7 @@ export function deriveCiStatus(rollup: CheckRollupEntry[] | null | undefined): C
 }
 
 /**
- * The production {@link GitHubPollGateway} — reads issue comments and PR review
+ * The production {@link PollGateway} — reads issue comments and PR review
  * state through the `gh` CLI. The poller's logic is unit-tested against an
  * injected stub gateway; this is the thin subprocess glue that backs it in the
  * dispatcher. Read-only: the poller never writes to GitHub.
@@ -75,7 +75,7 @@ function isBotLogin(login: string, type: string | undefined): boolean {
   return type === "Bot" || login.endsWith("[bot]");
 }
 
-export const ghPollGateway: GitHubPollGateway = {
+export const ghPollGateway: PollGateway = {
   async listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]> {
     // `--slurp` wraps the per-page arrays into one outer array; `gh` without it
     // emits one JSON array *per page*, which `JSON.parse` chokes on past page 1.

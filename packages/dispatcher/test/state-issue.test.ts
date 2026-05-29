@@ -10,7 +10,7 @@ import {
   insertDispatcherTick,
   readState,
   updateDispatcherSections,
-  type StateIssueGateway,
+  type StateGateway,
 } from "../src/state-issue.ts";
 
 /** A full, recommender-populated state — the kind the dispatcher edits in place. */
@@ -86,7 +86,7 @@ function sections(body: string): Record<string, string> {
 
 const RECOMMENDER_SECTIONS = ["Ready to dispatch", "Needs human input", "Blocked", "Excluded"];
 
-function makeGateway(body: string): { gw: StateIssueGateway; written: () => string | null } {
+function makeGateway(body: string): { gw: StateGateway; written: () => string | null } {
   let store = body;
   let lastWrite: string | null = null;
   return {

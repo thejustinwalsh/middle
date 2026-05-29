@@ -3,7 +3,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { loadConfig } from "@middle/core";
 import { Bunqueue } from "bunqueue/client";
-import type { GitHubGateway } from "./github.ts";
+import type { EpicGateway } from "./github.ts";
 import { isPaused, listManagedRepos } from "./repo-config.ts";
 import { reconcileStaleness } from "./staleness.ts";
 
@@ -31,7 +31,7 @@ export type StalenessCronDeps = {
   /** The dispatcher DB holding the managed-repo registry. */
   db: Database;
   github: Pick<
-    GitHubGateway,
+    EpicGateway,
     "listOpenIssues" | "listMergedPrsClosingRefs" | "closeIssue" | "createIssue"
   >;
   /**

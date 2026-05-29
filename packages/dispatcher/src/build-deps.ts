@@ -6,7 +6,7 @@ import type { PlanCommentReader } from "./gates/plan-comment.ts";
 import { loadVerifyConfig, verifyConfigPath } from "./gates/verify-config.ts";
 import {
   ghGitHub,
-  type GitHubGateway,
+  type EpicGateway,
   resolveAgentLogin as ghResolveAgentLogin,
 } from "./github.ts";
 import type { SessionGate } from "./hook-server.ts";
@@ -15,9 +15,9 @@ import { findActiveWorkflowBySession, getWorkflow } from "./workflow-record.ts";
 import type { ImplementationDeps, ImplementationInput } from "./workflows/implementation.ts";
 import { createWorktree, destroyWorktree } from "./worktree.ts";
 
-/** The slice of {@link GitHubGateway} the deps factory reads. */
+/** The slice of {@link EpicGateway} the deps factory reads. */
 type DepsGitHub = Pick<
-  GitHubGateway,
+  EpicGateway,
   "findEpicPr" | "getCommentAuthor" | "postComment" | "getIssueLabels"
 >;
 
