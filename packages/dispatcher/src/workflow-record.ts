@@ -306,6 +306,28 @@ export function finalizeParkedWorkflow(
 }
 
 /**
+ * Promote a still-`pending` workflow to `failed`, returning whether it
+ * transitioned. The daemon calls this off bunqueue's terminal `workflow:failed`
+ * signal (issue #179): when the **first** step (`prepare-worktree`) fails after
+ * its retries are exhausted, the saga has no completed step to compensate, so no
+ * compensation runs to mark the row terminal and it strands at `pending` — which
+ * 409-blocks every later dispatch of that Epic. The `AND state = 'pending'`
+ * guard makes this exact: a *later* step's failure leaves the row past `pending`
+ * (the launch step already wrote `launching`) and compensation marks it
+ * `compensated`, so this no-ops and never races that terminal write. Fires the
+ * update observer (the SSE broadcast) only on a real transition.
+ */
+export function promotePendingToFailed(db: Database, id: string): boolean {
+  const res = db.run(
+    "UPDATE workflows SET state = 'failed', updated_at = ? WHERE id = ? AND state = 'pending'",
+    [Date.now(), id],
+  );
+  const changed = (res.changes ?? 0) > 0;
+  if (changed) notifyUpdateObservers(id, { state: "failed" });
+  return changed;
+}
+
+/**
  * The terminal states. A workflow in one of these no longer owns its session,
  * so its hooks are stale and must not be correlated to it — `session.started`
  * for a *new* dispatch reusing a deterministic session name would otherwise

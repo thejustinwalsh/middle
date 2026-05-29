@@ -18,6 +18,7 @@ import {
   listNonTerminalWorkflows,
   listRunningImplementationWorkflows,
   patchWorkflowMeta,
+  promotePendingToFailed,
   readWorkflowMeta,
   setCheckboxReconcileState,
   updateWorkflow,
@@ -537,6 +538,60 @@ describe("workflow observers", () => {
       expect(seen).toEqual([{ id: "a", state: "completed" }]);
       // No longer waiting-human → no transition → no notification.
       expect(finalizeParkedWorkflow(db, "a", "failed")).toBe(false);
+      expect(seen).toHaveLength(1);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe("promotePendingToFailed — orphaned prepare-worktree (issue #179)", () => {
+  function seed(id: string): void {
+    createWorkflowRecord(db, {
+      id,
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+  }
+
+  test("flips a still-pending row to failed and reports the transition", () => {
+    seed("a");
+    expect(getWorkflow(db, "a")!.state).toBe("pending");
+    expect(promotePendingToFailed(db, "a")).toBe(true);
+    expect(getWorkflow(db, "a")!.state).toBe("failed");
+    // A terminal row no longer blocks the Epic's next dispatch (the 409 guard).
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", 1)).toBe(false);
+  });
+
+  test("no-ops on a row already past pending (e.g. a later step's compensated failure)", () => {
+    seed("a");
+    updateWorkflow(db, "a", { state: "compensated" });
+    expect(promotePendingToFailed(db, "a")).toBe(false);
+    expect(getWorkflow(db, "a")!.state).toBe("compensated"); // not clobbered to failed
+  });
+
+  test("no-ops on a launching row — the launch step already advanced it", () => {
+    seed("a");
+    updateWorkflow(db, "a", { state: "launching" });
+    expect(promotePendingToFailed(db, "a")).toBe(false);
+    expect(getWorkflow(db, "a")!.state).toBe("launching");
+  });
+
+  test("no-ops on an unknown id", () => {
+    expect(promotePendingToFailed(db, "missing")).toBe(false);
+  });
+
+  test("notifies observers only on a real transition", () => {
+    seed("a");
+    const seen: Array<{ id: string; state?: string }> = [];
+    const dispose = addWorkflowObserver((id, patch) => seen.push({ id, state: patch.state }));
+    try {
+      expect(promotePendingToFailed(db, "a")).toBe(true);
+      expect(seen).toEqual([{ id: "a", state: "failed" }]);
+      // Idempotent: a second call no-ops (row is failed, not pending) → no notify.
+      expect(promotePendingToFailed(db, "a")).toBe(false);
       expect(seen).toHaveLength(1);
     } finally {
       dispose();

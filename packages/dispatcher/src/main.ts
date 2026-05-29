@@ -46,6 +46,7 @@ import {
   getWorkflow,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
+  promotePendingToFailed,
 } from "./workflow-record.ts";
 import type { ControlDispatchInput } from "./hook-server.ts";
 import { createImplementationWorkflow, RESUME_EVENT } from "./workflows/implementation.ts";
@@ -186,7 +187,15 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // Source 1: bunqueue-native lifecycle (running/waiting/completed/failed/compensating).
   engine.onAny((event) => {
     if (event.type.startsWith("workflow:") && "state" in event) {
-      broadcastWorkflow(event.executionId, (event as { state: string }).state);
+      const state = (event as { state: string }).state;
+      // A terminal bunqueue failure of the first step (prepare-worktree) leaves
+      // the middle row stranded at `pending` — the saga has no completed step to
+      // compensate, so nothing marks it terminal, and a non-terminal row
+      // 409-blocks the Epic's next dispatch. Promote that orphan to `failed`
+      // (no-op for any row past `pending`) before broadcasting, so the wire frame
+      // and the freed-reservation/auto-dispatch trigger see the terminal row (#179).
+      if (state === "failed") promotePendingToFailed(db, event.executionId);
+      broadcastWorkflow(event.executionId, state);
     }
   });
   // Source 2: middle's DB-only states bunqueue never emits (waiting-human, the
