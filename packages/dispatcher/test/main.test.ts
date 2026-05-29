@@ -208,7 +208,8 @@ describe("dispatcher main", () => {
       // Wait until the orphan has been promoted to `failed` on the feed.
       const failedFrame = await readUntil(
         events,
-        (f) => f.includes("event: workflow") && f.includes(workflowId) && f.includes('"failed"'),
+        (f) =>
+          f.includes("event: workflow") && f.includes(workflowId) && f.includes('"state":"failed"'),
         15_000,
       );
       expect(failedFrame).not.toBeNull();

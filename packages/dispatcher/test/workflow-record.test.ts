@@ -583,6 +583,30 @@ describe("promotePendingToFailed — orphaned prepare-worktree (issue #179)", ()
     expect(promotePendingToFailed(db, "missing")).toBe(false);
   });
 
+  test("does NOT touch a pending recommender row — it legitimately sits at pending through build-prompt, where compensation owns the terminal state", () => {
+    createWorkflowRecord(db, {
+      id: "rec",
+      kind: "recommender",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
+    expect(promotePendingToFailed(db, "rec")).toBe(false);
+    expect(getWorkflow(db, "rec")!.state).toBe("pending"); // not clobbered to failed
+  });
+
+  test("does NOT touch a pending documentation row (same reason as recommender)", () => {
+    createWorkflowRecord(db, {
+      id: "doc",
+      kind: "documentation",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
+    expect(promotePendingToFailed(db, "doc")).toBe(false);
+    expect(getWorkflow(db, "doc")!.state).toBe("pending");
+  });
+
   test("notifies observers only on a real transition", () => {
     seed("a");
     const seen: Array<{ id: string; state?: string }> = [];
