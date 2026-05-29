@@ -181,6 +181,59 @@ describe("dispatcher main", () => {
     }
   }, 20_000);
 
+  test("daemon rejects a disabled adapter on /control/dispatch (configured+enabled+implemented gate)", async () => {
+    // Override codex to disabled in this test's config; claude stays on (default).
+    writeFileSync(
+      configPath,
+      [
+        "[global]",
+        "dispatcher_port = 0",
+        `db_path = "${join(dir, "db.sqlite3")}"`,
+        `worktree_root = "${join(dir, "worktrees")}"`,
+        `log_dir = "${join(dir, "logs")}"`,
+        "",
+        "[adapters.codex]",
+        "enabled = false",
+        "",
+      ].join("\n"),
+    );
+    const repoPath = join(realpathSync(dir), "repo-disabled");
+    expect(
+      await Bun.spawn(["git", "init", repoPath], { stdout: "ignore", stderr: "ignore" }).exited,
+    ).toBe(0);
+
+    const { proc, port } = await startDaemon();
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const body = (adapter: string) =>
+        JSON.stringify({ repo: "o/r", repoPath, epicNumber: 88, adapter });
+
+      // Disabled-but-implemented adapter — must 400 with a "disabled" reason,
+      // NOT "unknown adapter": the route reaches the daemon below the CLI gate
+      // (a direct POST or a dashboard call), so the daemon owns this check.
+      const disabled = await fetch(`${base}/control/dispatch`, {
+        method: "POST",
+        body: body("codex"),
+      });
+      expect(disabled.status).toBe(400);
+      expect(await disabled.json()).toEqual({ error: "adapter codex is disabled in config" });
+
+      // Unimplemented adapter — still 400, with the distinct "unknown" wording
+      // (so an operator can tell a typo from a deliberate disable).
+      const unknown = await fetch(`${base}/control/dispatch`, {
+        method: "POST",
+        body: body("nonexistent"),
+      });
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toEqual({ error: "unknown adapter: nonexistent" });
+
+      proc.kill("SIGTERM");
+      expect(await proc.exited).toBe(0);
+    } finally {
+      proc.kill("SIGKILL");
+    }
+  }, 20_000);
+
   test("two concurrent dispatches of the same Epic: exactly one starts, the other 409s", async () => {
     const repoPath = join(realpathSync(dir), "repo-concurrent");
     const gitEnv = {

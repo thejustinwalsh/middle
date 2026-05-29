@@ -115,7 +115,13 @@ program
   .description("Force-dispatch an Epic (or standalone issue) through the implementation workflow")
   .argument("<repo>", "path to the local repo checkout")
   .argument("<epic>", "Epic or standalone issue number")
-  .action(async (repo: string, epic: string) => process.exit(await runDispatch(repo, epic)));
+  .option(
+    "--adapter <name>",
+    "adapter to dispatch with (overrides the agent:<name> label and default)",
+  )
+  .action(async (repo: string, epic: string, opts: { adapter?: string }) =>
+    process.exit(await runDispatch(repo, epic, { adapter: opts.adapter })),
+  );
 
 program
   .command("run-recommender")

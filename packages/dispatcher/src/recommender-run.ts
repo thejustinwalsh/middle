@@ -114,11 +114,17 @@ export async function resolveRecommenderOptions(
     return { ok: false, error: `no state issue configured for this repo (run \`mm init\` first)` };
   }
   const adapterName = config.recommender?.adapter ?? config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    return {
-      ok: false,
-      error: `only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
-    };
+  try {
+    getAdapter(adapterName);
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+  // Dispatchable = implemented (above) AND enabled in config — mirror the
+  // daemon's manual-dispatch gate so a `[recommender] adapter = "x"` pointing
+  // at a disabled adapter can't sneak through the `/trigger/recommender`
+  // entry point (the CLI gates earlier, the dashboard hits this directly).
+  if (!(config.adapters[adapterName]?.enabled ?? false)) {
+    return { ok: false, error: `adapter ${adapterName} is disabled in config` };
   }
   // Resolved from the middle installation, NOT from repoPath — the schema is the
   // single source of truth and is not stamped into target repos (issue #107).

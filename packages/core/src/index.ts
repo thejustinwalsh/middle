@@ -12,10 +12,12 @@
  * - `HOOK_SH`, `PR_READY_GATE_SH` — the hook shell-script payloads
  * - tmux-TUI helpers: `capturePane`, `sendText`, `sendKeys`, `pollPaneFor`
  * - integration rubric: `auditIssueBody`, `isIntegrationCriterion`, `parseAcceptanceCriteria`
+ * - `selectAdapter` — per-CLI adapter selection (label override / default / rate-limit switch)
  *
  * Where things live:
  * - `config.ts` — config schema + `loadConfig`
  * - `adapter.ts` — `AgentAdapter` + option/result types
+ * - `select-adapter.ts` — the four-rule adapter selection algorithm
  * - `events.ts` — the normalized hook-event vocabulary
  * - `hook-script.ts` — the hook shell scripts adapters install
  * - `tmux-tui.ts` — low-level tmux pane capture / key sending
@@ -72,3 +74,6 @@ export {
   NON_FEATURE_LABELS,
 } from "./integration-rubric.ts";
 export type { RubricFinding } from "./integration-rubric.ts";
+
+export { selectAdapter } from "./select-adapter.ts";
+export type { AdapterSelectionInput, AdapterSelection } from "./select-adapter.ts";

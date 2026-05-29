@@ -1,17 +1,25 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { loadConfig } from "@middle/core";
+import { loadConfig, selectAdapter } from "@middle/core";
+import { knownAdapters } from "@middle/dispatcher/src/adapters.ts";
 import { type StartOptions, runStart } from "./start.ts";
 
 export type DispatchOptions = {
   /** Override the global config path (defaults to `~/.middle/config.toml`). */
   configPath?: string;
+  /**
+   * Explicit adapter override. When set, it wins over the Epic's `agent:<name>`
+   * label and the default adapter (it must still be a configured adapter).
+   */
+  adapter?: string;
   /** Override the daemon spawn (defaults to {@link runStart}). Returns its exit code. */
   startDaemon?: (opts: StartOptions) => number;
   /** Readiness-poll budget after a spawn before giving up (default 10000ms). */
   healthTimeoutMs?: number;
   /** Backoff between `/control/events` reconnect attempts (default 1000ms). */
   reconnectBackoffMs?: number;
+  /** Injected Epic-label fetch (defaults to a `gh` call). Tests override it. */
+  fetchLabels?: (repoSlug: string, epic: number) => Promise<string[]>;
 };
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 10_000;
@@ -58,6 +66,36 @@ async function deriveRepoSlug(repoPath: string): Promise<string> {
     if (match) return match[1]!;
   }
   return basename(repoPath);
+}
+
+/**
+ * Fetch an Epic's label names via `gh`, for the `agent:<name>` adapter override.
+ * Best-effort: a non-zero exit (offline, unauthenticated, missing issue) yields
+ * an empty list so selection falls back to the default adapter rather than
+ * blocking the dispatch.
+ */
+async function fetchEpicLabels(repoSlug: string, epic: number): Promise<string[]> {
+  const proc = Bun.spawn(
+    [
+      "gh",
+      "issue",
+      "view",
+      String(epic),
+      "-R",
+      repoSlug,
+      "--json",
+      "labels",
+      "--jq",
+      ".labels[].name",
+    ],
+    { stdout: "pipe", stderr: "ignore" },
+  );
+  const out = await new Response(proc.stdout).text();
+  if ((await proc.exited) !== 0) return [];
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 /** Probe `GET /health`; true only on `{ ok: true }`. Connection errors are "down", not a throw. */
@@ -239,15 +277,46 @@ export async function runDispatch(
     return 1;
   }
 
-  const adapterName = config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    console.error(
-      `mm dispatch: only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
+  const repoSlug = await deriveRepoSlug(repoPath);
+
+  // Resolve the adapter: an explicit --adapter wins; otherwise honor an
+  // `agent:<name>` label on the Epic, falling back to the default adapter
+  // (selectAdapter rules 1–2). The rate-limit switch (rules 3–4) is the
+  // recommender/auto-dispatch path's concern — a force-dispatch is an explicit
+  // human act, so it doesn't second-guess a rate-limited choice here.
+  //
+  // "Available" = configured AND enabled AND implemented (in the registry) — the
+  // same set the daemon validates against, so a disabled or unimplemented adapter
+  // is rejected here with a clear message instead of as a late daemon 400.
+  const known = new Set(knownAdapters());
+  const available = Object.entries(config.adapters)
+    .filter(([name, a]) => a.enabled && known.has(name))
+    .map(([name]) => name);
+  let adapterName: string;
+  if (opts.adapter !== undefined) {
+    if (!available.includes(opts.adapter)) {
+      console.error(
+        `mm dispatch: adapter "${opts.adapter}" is not configured (available: ${available.join(", ") || "(none)"})`,
+      );
+      return 1;
+    }
+    adapterName = opts.adapter;
+  } else {
+    const labels = await (opts.fetchLabels ?? fetchEpicLabels)(repoSlug, epicNumber).catch(
+      () => [],
     );
-    return 1;
+    try {
+      adapterName = selectAdapter({
+        labels,
+        defaultAdapter: config.global.defaultAdapter,
+        available,
+      }).adapter;
+    } catch (error) {
+      console.error(`mm dispatch: ${(error as Error).message}`);
+      return 1;
+    }
   }
 
-  const repoSlug = await deriveRepoSlug(repoPath);
   const base = `http://127.0.0.1:${config.global.dispatcherPort}`;
 
   // Ensure the daemon is up. If /health is down, spawn it and poll until ready.

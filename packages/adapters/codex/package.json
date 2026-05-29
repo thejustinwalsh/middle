@@ -6,5 +6,8 @@
   "main": "src/index.ts",
   "dependencies": {
     "@middle/core": "workspace:*"
+  },
+  "devDependencies": {
+    "smol-toml": "^1.6.1"
   }
 }

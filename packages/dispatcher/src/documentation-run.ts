@@ -90,11 +90,17 @@ export async function resolveDocumentationOptions(
   getAdapter: (name: string) => AgentAdapter,
 ): Promise<ResolveDocumentationResult> {
   const adapterName = config.docs?.adapter ?? config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    return {
-      ok: false,
-      error: `only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
-    };
+  try {
+    getAdapter(adapterName);
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+  // Dispatchable = implemented (above) AND enabled in config — mirror the
+  // daemon's manual-dispatch + recommender-validator gates so a
+  // `[docs] adapter = "x"` pointing at a disabled adapter can't sneak through
+  // the daemon's documentation route below the CLI's enabled-check.
+  if (!(config.adapters[adapterName]?.enabled ?? false)) {
+    return { ok: false, error: `adapter ${adapterName} is disabled in config` };
   }
 
   let target: DocsTargetSummary;
