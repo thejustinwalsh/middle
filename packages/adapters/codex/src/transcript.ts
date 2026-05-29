@@ -3,10 +3,12 @@ import type { HookPayload, TranscriptState } from "@middle/core";
 
 /**
  * Locate Codex's on-disk session transcript (the "rollout" JSONL) from the
- * startup-hook payload. Codex's payload key for the rollout path is verified on
- * a live run; we accept the likely keys in priority order and throw if none is
- * present, so a payload-shape mismatch fails fast at launch→drive rather than
- * silently reading nothing.
+ * `SessionStart` hook payload. Confirmed against codex 0.133.0: the payload key
+ * is `transcript_path` (Claude-identical), pointing at
+ * `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`. We try
+ * `transcript_path` first, accept `rollout_path` as a secondary, and throw if
+ * neither is present so a payload-shape mismatch fails fast at launch→drive
+ * rather than silently reading nothing.
  */
 export function resolveTranscriptPath(payload: HookPayload): string {
   for (const key of ["transcript_path", "rollout_path", "session_file", "path"] as const) {
@@ -32,12 +34,13 @@ type RolloutLine = {
  * context-token usage. Corrupt lines are skipped, not thrown on — the reconciler
  * cron is the authoritative reader; this is the fast-path estimate.
  *
- * The rollout schema (field names, event-type strings) is the live-run tightening
- * point. We read tolerantly:
+ * The schema is confirmed against codex 0.133.0 rollouts. We read tolerantly:
  * - `timestamp` on any line advances `lastActivity`.
  * - an assistant `message` response item counts as a turn.
- * - a `function_call` / `local_shell_call` response item updates `lastToolUse`.
- * - a `token_count` event's `total_token_usage` (input + cached) is the context fill.
+ * - a `function_call` response item (e.g. `name: "exec_command"`) — and the
+ *   `local_shell_call` variant — updates `lastToolUse`.
+ * - a `token_count` event's `info.total_token_usage` (input + cached) is the
+ *   context fill.
  */
 export function readTranscriptState(transcriptPath: string): TranscriptState {
   const raw = readFileSync(transcriptPath, "utf8");
