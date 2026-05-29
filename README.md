@@ -75,7 +75,7 @@ Configuration is optional — middle ships with working defaults. To override, d
 
 ```toml
 [global]
-dispatcher_port = 8822               # the hook server agents report to
+dispatcher_port = 4120               # the hook server + dashboard agents report to
 max_concurrent  = 4                  # how many agents in the office at once
 default_adapter = "claude"
 worktree_root   = "~/.middle/worktrees"
@@ -133,6 +133,12 @@ If you want to see it: browse the open [Epics](https://github.com/thejustinwalsh
 
 ## Going deeper
 
+- **[`docs/operator.md`](docs/operator.md)** — the operator how-to: every `mm` command, the daily run loop, `mm doctor`, backups, and resetting state.
+- **[`docs/architecture.md`](docs/architecture.md)** — how the pieces fit: the daemon, the dispatch lifecycle, the crons, and why SQLite is operational state while GitHub is the system of record.
+- **[`docs/adapters.md`](docs/adapters.md)** — the `AgentAdapter` interface every coding-agent CLI implements.
+- **[`docs/bootstrap.md`](docs/bootstrap.md)** — what `mm init` stamps into a target repo, and how to remove it.
+- **[`docs/skill-enforcement.md`](docs/skill-enforcement.md)** — the gates that hold a dispatched agent to the workflow.
+- **[`docs/dogfooding.md`](docs/dogfooding.md)** — how middle builds itself.
 - **`planning/middle-management-build-spec.md`** — the authoritative design: architecture, the adapter interface, the dispatch lifecycle, the state-issue schema, and the full build sequence (phases 0–11).
 - **`CLAUDE.md`** — the working conventions every contributor and every dispatched agent follows (Conventional Commits, the Epic/PR workflow, the byte-identical state-issue round-trip invariant).
 
