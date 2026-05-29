@@ -10,7 +10,7 @@ Stop the GitHub poller from treating the dispatcher's own pause comment (posted 
 - Reuse the established HTML-comment-marker convention (`<!-- AGENT-QUEUE-STATE v1 -->` in state-issue, `<!-- middle:gate-evidence:phase-N -->` in the gate flow).
 - Define one stable, hidden marker constant — `AGENT_COMMENT_MARKER = "<!-- middle:agent-comment -->"` — in `poller.ts` (the classifier's home, already the leaf that exports `CI_FAILED_DECISION` consumed elsewhere; no import cycle since `build-deps.ts` already transitively depends on `poller.ts`).
 - `formatPauseComment` (build-deps.ts) prepends the marker so every pause comment **starts with** it; the visible `🙋` / `🧩` prefixes stay intact below it.
-- `classifyNewHumanReply` (poller.ts) skips any comment whose body contains the marker, regardless of author — structural self-discrimination, no bot account needed.
+- `classifyNewHumanReply` (poller.ts) skips any comment whose body **starts with** the marker, regardless of author — structural self-discrimination, no bot account needed. `startsWith` (not `includes`) so a genuine human reply that quote-replies the pause comment (GitHub copies the marker onto a quoted line) still resumes.
 
 ## Phases
 1. Marker + skip + format — add the constant, prepend it in `formatPauseComment`, filter it in `classifyNewHumanReply`, with tests for each acceptance criterion (including the end-to-end post-a-question → run-poller → no-spurious-resume case).
