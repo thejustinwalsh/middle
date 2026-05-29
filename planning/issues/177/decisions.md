@@ -351,3 +351,25 @@ Decision unchanged and still not mine to take off a known-buggy loop: A breaks t
 explicit "no `AgentAdapter` interface change" guardrail (needs written
 authorization — reply A or the `approved` label), B accepts a deferred acceptance
 criterion (maintainer's call). Holding. Loop will persist until #178 lands.
+
+## RESUME #7 (2026-05-29): 7th #178 misfire — held, no decision arrived
+**File(s):** `planning/issues/177/decisions.md` (this note only)
+**Date:** 2026-05-29
+
+**What happened:** Re-dispatched a **seventh** time as "a human answered." Same
+#178 misfire — the resume brief's reply block renders as "(question text
+unavailable)", i.e. no payload. Confirmed against ground truth (not the brief):
+#177 labels are still only `phase:10`, `dogfood` (**no `approved`**); the eight
+most-recent #177 comments (23:13 / 23:16 / 23:18 / 23:18 / 23:20 / 23:23 / 23:26 /
+23:27 UTC) are all the poller re-posting my own "agent question" — none carry
+maintainer decision content; PR #182 has no review (`reviewDecision` empty, 0
+reviews).
+
+**Action:** Verified only the `main`-can-invalidate facts — branch **0 behind**
+`origin/main`, PR #182 **draft + MERGEABLE**. Did NOT re-run the suite (zero code
+changed this turn) and did NOT rewrite `.middle/blocked.json` (rewriting re-renders
+the human-facing question and is itself the #178 fuel). Decision unchanged and
+still not mine to take off a known-buggy loop: A breaks the explicit "no
+`AgentAdapter` interface change" guardrail (needs written authorization — reply A
+or the `approved` label), B accepts a deferred acceptance criterion (maintainer's
+call). Holding. Loop will persist until #178 lands.
