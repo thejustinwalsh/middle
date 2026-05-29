@@ -72,17 +72,6 @@ export type RecommenderContext = {
   slots: SlotsView;
 };
 
-/**
- * Reads a repo's state issue body (for `prior_body` and the verify step).
- *
- * @deprecated The recommender now also *writes* the body (the dispatcher reapplies
- * its owned sections — see {@link RecommenderDeps.stateIssue}), so the dep is the
- * full {@link StateIssueGateway}. Kept as a structural read-only view.
- */
-export type StateIssueReader = {
-  readBody(repo: string, issueNumber: number): Promise<string>;
-};
-
 /** The per-repo settings the recommender workflow resolves for each run. */
 export type RecommenderRunSettings = {
   schemaPath: string;

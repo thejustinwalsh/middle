@@ -296,6 +296,23 @@ describe("createParseFailureSurfacer (#180)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("a failed comment is not recorded — the next tick retries (no silent suppression)", async () => {
+    const calls: string[] = [];
+    let failNext = true;
+    const surfacer = createParseFailureSurfacer(async (o) => {
+      calls.push(o.problem);
+      if (failNext) {
+        failNext = false;
+        throw new Error("gh comment failed");
+      }
+    });
+    const err = new Error("state issue #84 does not parse: boom");
+    await expect(surfacer.surface("o/r", 84, err)).rejects.toThrow("gh comment failed");
+    // The retry succeeds and is not deduped away by the failed attempt.
+    expect(await surfacer.surface("o/r", 84, err)).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
   test("dedup is per-repo — two repos with the same message each surface once", async () => {
     const { calls, surfacer } = spy();
     const err = new Error("state issue #1 does not parse: boom");
