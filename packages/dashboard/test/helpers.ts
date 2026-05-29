@@ -60,6 +60,8 @@ export type SeedWorkflow = {
   id: string;
   repo: string;
   epicNumber?: number | null;
+  /** File-mode Epic slug. Set directly (createWorkflowRecord doesn't write it). */
+  epicRef?: string | null;
   adapter?: string;
   state?: WorkflowState;
   sessionName?: string;
@@ -89,6 +91,9 @@ export function seedWorkflow(db: Database, w: SeedWorkflow): void {
     worktreePath: w.worktreePath,
   });
   // Columns updateWorkflow doesn't cover — set directly.
+  if (w.epicRef !== undefined) {
+    db.run("UPDATE workflows SET epic_ref = ? WHERE id = ?", [w.epicRef, w.id]);
+  }
   if (w.currentSubIssue !== undefined) {
     db.run("UPDATE workflows SET current_sub_issue = ? WHERE id = ?", [w.currentSubIssue, w.id]);
   }

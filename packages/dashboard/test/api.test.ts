@@ -90,6 +90,70 @@ describe("dashboard JSON API", () => {
     expect(detail.nextUp).toEqual([]); // no state gateway wired
   });
 
+  test("github-mode IN FLIGHT row carries epicRef alongside the numeric epic (#187)", async () => {
+    // createWorkflowRecord doesn't write epic_ref, so a github-mode row's epicRef
+    // is null over the wire; the UI keys its numeric render off `epic`, not epicRef.
+    seedWorkflow(db, {
+      id: "w1",
+      repo: "o/alpha",
+      epicNumber: 7,
+      state: "running",
+      sessionName: "sess-7",
+    });
+    await start();
+
+    const detail = (await (
+      await fetch(`${base}/api/repos/${encodeURIComponent("o/alpha")}`)
+    ).json()) as RepoDetail;
+    expect(detail.inFlight[0]).toMatchObject({ session: "sess-7", epic: 7, epicRef: null });
+  });
+
+  test("file-mode IN FLIGHT row surfaces epic_ref as epicRef with a null epic (#187)", async () => {
+    // The end-to-end read path: a migrated db row with epic_number NULL +
+    // epic_ref slug → db-deps SELECT → RunnerSummary JSON over a real Bun.serve.
+    seedWorkflow(db, {
+      id: "wf-file",
+      repo: "o/alpha",
+      epicNumber: null,
+      epicRef: "rollout-epic-store",
+      state: "running",
+      sessionName: "sess-file",
+    });
+    await start();
+
+    const detail = (await (
+      await fetch(`${base}/api/repos/${encodeURIComponent("o/alpha")}`)
+    ).json()) as RepoDetail;
+    expect(detail.inFlight).toHaveLength(1);
+    expect(detail.inFlight[0]).toMatchObject({
+      session: "sess-file",
+      epic: null,
+      epicRef: "rollout-epic-store",
+    });
+  });
+
+  test("GET /api/sessions/:session carries epicRef for a file-mode runner (#187)", async () => {
+    seedWorkflow(db, {
+      id: "wf-file",
+      repo: "o/alpha",
+      epicNumber: null,
+      epicRef: "rollout-epic-store",
+      state: "running",
+      sessionName: "sess-file",
+      worktreePath: "/wt/alpha-file",
+    });
+    await start();
+
+    const panel = (await (await fetch(`${base}/api/sessions/sess-file`)).json()) as RunnerPanel;
+    expect(panel).toMatchObject({
+      session: "sess-file",
+      repo: "o/alpha",
+      epic: null,
+      epicRef: "rollout-epic-store",
+      worktreePath: "/wt/alpha-file",
+    });
+  });
+
   test("GET /api/repos/:repo 404s an unknown repo", async () => {
     await start();
     const res = await fetch(`${base}/api/repos/${encodeURIComponent("o/missing")}`);
