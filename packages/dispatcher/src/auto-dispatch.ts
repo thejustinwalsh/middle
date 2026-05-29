@@ -92,8 +92,10 @@ export function createParseFailureSurfacer(
       if (!error.message.includes("does not parse")) return false;
       const problem = `⚠️ auto-dispatch halted: state issue #${stateIssue} does not parse, so the ranked dispatch plan can't be read and no Epics will dispatch until this is fixed.\n\n\`${error.message}\``;
       if (lastSurfaced.get(repo) === problem) return false;
-      lastSurfaced.set(repo, problem);
+      // Record only AFTER a successful comment — a failed `gh` comment (throws)
+      // must be retried next tick, not silently suppressed by a recorded dedup.
       await surfaceProblem({ repo, stateIssue, problem });
+      lastSurfaced.set(repo, problem);
       return true;
     },
     reset(repo) {
