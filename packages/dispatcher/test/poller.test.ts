@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openAndMigrate } from "../src/db.ts";
+import { formatPauseComment } from "../src/build-deps.ts";
 import {
+  AGENT_COMMENT_MARKER,
   classifyNewHumanReply,
   classifyReviewOutcome,
   reasonFromSignalName,
@@ -149,6 +151,30 @@ describe("classifyNewHumanReply", () => {
         ARMED_AT,
       ),
     ).toBeNull();
+  });
+
+  test("skips the dispatcher's own marked pause comment (posted as a non-bot human identity)", () => {
+    // The real formatPauseComment output — the exact body the dispatcher posts.
+    const pause = formatPauseComment({ question: "Which option?", kind: "question" });
+    expect(pause.startsWith(AGENT_COMMENT_MARKER)).toBe(true);
+    expect(
+      classifyNewHumanReply(
+        [comment({ id: 1, authorIsBot: false, createdAt: ARMED_AT + 100, body: pause })],
+        ARMED_AT,
+      ),
+    ).toBeNull();
+  });
+
+  test("a genuine human reply that quote-replies the pause comment still resumes", () => {
+    // GitHub "Quote reply" copies the marker into the body, but on a quoted
+    // (non-leading) line — so the real answer below it must NOT be skipped.
+    const quoted = `> ${AGENT_COMMENT_MARKER}\n> 🙋 **agent question**\n\nGo with option B.`;
+    const reply = classifyNewHumanReply(
+      [comment({ id: 9, authorLogin: "maintainer", createdAt: ARMED_AT + 100, body: quoted })],
+      ARMED_AT,
+    );
+    expect(reply?.id).toBe(9);
+    expect(reply?.body).toContain("Go with option B.");
   });
 });
 
@@ -319,6 +345,25 @@ describe("runPoller — answered-question", () => {
     seedParked("answered-question");
     const github = makeGateway({
       comments: [comment({ id: 1, authorLogin: "coderabbitai[bot]", authorIsBot: true })],
+    });
+    const { fired, fireSignal } = captureFires();
+    expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(0);
+    expect(fired).toEqual([]);
+  });
+
+  test("the dispatcher's own pause comment does not self-resume (#178)", async () => {
+    seedParked("answered-question");
+    // The exact comment the dispatcher posts on park, under its human gh identity.
+    const github = makeGateway({
+      comments: [
+        comment({
+          id: 1,
+          authorLogin: "thejustinwalsh",
+          authorIsBot: false,
+          createdAt: ARMED_AT + 100,
+          body: formatPauseComment({ question: "Which adapter?", kind: "question" }),
+        }),
+      ],
     });
     const { fired, fireSignal } = captureFires();
     expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(0);

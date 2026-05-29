@@ -162,13 +162,37 @@ export function reasonFromSignalName(name: string): ResumeReason | null {
   return null;
 }
 
-/** The newest non-bot reply posted after the wait armed, or null. */
+/**
+ * Hidden HTML-comment marker the dispatcher prepends to every pause comment it
+ * posts on the Epic (see `formatPauseComment`). The dispatcher posts under its
+ * own `gh` identity — a *human* (non-bot) account — so the poller can't tell an
+ * agent-posted question from a genuine human reply by author alone:
+ * {@link classifyNewHumanReply} would treat the agent's own question as "the
+ * human answer" and fire a spurious resume. The marker is the structural
+ * self-discrimination — a comment that *starts with* it is middle's own and
+ * never counts as a human reply. Mirrors the state issue's `OPEN_MARKER` and the
+ * gate-evidence marker conventions; keeps the gh-identity model (no bot account).
+ */
+export const AGENT_COMMENT_MARKER = "<!-- middle:agent-comment -->";
+
+/**
+ * The newest non-bot reply posted after the wait armed, or null.
+ *
+ * Skips the dispatcher's own pause comments by the {@link AGENT_COMMENT_MARKER}
+ * prefix. The match is `startsWith`, not `includes`, deliberately: the dispatcher
+ * always emits the marker at byte 0, so `startsWith` identifies exactly its own
+ * comments, whereas `includes` would also drop a genuine human reply that
+ * quote-replies the pause comment (GitHub copies the marker into the quote),
+ * silently dropping the real answer and hanging the resume.
+ */
 export function classifyNewHumanReply(
   comments: IssueComment[],
   sinceMs: number,
 ): IssueComment | null {
   const fresh = comments
-    .filter((c) => !c.authorIsBot && c.createdAt > sinceMs)
+    .filter(
+      (c) => !c.authorIsBot && c.createdAt > sinceMs && !c.body.startsWith(AGENT_COMMENT_MARKER),
+    )
     .sort((a, b) => b.createdAt - a.createdAt);
   return fresh[0] ?? null;
 }

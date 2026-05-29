@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AgentAdapter } from "@middle/core";
 import { buildImplementationDeps, formatPauseComment } from "../src/build-deps.ts";
 import { openAndMigrate } from "../src/db.ts";
+import { AGENT_COMMENT_MARKER } from "../src/poller.ts";
 import type { PrReadyGateHandler } from "../src/gates/pr-ready-handler.ts";
 import type { PullRequest } from "../src/github.ts";
 import type { SessionGate } from "../src/hook-server.ts";
@@ -186,5 +187,16 @@ describe("formatPauseComment", () => {
     expect(body).toContain("agent question");
     expect(body).not.toContain("complexity pause");
     expect(body).toContain("> Q");
+  });
+
+  test("both kinds start with the hidden agent-comment marker so the poller skips them (#178)", () => {
+    const question = formatPauseComment({ question: "Q", kind: "question" });
+    const complexity = formatPauseComment({ question: "Q", context: "C", kind: "complexity" });
+    expect(question.startsWith(AGENT_COMMENT_MARKER)).toBe(true);
+    expect(complexity.startsWith(AGENT_COMMENT_MARKER)).toBe(true);
+    // The marker is hidden (an HTML comment), so the visible prefixes still lead
+    // the rendered body right after it.
+    expect(question).toContain(`${AGENT_COMMENT_MARKER}\n🙋 **agent question**`);
+    expect(complexity).toContain(`${AGENT_COMMENT_MARKER}\n🧩 **complexity pause**`);
   });
 });

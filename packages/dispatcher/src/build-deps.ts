@@ -10,6 +10,7 @@ import {
   resolveAgentLogin as ghResolveAgentLogin,
 } from "./github.ts";
 import type { SessionGate } from "./hook-server.ts";
+import { AGENT_COMMENT_MARKER } from "./poller.ts";
 import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { findActiveWorkflowBySession, getWorkflow } from "./workflow-record.ts";
 import type { ImplementationDeps, ImplementationInput } from "./workflows/implementation.ts";
@@ -31,6 +32,11 @@ const APPROVED_LABEL = "approved";
  * `complexity pause` needs-human label; a plain question reads as an agent
  * question. The recommender owns "Needs human input", so this comment is the
  * GitHub trace it keys off (the dispatcher never writes that section directly).
+ *
+ * Every output **starts with** the hidden {@link AGENT_COMMENT_MARKER} so the
+ * poller's `classifyNewHumanReply` skips it: the dispatcher posts under its own
+ * (human, non-bot) `gh` identity, and without the marker the poller would read
+ * this very comment as "the human reply" and fire a spurious self-resume.
  */
 export function formatPauseComment(opts: {
   question: string;
@@ -39,13 +45,15 @@ export function formatPauseComment(opts: {
 }): string {
   const body = opts.context ? `> ${opts.question}\n\n${opts.context}` : `> ${opts.question}`;
   if (opts.kind === "complexity") {
-    return `🧩 **complexity pause** — the agent paused a sub-issue whose decision needs more candidate forks than this repo's \`complexity_ceiling\`.
+    return `${AGENT_COMMENT_MARKER}
+🧩 **complexity pause** — the agent paused a sub-issue whose decision needs more candidate forks than this repo's \`complexity_ceiling\`.
 
 ${body}
 
 A human resolves this by **scope reduction or clarification** — or applies the \`${APPROVED_LABEL}\` label to authorize a best-judgment call within the ceiling on resume.`;
   }
-  return `🙋 **agent question** — the dispatched agent needs input to proceed.
+  return `${AGENT_COMMENT_MARKER}
+🙋 **agent question** — the dispatched agent needs input to proceed.
 
 ${body}`;
 }
