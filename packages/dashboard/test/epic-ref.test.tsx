@@ -34,6 +34,17 @@ describe("EpicRef", () => {
     expect(render(<EpicRef epicNumber={null} epicRef={null} fallback="#—" />)).toBe("#—");
   });
 
+  test("a blank epicRef (empty / whitespace) falls through to the fallback, not an empty link", () => {
+    expect(render(<EpicRef epicNumber={null} epicRef="" fallback="#—" />)).toBe("#—");
+    expect(render(<EpicRef epicNumber={null} epicRef="   " fallback="#—" />)).toBe("#—");
+  });
+
+  test("a slug with surrounding whitespace is trimmed in both label and href", () => {
+    const out = render(<EpicRef epicNumber={null} epicRef="  the-slug  " />);
+    expect(out).toContain('href="file://planning/epics/the-slug.md"');
+    expect(out).toContain(">the-slug<");
+  });
+
   test("a slug with URL-unsafe / traversal chars is encoded into one safe path segment", () => {
     expect(epicFileHref("a/../b")).toBe("file://planning/epics/a%2F..%2Fb.md");
     expect(epicFileHref('x"><script>')).toBe("file://planning/epics/x%22%3E%3Cscript%3E.md");
