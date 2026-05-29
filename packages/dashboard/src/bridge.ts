@@ -58,7 +58,7 @@ export function bridgeWorkflowsToBus(bus: DashboardEventBus, db: Database): () =
     if (!row) return;
     bus.broadcastRepo(row.repo, {
       type: WORKFLOW_EVENT,
-      data: { id, repo: row.repo, epic: row.epicNumber, state: row.state },
+      data: { id, repo: row.repo, epic: row.epicNumber, epicRef: row.epicRef, state: row.state },
     });
   });
 }
