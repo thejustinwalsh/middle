@@ -229,3 +229,40 @@ gates — `bun run typecheck` clean, `bun test` 1081 pass / 0 fail; confirmed th
 branch is 0 commits behind `origin/main` and PR #182 reads `MERGEABLE`. Gaps 1–4
 remain green and ready; only criterion 5 (full live dispatch) is gated on the
 decision above.
+
+## RESUME #3 (2026-05-29): same misfire — re-dispatched as "answered", still no answer
+**File(s):** none changed (holding)
+**Date:** 2026-05-29
+
+**What happened:** middle re-spawned me a **third** time as "a human answered the
+open question." Re-checked every channel directly: #177 has only the original
+brief + the 06:06 question + the 06:11 re-park (none edited, `created==updated`);
+#177 labels are still just `phase:10`, `dogfood` (**no `approved`**); PR #182 has
+no reviews and no human comment (only CodeRabbit's draft-skip). The decision
+content has still not landed in any channel.
+
+**Why no codex-internal escape exists (re-confirmed, not just re-asserted):** the
+deadlock is purely the dispatcher's launch→drive ORDER (`enterAutoMode` →
+`awaitSessionStart` → `sendText`). The codex adapter cannot fire `SessionStart`
+on its own without submitting a real prompt, and it does not hold the prompt at
+that boundary (the dispatcher sends it via `sendText` *after* `awaitSessionStart`).
+Getting the prompt to the adapter earlier is itself the interface change
+(candidate 3). So the candidate space in "DISCOVERY (blocker)" is complete; one
+approach (A) clearly leads, and it requires written authorization to override the
+"no interface change" headline.
+
+**Why both A and B still need the human:** A breaks a hard project rule (needs
+written OK). B ships a PR that knowingly fails acceptance criterion 5, and
+CLAUDE.md says a PR "stay[s] draft until every phase is verified" — accepting a
+deferred acceptance criterion is the human's call. Neither reaches "PR ready"
+unilaterally. I am correctly blocked.
+
+**Action taken:** did NOT post a 4th duplicate question comment — middle renders
+the human-facing issue comment *from* `.middle/blocked.json`, so the existing,
+already-sharpened blocked.json remains the correct (and only non-noisy) surface;
+re-writing it would just spawn another duplicate. The re-dispatch misfire (the
+"answer" being a verbatim echo of my own question) is in middle's resume trigger
+— a different codebase from this issue's codex-adapter scope — so it is out of
+scope to fix from this worktree. Left blocked.json untouched, re-verified the
+gates (still 1081 pass / 0 fail, typecheck clean, 0 behind, `MERGEABLE`), and am
+holding. Terminal state: blocked on the human scope decision.
