@@ -1,9 +1,15 @@
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { loadConfig, type MiddleConfig } from "@middle/core";
+import { currentSchemaVersion, openDb } from "@middle/dispatcher/src/db.ts";
+import { collectRetentionStatus, type RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   getTmuxVersion,
   MIN_TMUX_VERSION,
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
+import { defaultPidFile } from "../paths.ts";
 import {
   BOOTSTRAP_SKILLS_DIR,
   CANONICAL_SKILLS_DIR,
@@ -17,7 +23,12 @@ import {
   resolveShellRc,
 } from "../checks/bun-path.ts";
 import { checkModuleIndex } from "../checks/module-index.ts";
+import { checkStateIssue } from "../checks/state-issue.ts";
 import { checkTsdocCoverage } from "../checks/tsdoc-coverage.ts";
+
+/** Schema version migration 006 (retention) brings the db to — `mm doctor`
+ * reports retention status only once the db is at least here. */
+const RETENTION_SCHEMA_VERSION = 6;
 
 type CheckStatus = "pass" | "warn" | "fail";
 type Check = { name: string; status: CheckStatus; detail: string };
@@ -199,12 +210,175 @@ function checkTsdocCoverageWarn(): Check {
 }
 
 /**
- * `mm doctor` — run a system check for every external tool the dispatcher
- * shells out to: `bun`, `tmux` (≥ 3.5), `claude`, `git`, `gh`, and `gh` auth.
+ * Load middle's config (global, plus the cwd's `.middle/config.toml` when the
+ * operator runs `mm doctor` from inside a managed repo) and report whether it
+ * parses. A malformed TOML throws out of `loadConfig` — that's a hard fail (the
+ * dispatcher can't start). The parsed config is handed to the downstream
+ * dispatcher/database checks so they read the operator's real port and db path.
+ */
+function loadDoctorConfig(): { check: Check; config: MiddleConfig | null } {
+  const globalPath = process.env.MIDDLE_CONFIG ?? join(homedir(), ".middle", "config.toml");
+  const repoConfigPath = join(process.cwd(), ".middle", "config.toml");
+  const hasRepoConfig = existsSync(repoConfigPath);
+  try {
+    const config = loadConfig({
+      globalPath: process.env.MIDDLE_CONFIG,
+      repoPath: hasRepoConfig ? repoConfigPath : undefined,
+    });
+    const sources = [existsSync(globalPath) ? globalPath : `${globalPath} (defaults)`];
+    if (hasRepoConfig) sources.push(repoConfigPath);
+    return {
+      check: { name: "config", status: "pass", detail: `parsed — ${sources.join(", ")}` },
+      config,
+    };
+  } catch (error) {
+    return {
+      check: {
+        name: "config",
+        status: "fail",
+        detail: `failed to parse — ${(error as Error).message}`,
+      },
+      config: null,
+    };
+  }
+}
+
+/** Is the pid recorded in the pidfile a live process? Best-effort (`kill -0`). */
+function dispatcherPidAlive(): boolean {
+  const pidFile = defaultPidFile();
+  if (!existsSync(pidFile)) return false;
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Probe the dispatcher's `/health` endpoint with a short timeout. */
+async function probeHealth(port: number): Promise<{ ok: boolean; version: string }> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return { ok: false, version: "" };
+    const body = (await res.json().catch(() => null)) as { ok?: unknown; version?: unknown } | null;
+    return {
+      ok: body?.ok === true,
+      version: typeof body?.version === "string" ? body.version : "",
+    };
+  } catch {
+    return { ok: false, version: "" };
+  }
+}
+
+/**
+ * Check the dispatcher is reachable. Reachable `/health` → pass. A live pidfile
+ * but an unreachable `/health` → **fail** (the daemon is wedged). No pidfile /
+ * dead process → **warn**: the dispatcher simply isn't started, which is normal
+ * when an operator runs `mm doctor` before `mm start`.
+ */
+async function checkDispatcher(config: MiddleConfig | null): Promise<Check> {
+  const port = config?.global.dispatcherPort ?? 4120;
+  const health = await probeHealth(port);
+  if (health.ok) {
+    const v = health.version ? ` (v${health.version})` : "";
+    return { name: "dispatcher", status: "pass", detail: `reachable on :${port}${v}` };
+  }
+  if (dispatcherPidAlive()) {
+    return {
+      name: "dispatcher",
+      status: "fail",
+      detail: `pidfile live but /health on :${port} unreachable — dispatcher may be wedged`,
+    };
+  }
+  return { name: "dispatcher", status: "warn", detail: `not running — run \`mm start\`` };
+}
+
+/** Render a unix-ms timestamp as a coarse "Ns/Nm/Nh/Nd ago" relative to `now`. */
+export function formatAgo(then: number, now: number): string {
+  const sec = Math.max(0, Math.round((now - then) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  return `${Math.round(hr / 24)}d ago`;
+}
+
+/**
+ * Format the db row counts + last retention run into a doctor detail line, and
+ * decide the status: a *failed* last retention run degrades to `warn` (retention
+ * is broken but dispatch still works); otherwise `pass`. Pure so it unit-tests
+ * without a real db.
+ */
+export function summarizeRetention(
+  status: RetentionStatus,
+  now: number,
+): { status: CheckStatus; detail: string } {
+  const { workflows, archivedWorkflows, events } = status.rowCounts;
+  const counts = `${workflows} workflows (${archivedWorkflows} archived), ${events} events`;
+  const last = status.lastRun;
+  if (!last) {
+    return { status: "pass", detail: `${counts} · retention never run` };
+  }
+  const verdict = last.ok ? "ok" : "FAILED";
+  const retention = `retention ${verdict} ${formatAgo(last.ranAt, now)} (−${last.eventsDeleted} events, ${last.workflowsArchived} archived)`;
+  return { status: last.ok ? "pass" : "warn", detail: `${counts} · ${retention}` };
+}
+
+/**
+ * Report SQLite row counts and recent retention-run status. No db file yet
+ * (dispatcher never started) → `warn`. A db below the retention schema version →
+ * `warn` (start the dispatcher to migrate). A db that can't be opened → `fail`.
+ */
+function checkDatabase(config: MiddleConfig | null): Check {
+  const dbPath = config?.global.dbPath ?? join(homedir(), ".middle", "db.sqlite3");
+  if (!existsSync(dbPath)) {
+    return {
+      name: "database",
+      status: "warn",
+      detail: `${dbPath} not created yet — run \`mm start\` once`,
+    };
+  }
+  let db: ReturnType<typeof openDb> | null = null;
+  try {
+    db = openDb(dbPath);
+    const version = currentSchemaVersion(db);
+    if (version < RETENTION_SCHEMA_VERSION) {
+      return {
+        name: "database",
+        status: "warn",
+        detail: `schema v${version} (pre-retention, needs ≥ v${RETENTION_SCHEMA_VERSION}) — run \`mm start\` to migrate`,
+      };
+    }
+    const summary = summarizeRetention(collectRetentionStatus(db), Date.now());
+    return { name: "database", status: summary.status, detail: summary.detail };
+  } catch (error) {
+    return {
+      name: "database",
+      status: "fail",
+      detail: `cannot read ${dbPath} — ${(error as Error).message}`,
+    };
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * `mm doctor` — full operator health check. Validates the toolchain every
+ * dispatch shells out to (`bun`, `tmux` ≥ 3.5, `claude`, `git`, `gh` + auth),
+ * that config parses, the dispatcher is reachable, the state-issue parser still
+ * round-trips against its v1 schema, and reports SQLite row counts + recent
+ * retention status — plus the repo's skills/docs-convention drift warnings.
  * Exits 0 when no check fails; 1 if anything is missing or broken. Warnings
  * (degraded but functional) do not fail the run.
  */
 export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number> {
+  const { check: configCheck, config } = loadDoctorConfig();
+  const stateIssue = checkStateIssue();
   const checks: Check[] = [
     await checkBinary("bun", ["bun", "--version"]),
     await checkBunPath(),
@@ -213,6 +387,10 @@ export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number
     await checkBinary("git", ["git", "--version"]),
     await checkBinary("gh", ["gh", "--version"]),
     await checkGhAuth(),
+    configCheck,
+    await checkDispatcher(config),
+    { name: "state-issue", status: stateIssue.status, detail: stateIssue.detail },
+    checkDatabase(config),
     checkSkillsDrift(),
     checkModuleIndexFrontmatter(),
     checkTsdocCoverageWarn(),
@@ -220,7 +398,7 @@ export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number
 
   console.log("middle — system check\n");
   for (const c of checks) {
-    console.log(`  ${STATUS_ICON[c.status]} ${c.name.padEnd(9)} ${c.detail}`);
+    console.log(`  ${STATUS_ICON[c.status]} ${c.name.padEnd(11)} ${c.detail}`);
   }
   console.log("");
 
