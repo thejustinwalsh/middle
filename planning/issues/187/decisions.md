@@ -55,15 +55,22 @@ github rows is harmless. Migration 008's comment claims `createWorkflowRecord`
 populates it — that's not yet true; filed as a follow-up rather than expanded into
 this PR.
 
-## `/control/events` plane (Queue tab) left out of scope
-**File(s):** `packages/dispatcher/src/main.ts` (`broadcastWorkflow`), `packages/dashboard/src/app/control-client.ts`
+## Other epic-rendering surfaces (Queue tab, NEXT UP) left out of scope
+**File(s):** `packages/dispatcher/src/main.ts` (`broadcastWorkflow`), `packages/dashboard/src/app/control-client.ts`, `packages/dashboard/src/db-deps.ts:307`, `packages/dashboard/src/app/components/Repos.tsx`
 **Date:** 2026-05-29
 
-**Decision:** The Queue tab (fed by `/control/events` → `ControlWorkflowFrame`)
-still shows `—` for file-mode rows; not touched.
+**Decision:** Two adjacent epic-rendering surfaces keep their pre-#187 behavior:
+the **Queue tab** (fed by `/control/events` → `ControlWorkflowFrame`) shows `—`
+for file-mode rows, and **NEXT UP** (fed by the recommender's parsed state issue)
+collapses a file-mode slug to `#0` via `Number(slug) || 0`. Neither is touched.
 
 **Why:** The issue cites `db-deps.ts:83` — the `/api/*` plane (RunnerSummary /
-RunnerPanel + the `bridge.ts` repo-channel nudge). `/control/events` is a separate
-data path emitted by the dispatcher daemon (`main.ts`), named by no AC. Plumbing
-`epicRef` through the control feed is a clean follow-up; folding it in here would
-expand scope into the dispatcher control plane. Filed as a discovery follow-up.
+RunnerPanel + the `bridge.ts` repo-channel nudge), which reads the
+`workflows.epic_ref` column this issue is about. The other two surfaces read
+*different sources*: the Queue's frame comes from the dispatcher daemon
+(`main.ts`, the control plane — named by no AC), and NEXT UP comes from the
+recommender's state-issue ranking (`readyToDispatch`), which doesn't emit
+file-mode slugs yet (file-mode dispatch / recommender support is out of scope per
+the issue). Both are genuinely separate data paths outside this change's blast
+radius. Filed as discovery follow-ups (the NEXT UP one also notes a latent React
+`key={n.epic}` collision once two file-mode rows both map to `#0`).
