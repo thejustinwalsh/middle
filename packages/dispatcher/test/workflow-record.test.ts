@@ -37,6 +37,38 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+describe("getWorkflow epic_ref (#187)", () => {
+  test("reads back epic_ref straight from the column (slug, number-string, or null)", () => {
+    // github-mode: createWorkflowRecord writes only epic_number; epic_ref stays null
+    // until the dispatch write path populates it. getWorkflow reflects the column verbatim.
+    createWorkflowRecord(db, {
+      id: "gh",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 7,
+      adapter: "claude",
+    });
+    expect(getWorkflow(db, "gh")!.epicRef).toBeNull();
+
+    // A row whose epic_ref is set (file-mode slug, or a github-mode backfill) round-trips.
+    db.run("UPDATE workflows SET epic_ref = ? WHERE id = ?", ["rollout-epic-store", "gh"]);
+    expect(getWorkflow(db, "gh")!.epicRef).toBe("rollout-epic-store");
+
+    // file-mode shape: null epic_number, slug epic_ref.
+    createWorkflowRecord(db, {
+      id: "file",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: null,
+      adapter: "claude",
+    });
+    db.run("UPDATE workflows SET epic_ref = ? WHERE id = ?", ["another-slug", "file"]);
+    const file = getWorkflow(db, "file")!;
+    expect(file.epicNumber).toBeNull();
+    expect(file.epicRef).toBe("another-slug");
+  });
+});
+
 describe("dispatch source (#53)", () => {
   test("records and reads back source 'manual' / 'auto'; null when unset", () => {
     createWorkflowRecord(db, {
