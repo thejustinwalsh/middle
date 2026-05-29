@@ -52,6 +52,19 @@ export type AutoDispatchResult = {
   reason: "disabled" | "slots-exhausted" | "drained";
 };
 
+/**
+ * Whether an auto-dispatch pass actually read + parsed the state issue. A
+ * `"disabled"` pass returns *before* {@link AutoDispatchDeps.readState} (the
+ * result type's own contract — "nothing was read"); every other reason runs only
+ * after a successful read. Callers re-arm parse-failure surfacing
+ * ({@link ParseFailureSurfacer.reset}) iff this is true — re-arming without an
+ * intervening healthy read would let an unfixed parse failure re-surface a
+ * duplicate comment (#180). Any future no-read reason must be excluded here.
+ */
+export function didReadState(result: AutoDispatchResult): boolean {
+  return result.reason !== "disabled";
+}
+
 /** Extract the leading `#<n>` Epic number from a Ready row's `epic` cell, or null. */
 function parseEpicNumber(epic: string): number | null {
   const match = /^#(\d+)\b/.exec(epic.trim());
