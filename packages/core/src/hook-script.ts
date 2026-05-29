@@ -16,12 +16,19 @@
  * failed hook. As a child, any curl failure is swallowed and the hook exits 0 —
  * "failure is a no-op", which is the hard requirement (a hook must never block
  * or fail the agent).
+ *
+ * `-o /dev/null` discards curl's response body. This is load-bearing for the
+ * Codex adapter: codex parses each hook's **stdout** as the hook's structured
+ * JSON output, so the dispatcher's plain `ok` response body (echoed to stdout by
+ * curl) makes codex log `hook returned invalid <event> JSON output` on every
+ * fire. Discarding the body leaves clean (empty) stdout, which both codex and
+ * Claude treat as a no-op. (Claude never minded the stray body; codex does.)
  */
 export const HOOK_SH = `#!/bin/sh
 # .middle/hooks/hook.sh — POSTs hook payloads to the middle dispatcher.
 # Args: $1 = normalized event name. Never blocks the agent; failure is a no-op.
 EVENT="$1"
-curl -sS -X POST "\${MIDDLE_DISPATCHER_URL}/hooks/\${EVENT}" \\
+curl -sS -o /dev/null -X POST "\${MIDDLE_DISPATCHER_URL}/hooks/\${EVENT}" \\
   -H "X-Middle-Session: \${MIDDLE_SESSION}" \\
   -H "X-Middle-Token: \${MIDDLE_SESSION_TOKEN}" \\
   -H "X-Middle-Epic: \${MIDDLE_EPIC}" \\
