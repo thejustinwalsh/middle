@@ -310,3 +310,23 @@ and criterion 5 deferred-pending-authorization, tracked in #183. Re-verified gat
 (1081 pass / 0 fail, typecheck clean, 0 behind, `MERGEABLE`). Still blocked on the
 same scope authorization (reply "A" / "B" or add `approved`); the loop will persist
 until #178 is fixed.
+
+## RESUME #5 (2026-05-29): 5th #178 misfire — held without churn, no decision arrived
+**File(s):** `planning/issues/177/decisions.md` (this note only)
+**Date:** 2026-05-29
+
+**What happened:** Re-dispatched a **fifth** time as "a human answered." Same #178
+misfire — the resume brief's reply block is a verbatim echo of my own question.
+Confirmed directly: #177 labels still just `phase:10`, `dogfood` (**no `approved`**);
+the only new comments are my own re-posted pause questions; PR #182 has no human
+review. No decision content landed in any channel.
+
+**Action:** Deliberately did NOT re-run the full suite (zero code changed this
+turn — nothing to re-prove) and did NOT rewrite `.middle/blocked.json` (middle
+renders the human-facing issue comment from it, so editing it just spawns another
+duplicate question — the #178 fuel itself). Confirmed only what `main` moving could
+invalidate: branch **0 behind** `origin/main`, PR #182 **draft + MERGEABLE**, #183
+**open**. Decision unchanged and correct: A breaks the hard "no interface change"
+headline (needs written authorization), B accepts a deferred acceptance criterion
+(maintainer's call); neither is mine to take off a known-buggy loop. Holding.
+Terminal state: blocked on the human scope decision; loop persists until #178 lands.
