@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookPayload } from "@middle/core";
 import { parse as parseToml } from "smol-toml";
-import { codexAdapter, detectNeedsLogin } from "../src/index.ts";
+import {
+  codexAdapter,
+  detectDirTrustPrompt,
+  detectHooksTrustPrompt,
+  detectNeedsLogin,
+} from "../src/index.ts";
 
 let dir: string;
 
@@ -27,27 +32,36 @@ describe("buildLaunchCommand", () => {
   test("argv launches interactive codex (no exec, no prompt)", () => {
     const { argv } = codexAdapter.buildLaunchCommand({
       worktree: dir,
-      sessionName: "middle-60",
+      sessionName: "middle-177",
       sessionToken: "tok",
     });
     expect(argv).toEqual(["codex"]);
     expect(argv).not.toContain("exec"); // never the headless/non-interactive subcommand
-    // approval_policy / sandbox live in .codex/config.toml, NOT the command line.
+    // approval_policy / sandbox_mode live in .codex/config.toml, NOT the command line.
     expect(argv.join(" ")).not.toContain("approval");
     expect(argv.join(" ")).not.toContain("sandbox");
+  });
+
+  test("env sets CODEX_HOME to the worktree-local .codex so the config is loaded", () => {
+    const { env } = codexAdapter.buildLaunchCommand({
+      worktree: dir,
+      sessionName: "middle-177",
+      sessionToken: "tok",
+    });
+    expect(env.CODEX_HOME).toBe(join(dir, ".codex"));
   });
 
   test("env carries the session vars and merges envOverrides", () => {
     const { env } = codexAdapter.buildLaunchCommand({
       worktree: dir,
-      sessionName: "middle-60",
+      sessionName: "middle-177",
       sessionToken: "secret-token",
-      envOverrides: { MIDDLE_DISPATCHER_URL: "http://127.0.0.1:4120", MIDDLE_EPIC: "60" },
+      envOverrides: { MIDDLE_DISPATCHER_URL: "http://127.0.0.1:4120", MIDDLE_EPIC: "177" },
     });
-    expect(env.MIDDLE_SESSION).toBe("middle-60");
+    expect(env.MIDDLE_SESSION).toBe("middle-177");
     expect(env.MIDDLE_SESSION_TOKEN).toBe("secret-token");
     expect(env.MIDDLE_DISPATCHER_URL).toBe("http://127.0.0.1:4120");
-    expect(env.MIDDLE_EPIC).toBe("60");
+    expect(env.MIDDLE_EPIC).toBe("177");
   });
 });
 
@@ -57,16 +71,16 @@ describe("buildPromptText", () => {
       codexAdapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: "initial",
-        epicRef: "60",
+        epicRef: "177",
       }),
-    ).toBe("/implementing-github-issues implement #60");
+    ).toBe("/implementing-github-issues implement #177");
   });
 
   test("resume frames the @-reference as a continuation", () => {
     const text = codexAdapter.buildPromptText({
       promptFile: ".middle/resume.md",
       kind: "resume",
-      epicRef: "60",
+      epicRef: "177",
     });
     expect(text).toContain("@.middle/resume.md");
     expect(text.toLowerCase()).toContain("resum");
@@ -76,7 +90,7 @@ describe("buildPromptText", () => {
     const text = codexAdapter.buildPromptText({
       promptFile: ".middle/answer.md",
       kind: "answer",
-      epicRef: "60",
+      epicRef: "177",
     });
     expect(text).toContain("@.middle/answer.md");
     expect(text.toLowerCase()).toContain("answer");
@@ -117,13 +131,18 @@ describe("buildPromptText", () => {
 });
 
 describe("resolveTranscriptPath", () => {
-  test("returns transcript_path from the startup payload", () => {
+  // Real SessionStart payload shape captured from codex 0.133.0.
+  test("returns transcript_path from the SessionStart payload", () => {
     const payload: HookPayload = {
-      session_id: "abc",
-      transcript_path: "/home/u/.codex/sessions/2026/05/rollout-abc.jsonl",
+      session_id: "019e7228-4ce0-78b3-9ee7-5784f3679c3f",
+      transcript_path:
+        "/home/u/.codex/sessions/2026/05/29/rollout-2026-05-29T01-15-04-019e7228.jsonl",
+      cwd: "/home/u/wt",
+      hook_event_name: "SessionStart",
+      source: "startup",
     };
     expect(codexAdapter.resolveTranscriptPath(payload)).toBe(
-      "/home/u/.codex/sessions/2026/05/rollout-abc.jsonl",
+      "/home/u/.codex/sessions/2026/05/29/rollout-2026-05-29T01-15-04-019e7228.jsonl",
     );
   });
 
@@ -138,42 +157,54 @@ describe("resolveTranscriptPath", () => {
 });
 
 describe("readTranscriptState", () => {
-  test("parses activity, turn count, last tool use, and context tokens from a rollout", () => {
+  test("parses a real-shaped rollout: activity, turn count, last tool use, context tokens", () => {
     const transcript = join(dir, "rollout.jsonl");
     writeFileSync(
       transcript,
       [
         JSON.stringify({
-          timestamp: "2026-05-14T12:00:00.000Z",
+          timestamp: "2026-05-29T05:15:04.000Z",
           type: "session_meta",
-          payload: { id: "s1" },
+          payload: { id: "s1", cwd: "/wt", originator: "codex_exec" },
         }),
         JSON.stringify({
-          timestamp: "2026-05-14T12:00:05.000Z",
+          timestamp: "2026-05-29T05:15:04.100Z",
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "t1" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-05-29T05:15:05.000Z",
           type: "response_item",
           payload: { type: "message", role: "assistant", content: [{ type: "text", text: "ok" }] },
         }),
+        // A real shell tool call is a function_call named exec_command.
         JSON.stringify({
-          timestamp: "2026-05-14T12:00:08.000Z",
+          timestamp: "2026-05-29T05:15:06.000Z",
           type: "response_item",
-          payload: { type: "function_call", name: "shell" },
+          payload: { type: "function_call", name: "exec_command", call_id: "c1" },
         }),
         JSON.stringify({
-          timestamp: "2026-05-14T12:00:10.000Z",
+          timestamp: "2026-05-29T05:15:06.206Z",
           type: "event_msg",
           payload: {
             type: "token_count",
-            info: { total_token_usage: { input_tokens: 1500, cached_input_tokens: 500 } },
+            info: {
+              total_token_usage: {
+                input_tokens: 10590,
+                cached_input_tokens: 2432,
+                total_tokens: 10595,
+              },
+            },
           },
         }),
         "", // trailing blank line — must be tolerated
       ].join("\n"),
     );
     const state = codexAdapter.readTranscriptState(transcript);
-    expect(state.lastActivity).toBe("2026-05-14T12:00:10.000Z");
+    expect(state.lastActivity).toBe("2026-05-29T05:15:06.206Z");
     expect(state.turnCount).toBe(1); // one assistant message
-    expect(state.lastToolUse).toBe("shell");
-    expect(state.contextTokens).toBe(2000); // 1500 input + 500 cached
+    expect(state.lastToolUse).toBe("exec_command");
+    expect(state.contextTokens).toBe(13022); // 10590 input + 2432 cached
   });
 
   test("tolerates a corrupt line without throwing", () => {
@@ -183,7 +214,7 @@ describe("readTranscriptState", () => {
       [
         "{ not json",
         JSON.stringify({
-          timestamp: "2026-05-14T12:00:01.000Z",
+          timestamp: "2026-05-29T05:15:01.000Z",
           type: "response_item",
           payload: { type: "message", role: "assistant", content: [{ type: "text", text: "hi" }] },
         }),
@@ -191,7 +222,7 @@ describe("readTranscriptState", () => {
     );
     const state = codexAdapter.readTranscriptState(transcript);
     expect(state.turnCount).toBe(1);
-    expect(state.lastActivity).toBe("2026-05-14T12:00:01.000Z");
+    expect(state.lastActivity).toBe("2026-05-29T05:15:01.000Z");
   });
 });
 
@@ -202,6 +233,22 @@ function writeMiddleDir(): { cwd: string; middle: string; transcript: string } {
   const transcript = join(dir, "stop.jsonl");
   writeFileSync(transcript, "");
   return { cwd, middle, transcript };
+}
+
+/** Write a rollout whose last token_count carries the given rate_limits block. */
+function writeRolloutWithRateLimits(path: string, rateLimits: unknown): void {
+  writeFileSync(
+    path,
+    JSON.stringify({
+      timestamp: "2026-05-29T05:15:06.206Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 0 } },
+        rate_limits: rateLimits,
+      },
+    }),
+  );
 }
 
 describe("classifyStop", () => {
@@ -257,28 +304,95 @@ describe("classifyStop", () => {
     }
   });
 
-  test.each([
-    ["You've hit a rate limit, try later.", "rate limit phrase"],
-    ["Error 429: Too Many Requests", "429 status"],
-    ["too many requests — slow down", "too many requests phrase"],
-    ["ratelimit exceeded", "ratelimit no-space"],
-  ])("rate-limit signal %p in the transcript tail → rate-limited (%s)", (text) => {
+  test("structured rate_limits with rate_limit_reached_type → rate-limited, resetAt from resets_at", () => {
     const { cwd, transcript } = writeMiddleDir();
-    writeFileSync(
-      transcript,
-      JSON.stringify({
-        timestamp: "2026-05-14T12:30:00.000Z",
-        type: "response_item",
-        payload: { type: "message", role: "assistant", content: [{ type: "text", text }] },
-      }),
-    );
+    // resets_at is epoch seconds.
+    writeRolloutWithRateLimits(transcript, {
+      rate_limit_reached_type: "primary",
+      primary: { used_percent: 100, resets_at: 1780634498 },
+      secondary: null,
+    });
     const result = codexAdapter.classifyStop({
-      payload: { cwd },
+      payload: {},
       transcriptPath: transcript,
       sentinelPresent: false,
       worktree: cwd,
     });
     expect(result.kind).toBe("rate-limited");
+    if (result.kind === "rate-limited") {
+      expect(result.resetAt).toBe(new Date(1780634498 * 1000).toISOString());
+    }
+  });
+
+  test("structured rate_limits at/over 100% used → rate-limited even without reached_type", () => {
+    const { cwd, transcript } = writeMiddleDir();
+    writeRolloutWithRateLimits(transcript, {
+      rate_limit_reached_type: null,
+      primary: { used_percent: 100, resets_at: 1780634498 },
+    });
+    const result = codexAdapter.classifyStop({
+      payload: {},
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("rate-limited");
+  });
+
+  test("a healthy structured block is authoritative → bare-stop, even with a stray '429' in text", () => {
+    const { cwd, transcript } = writeMiddleDir();
+    // Healthy: reached_type null, low usage. The structured block wins over the
+    // incidental '429' substring that would trip the text fallback.
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-05-29T05:15:06.206Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            rate_limit_reached_type: null,
+            primary: { used_percent: 3.0, resets_at: 1780634498 },
+          },
+        },
+      })}\n${JSON.stringify({
+        type: "response_item",
+        payload: { type: "message", role: "assistant", content: [{ type: "text", text: "429" }] },
+      })}`,
+    );
+    const result = codexAdapter.classifyStop({
+      payload: {},
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("bare-stop");
+  });
+
+  test.each([
+    ["You've hit a rate limit, try later.", "rate limit phrase"],
+    ["Error 429: Too Many Requests", "429 status"],
+    ["too many requests — slow down", "too many requests phrase"],
+    ["ratelimit exceeded", "ratelimit no-space"],
+  ])("text fallback (no structured block): %p → rate-limited (%s)", (text) => {
+    const { cwd, transcript } = writeMiddleDir();
+    // No token_count/rate_limits line → the text regex fallback applies.
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        timestamp: "2026-05-29T12:30:00.000Z",
+        type: "response_item",
+        payload: { type: "message", role: "assistant", content: [{ type: "text", text }] },
+      }),
+    );
+    const result = codexAdapter.classifyStop({
+      payload: {},
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("rate-limited");
+    if (result.kind === "rate-limited") expect(result.resetAt).toBe("unknown");
   });
 
   test.each([
@@ -291,13 +405,13 @@ describe("classifyStop", () => {
     writeFileSync(
       transcript,
       JSON.stringify({
-        timestamp: "2026-05-14T12:30:00.000Z",
+        timestamp: "2026-05-29T12:30:00.000Z",
         type: "response_item",
         payload: { type: "message", role: "assistant", content: [{ type: "text", text }] },
       }),
     );
     const result = codexAdapter.classifyStop({
-      payload: { cwd },
+      payload: {},
       transcriptPath: transcript,
       sentinelPresent: false,
       worktree: cwd,
@@ -307,7 +421,7 @@ describe("classifyStop", () => {
 
   test("done.json sentinel → done", () => {
     const { cwd, middle, transcript } = writeMiddleDir();
-    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 155 }));
+    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 182 }));
     const result = codexAdapter.classifyStop({
       payload: { cwd },
       transcriptPath: transcript,
@@ -332,7 +446,7 @@ describe("classifyStop", () => {
 
   test("sentinels are found even when payload.cwd is a worktree subdirectory", () => {
     const { cwd: worktree, middle, transcript } = writeMiddleDir();
-    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 155 }));
+    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 182 }));
     const subdir = join(worktree, "src");
     mkdirSync(subdir);
     const result = codexAdapter.classifyStop({
@@ -357,8 +471,20 @@ describe("classifyStop", () => {
 });
 
 describe("detectRateLimit", () => {
-  test("matches a rate-limit signal in the transcript tail", () => {
+  test("structured block at the limit → detection with the real reset time", () => {
     const transcript = join(dir, "rl.jsonl");
+    writeRolloutWithRateLimits(transcript, {
+      rate_limit_reached_type: "primary",
+      primary: { used_percent: 100, resets_at: 1780634498 },
+    });
+    const result = codexAdapter.detectRateLimit!({ payload: {}, transcriptPath: transcript });
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe("stop-hook");
+    expect(result!.resetAt).toBe(new Date(1780634498 * 1000).toISOString());
+  });
+
+  test("text fallback matches a rate-limit signal when no structured block exists", () => {
+    const transcript = join(dir, "rl-text.jsonl");
     writeFileSync(
       transcript,
       JSON.stringify({
@@ -373,10 +499,20 @@ describe("detectRateLimit", () => {
     const result = codexAdapter.detectRateLimit!({ payload: {}, transcriptPath: transcript });
     expect(result).not.toBeNull();
     expect(result!.source).toBe("stop-hook");
+    expect(result!.resetAt).toBe("unknown");
   });
 
-  test("returns null when no rate-limit signal is present", () => {
+  test("returns null when a healthy structured block is present", () => {
     const transcript = join(dir, "ok.jsonl");
+    writeRolloutWithRateLimits(transcript, {
+      rate_limit_reached_type: null,
+      primary: { used_percent: 3.0, resets_at: 1780634498 },
+    });
+    expect(codexAdapter.detectRateLimit!({ payload: {}, transcriptPath: transcript })).toBeNull();
+  });
+
+  test("returns null when no rate-limit signal is present at all", () => {
+    const transcript = join(dir, "none.jsonl");
     writeFileSync(transcript, JSON.stringify({ type: "response_item", payload: { text: "fine" } }));
     expect(codexAdapter.detectRateLimit!({ payload: {}, transcriptPath: transcript })).toBeNull();
   });
@@ -388,58 +524,75 @@ describe("installHooks", () => {
       worktree,
       hookScriptPath: ".middle/hooks/hook.sh",
       dispatcherUrl: "http://127.0.0.1:4120",
-      sessionName: "middle-60",
+      sessionName: "middle-177",
       sessionToken: "tok",
-      epicRef: "60",
+      epicRef: "177",
     });
   }
 
-  test("writes .codex/config.toml with auto-mode settings and a [hooks] block", async () => {
+  type HookGroup = { matcher?: string; hooks: Array<{ type: string; command: string }> };
+  type CodexConfig = {
+    approval_policy: string;
+    sandbox_mode: string;
+    projects: Record<string, { trust_level: string }>;
+    hooks: Record<string, HookGroup[]>;
+  };
+
+  async function readConfig(worktree: string): Promise<CodexConfig> {
+    const raw = await Bun.file(join(worktree, ".codex", "config.toml")).text();
+    return parseToml(raw) as unknown as CodexConfig;
+  }
+
+  test("writes .codex/config.toml with auto-mode + sandbox_mode (NOT the rejected 'sandbox' key)", async () => {
     const worktree = join(dir, "wt-cfg");
     mkdirSync(worktree, { recursive: true });
     await installInto(worktree);
     const raw = await Bun.file(join(worktree, ".codex", "config.toml")).text();
-    const cfg = parseToml(raw) as {
-      approval_policy: string;
-      sandbox: string;
-      hooks: Record<string, Array<{ command: string }>>;
-    };
+    expect(raw).not.toMatch(/^sandbox\s*=/m); // bare `sandbox` is rejected by --strict-config
+    const cfg = await readConfig(worktree);
     expect(cfg.approval_policy).toBe("never");
-    expect(cfg.sandbox).toBe("workspace-write");
+    expect(cfg.sandbox_mode).toBe("workspace-write");
+    expect((cfg as unknown as { sandbox?: unknown }).sandbox).toBeUndefined();
     expect(cfg.hooks).toBeDefined();
   });
 
-  test("maps each Codex hook event to the normalized taxonomy via the absolute hook path", async () => {
+  test("pre-trusts the worktree directory so codex skips the directory-trust dialog", async () => {
+    const worktree = join(dir, "wt-trust");
+    mkdirSync(worktree, { recursive: true });
+    await installInto(worktree);
+    const cfg = await readConfig(worktree);
+    expect(cfg.projects[worktree]).toEqual({ trust_level: "trusted" });
+  });
+
+  test("maps each real Codex event to the normalized taxonomy via the absolute hook path", async () => {
     const worktree = join(dir, "wt-map");
     mkdirSync(worktree, { recursive: true });
     await installInto(worktree);
-    const raw = await Bun.file(join(worktree, ".codex", "config.toml")).text();
-    const cfg = parseToml(raw) as { hooks: Record<string, Array<{ command: string }>> };
+    const cfg = await readConfig(worktree);
     const abs = join(worktree, ".middle/hooks/hook.sh");
-    const cmd = (event: string): string => cfg.hooks[event]![0]!.command;
-    expect(cmd("startup")).toBe(`sh "${abs}" session.started`);
-    expect(cmd("turn-start")).toBe(`sh "${abs}" turn.started`);
-    expect(cmd("command")).toBe(`sh "${abs}" tool.pre`);
-    expect(cmd("command-success")).toBe(`sh "${abs}" tool.post`);
-    expect(cmd("command-failure")).toBe(`sh "${abs}" tool.failed`);
-    expect(cmd("turn-end")).toBe(`sh "${abs}" agent.stopped`);
-    expect(cmd("shutdown")).toBe(`sh "${abs}" session.ended`);
+    const cmd = (event: string): string => cfg.hooks[event]![0]!.hooks[0]!.command;
+    const handlerType = (event: string): string => cfg.hooks[event]![0]!.hooks[0]!.type;
+    expect(cmd("SessionStart")).toBe(`sh "${abs}" session.started`);
+    expect(cmd("UserPromptSubmit")).toBe(`sh "${abs}" turn.started`);
+    expect(cmd("PreToolUse")).toBe(`sh "${abs}" tool.pre`);
+    expect(cmd("PostToolUse")).toBe(`sh "${abs}" tool.post`);
+    expect(cmd("Stop")).toBe(`sh "${abs}" agent.stopped`);
+    expect(cmd("SubagentStop")).toBe(`sh "${abs}" agent.subagent-stopped`);
+    expect(handlerType("SessionStart")).toBe("command");
   });
 
-  test("registers the full Codex hook event set", async () => {
+  test("registers exactly the real Codex event set (PascalCase, no fictional names)", async () => {
     const worktree = join(dir, "wt-events");
     mkdirSync(worktree, { recursive: true });
     await installInto(worktree);
-    const raw = await Bun.file(join(worktree, ".codex", "config.toml")).text();
-    const cfg = parseToml(raw) as { hooks: Record<string, unknown> };
+    const cfg = await readConfig(worktree);
     expect(Object.keys(cfg.hooks).sort()).toEqual([
-      "command",
-      "command-failure",
-      "command-success",
-      "shutdown",
-      "startup",
-      "turn-end",
-      "turn-start",
+      "PostToolUse",
+      "PreToolUse",
+      "SessionStart",
+      "Stop",
+      "SubagentStop",
+      "UserPromptSubmit",
     ]);
   });
 
@@ -456,18 +609,21 @@ describe("installHooks", () => {
     expect(((await stat(scriptPath)).mode & 0o111) !== 0).toBe(true);
   });
 
-  test("registers the PR-ready gate as a second hook on the command (pre) event", async () => {
+  test("registers the PR-ready gate as a SECOND PreToolUse matcher group scoped to Bash", async () => {
     const worktree = join(dir, "wt-gate");
     mkdirSync(worktree, { recursive: true });
     await installInto(worktree);
-    const raw = await Bun.file(join(worktree, ".codex", "config.toml")).text();
-    const cfg = parseToml(raw) as { hooks: Record<string, Array<{ command: string }>> };
-    const commandHooks = cfg.hooks.command!;
-    // First entry stays the universal heartbeat (tool.pre); the gate is added second.
-    expect(commandHooks[0]!.command).toBe(
+    const cfg = await readConfig(worktree);
+    const groups = cfg.hooks.PreToolUse!;
+    expect(groups).toHaveLength(2);
+    // First group stays the universal heartbeat (no matcher, tool.pre).
+    expect(groups[0]!.matcher).toBeUndefined();
+    expect(groups[0]!.hooks[0]!.command).toBe(
       `sh "${join(worktree, ".middle/hooks/hook.sh")}" tool.pre`,
     );
-    expect(commandHooks[1]!.command).toBe(
+    // Second group is the Bash-scoped blocking gate.
+    expect(groups[1]!.matcher).toBe("Bash");
+    expect(groups[1]!.hooks[0]!.command).toBe(
       `sh "${join(worktree, ".middle/hooks/pr-ready-gate.sh")}"`,
     );
   });
@@ -484,6 +640,41 @@ describe("installHooks", () => {
     const { stat } = await import("node:fs/promises");
     expect(((await stat(scriptPath)).mode & 0o111) !== 0).toBe(true);
   });
+
+  test("symlinks the operator's auth.json into the worktree CODEX_HOME", async () => {
+    const operatorHome = join(dir, "operator-codex");
+    mkdirSync(operatorHome, { recursive: true });
+    writeFileSync(join(operatorHome, "auth.json"), JSON.stringify({ tokens: "x" }));
+    const prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = operatorHome;
+    try {
+      const worktree = join(dir, "wt-auth");
+      mkdirSync(worktree, { recursive: true });
+      await installInto(worktree);
+      const dest = join(worktree, ".codex", "auth.json");
+      expect(lstatSync(dest).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(dest)).toBe(join(operatorHome, "auth.json"));
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prev;
+    }
+  });
+
+  test("does not throw or create a link when the operator has no auth.json", async () => {
+    const operatorHome = join(dir, "operator-empty");
+    mkdirSync(operatorHome, { recursive: true });
+    const prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = operatorHome;
+    try {
+      const worktree = join(dir, "wt-noauth");
+      mkdirSync(worktree, { recursive: true });
+      await installInto(worktree); // must not throw
+      expect(() => lstatSync(join(worktree, ".codex", "auth.json"))).toThrow();
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = prev;
+    }
+  });
 });
 
 describe("detectNeedsLogin", () => {
@@ -496,8 +687,44 @@ describe("detectNeedsLogin", () => {
 
   test("does not match normal pane content", () => {
     expect(detectNeedsLogin("> ")).toBe(false);
-    expect(detectNeedsLogin("Codex CLI v0.1.0")).toBe(false);
+    expect(detectNeedsLogin("Codex CLI v0.133.0")).toBe(false);
     expect(detectNeedsLogin("")).toBe(false);
+  });
+});
+
+describe("detectHooksTrustPrompt", () => {
+  test("matches the real 'Hooks need review' dialog text", () => {
+    const pane = [
+      "  Hooks need review",
+      "  3 hooks are new or changed.",
+      "  Hooks can run outside the sandbox after you trust them.",
+      "› 1. Review hooks",
+      "  2. Trust all and continue",
+      "  3. Continue without trusting (hooks won't run)",
+    ].join("\n");
+    expect(detectHooksTrustPrompt(pane)).toBe(true);
+  });
+
+  test("does not match a normal pane or the directory-trust dialog", () => {
+    expect(detectHooksTrustPrompt("> ")).toBe(false);
+    expect(detectHooksTrustPrompt("Do you trust the contents of this directory?")).toBe(false);
+  });
+});
+
+describe("detectDirTrustPrompt", () => {
+  test("matches the real first-run directory-trust dialog text", () => {
+    const pane = [
+      "> You are in /home/u/wt",
+      "  Do you trust the contents of this directory? Working with untrusted contents...",
+      "› 1. Yes, continue",
+      "  2. No, quit",
+    ].join("\n");
+    expect(detectDirTrustPrompt(pane)).toBe(true);
+  });
+
+  test("does not match a normal pane or the hooks-trust dialog", () => {
+    expect(detectDirTrustPrompt("> ")).toBe(false);
+    expect(detectDirTrustPrompt("Hooks need review")).toBe(false);
   });
 });
 
