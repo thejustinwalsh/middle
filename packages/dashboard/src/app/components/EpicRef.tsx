@@ -35,10 +35,15 @@ export function EpicRef({
   fallback?: string;
 }) {
   if (epicNumber !== null) return <>#{epicNumber}</>;
-  if (epicRef !== null) {
+  // A present *and non-blank* slug is the file-mode signal. A null column is JS
+  // null; an empty/whitespace value (no real writer produces one today, but a
+  // future one could) would otherwise render an empty-labelled link to
+  // `planning/epics/.md`, so treat it as "no Epic" and fall through.
+  const slug = epicRef?.trim();
+  if (slug) {
     return (
-      <a className="epic-file-link" href={epicFileHref(epicRef)}>
-        {epicRef}
+      <a className="epic-file-link" href={epicFileHref(slug)}>
+        {slug}
       </a>
     );
   }
