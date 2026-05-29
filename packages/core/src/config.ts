@@ -100,6 +100,19 @@ export type BootstrapSettings = {
 };
 
 /**
+ * The `[staleness]` section — per-repo overrides for the anti-staleness drift
+ * check. `spec_path` is the repo-relative build-spec path the check reads; omit
+ * it to keep the dispatcher's default convention. The whole section is optional,
+ * and so is every field within it (a bare `[staleness]` block is valid and just
+ * means "use the defaults") — a repo that doesn't ship a spec at all still gets
+ * the landed-issue reconcile, just no drift check.
+ */
+export type StalenessSettings = {
+  /** Repo-relative build-spec path the drift check reads. Omit for the default. */
+  specPath?: string;
+};
+
+/**
  * The merged result of the global and per-repo config files. The global-derived
  * sections are always present (documented defaults fill any gap); the per-repo
  * sections are present only when a per-repo config file was loaded.
@@ -114,6 +127,7 @@ export type MiddleConfig = {
   stateIssue?: StateIssueSettings;
   bootstrap?: BootstrapSettings;
   docs?: DocsSettings;
+  staleness?: StalenessSettings;
 };
 
 export type LoadConfigOptions = {
@@ -287,6 +301,16 @@ function mapDocs(raw: RawTable): DocsSettings | undefined {
 }
 
 /**
+ * Map the `[staleness]` section. Optional like the per-repo mappers, but its one
+ * field is optional too: a bare `[staleness]` block maps to `{ specPath: undefined }`,
+ * which the cron reads as "use the default spec path".
+ */
+function mapStaleness(raw: RawTable): StalenessSettings | undefined {
+  if (!isPlainObject(raw.staleness)) return undefined;
+  return { specPath: raw.staleness.spec_path as string | undefined };
+}
+
+/**
  * Load and merge the config layers into one typed object. Precedence, lowest to
  * highest: documented defaults < global file < committed repo policy
  * (`policy.toml`) < local repo cache (`config.toml`). Each layer deep-merges
@@ -316,5 +340,6 @@ export function loadConfig(opts: LoadConfigOptions): MiddleConfig {
     stateIssue: mapStateIssue(merged),
     bootstrap: mapBootstrap(merged),
     docs: mapDocs(merged),
+    staleness: mapStaleness(merged),
   };
 }

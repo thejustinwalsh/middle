@@ -131,6 +131,39 @@ describe("loadConfig — [docs] section", () => {
   });
 });
 
+describe("loadConfig — [staleness] section", () => {
+  test("reads spec_path", () => {
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("repo.toml", `[staleness]\nspec_path = "docs/spec.md"\n`),
+    });
+    expect(config.staleness!.specPath).toBe("docs/spec.md");
+  });
+
+  test("no [staleness] section leaves staleness undefined", () => {
+    const config = loadConfig({ globalPath: write("global.toml", GLOBAL_TOML) });
+    expect(config.staleness).toBeUndefined();
+  });
+
+  test("an empty [staleness] block leaves specPath undefined (falls back to the default)", () => {
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("repo.toml", `[staleness]\n`),
+    });
+    expect(config.staleness).toBeDefined();
+    expect(config.staleness!.specPath).toBeUndefined();
+  });
+
+  test("the local cache overrides committed policy spec_path", () => {
+    const config = loadConfig({
+      globalPath: write("global.toml", GLOBAL_TOML),
+      repoPath: write("config.toml", `[staleness]\nspec_path = "local/spec.md"\n`),
+      repoPolicyPath: write("policy.toml", `[staleness]\nspec_path = "policy/spec.md"\n`),
+    });
+    expect(config.staleness!.specPath).toBe("local/spec.md");
+  });
+});
+
 describe("loadConfig — global only", () => {
   test("parses the global sections and leaves per-repo sections undefined", () => {
     const config = loadConfig({ globalPath: write("global.toml", GLOBAL_TOML) });

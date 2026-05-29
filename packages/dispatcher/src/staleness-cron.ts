@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
+import { loadConfig } from "@middle/core";
 import { Bunqueue } from "bunqueue/client";
 import type { GitHubGateway } from "./github.ts";
 import { isPaused, listManagedRepos } from "./repo-config.ts";
@@ -14,17 +15,17 @@ import { reconcileStaleness } from "./staleness.ts";
 export const STALENESS_CRON_INTERVAL_MS = 60 * 60_000;
 
 /**
- * The repo-relative build-spec path the drift check reads. A default convention;
- * a repo without this file simply gets the landed-issue reconcile and no drift
- * check (the spec read returns null).
+ * The repo-relative build-spec path the drift check reads when a repo declares no
+ * `[staleness] spec_path`. A default convention; a repo without this file simply
+ * gets the landed-issue reconcile and no drift check (the spec read returns null).
  */
 export const DEFAULT_SPEC_PATH = join("planning", "middle-management-build-spec.md");
 
 /**
  * Dependencies for a staleness cron pass over the managed-repo registry: the
  * SQLite handle the registry lives in, the GitHub gateway each repo's
- * reconciliation reads/mutates, and the spec path + clock (both injectable for
- * tests).
+ * reconciliation reads/mutates, and the global-config path + clock (both
+ * injectable for tests).
  */
 export type StalenessCronDeps = {
   /** The dispatcher DB holding the managed-repo registry. */
@@ -33,25 +34,65 @@ export type StalenessCronDeps = {
     GitHubGateway,
     "listOpenIssues" | "listMergedPrsClosingRefs" | "closeIssue" | "createIssue"
   >;
-  /** The build-spec path, repo-relative (default {@link DEFAULT_SPEC_PATH}). */
-  specPath?: string;
+  /**
+   * The global config path threaded into each repo's config load — the daemon
+   * passes `process.env.MIDDLE_CONFIG` so per-repo loads see the same global layer
+   * `mm start` booted with. Each repo's spec path comes from its own merged config
+   * (`[staleness] spec_path` in `.middle/config.toml`/`policy.toml`), falling back
+   * to {@link DEFAULT_SPEC_PATH}. Omit (or point at a missing file) for defaults.
+   */
+  globalConfigPath?: string;
   /** Injectable clock for the paused-repo check (default `Date.now`). */
   now?: () => number;
 };
 
 /**
+ * Resolve a repo's build-spec path from its merged config (`[staleness] spec_path`
+ * in `.middle/config.toml`/`policy.toml`, layered on the daemon's global config),
+ * falling back to {@link DEFAULT_SPEC_PATH} when unset. Reading config can throw on
+ * a malformed TOML; callers run it inside the per-repo guard so one bad config
+ * logs-and-continues rather than aborting the sweep.
+ *
+ * `spec_path` is repo-relative by contract and is later joined onto the checkout
+ * and read off disk, so it is **constrained to the checkout**: an absolute path or
+ * one that escapes via `..` throws here (caught by the per-repo guard as that
+ * repo's logged failure) rather than letting a committed/local config read files
+ * outside the repo. The returned value stays repo-relative — `readSpec` joins it
+ * onto the checkout and the reconcile-task body names it verbatim.
+ */
+function resolveSpecPath(checkoutPath: string, globalConfigPath: string | undefined): string {
+  const config = loadConfig({
+    globalPath: globalConfigPath,
+    repoPath: join(checkoutPath, ".middle", "config.toml"),
+  });
+  const specPath = config.staleness?.specPath ?? DEFAULT_SPEC_PATH;
+  // Bound it to the checkout. `relative` of the resolved pair tells us whether the
+  // target stays inside: a `..`-only segment or `..<sep>` prefix means it climbed
+  // out, and an absolute result means `specPath` was itself absolute. A literal
+  // segment like `..foo` is NOT an escape, so match the `..` segment exactly rather
+  // than a naive `startsWith("..")` that would also reject such names.
+  const rel = relative(checkoutPath, join(checkoutPath, specPath));
+  if (isAbsolute(specPath) || rel === ".." || rel.startsWith(".." + sep)) {
+    throw new Error(`[staleness] spec_path escapes the repo checkout: ${specPath}`);
+  }
+  return specPath;
+}
+
+/**
  * One reconciliation pass over the managed-repo registry: for each managed,
  * non-paused repo, run {@link reconcileStaleness} (close landed-but-open issues,
- * flag spec drift). Per-repo failures are isolated. Returns the total number of
- * issues closed across all repos.
+ * flag spec drift) against that repo's configured (or default) spec path. Per-repo
+ * failures are isolated. Returns the total number of issues closed across all repos.
  */
 export async function runStalenessCronPass(deps: StalenessCronDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
-  const specPath = deps.specPath ?? DEFAULT_SPEC_PATH;
   let closed = 0;
   for (const managed of listManagedRepos(deps.db)) {
     if (isPaused(deps.db, managed.repo, now)) continue;
     try {
+      // Inside the guard: a malformed per-repo config.toml shouldn't abort the
+      // whole sweep — it logs as that repo's failure and the others still run.
+      const specPath = resolveSpecPath(managed.checkoutPath, deps.globalConfigPath);
       const result = await reconcileStaleness({
         repo: managed.repo,
         github: deps.github,
