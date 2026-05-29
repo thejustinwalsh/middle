@@ -13,6 +13,7 @@ import {
   countActiveImplementationSlots,
   createWorkflowRecord,
   getWorkflow,
+  touchHeartbeat,
   updateWorkflow,
 } from "../src/workflow-record.ts";
 import {
@@ -91,7 +92,15 @@ function validBody(): string {
 
 const SAMPLE_CONTEXT: RecommenderContext = {
   rateLimits: { claude: "AVAILABLE", codex: "RATE_LIMITED until 16:32Z", github: "4180/5000" },
-  inFlight: [{ issue: 6, adapter: "claude", progress: "sub-issue 2/5", session: "middle-x-6" }],
+  inFlight: [
+    {
+      issue: 6,
+      adapter: "claude",
+      progress: "sub-issue 2/5",
+      session: "middle-x-6",
+      lastHeartbeat: 1_700_000_000_000,
+    },
+  ],
   slots: {
     perAdapter: { claude: { used: 1, max: 2 }, codex: { used: 0, max: 1 } },
     total: { used: 1, max: 3, globalUsed: 2, globalMax: 4 },
@@ -496,6 +505,7 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
   test("derives rate_limits, in_flight, and slots from db + config", () => {
     mk("a", "claude", 6, "middle-x-6");
     mk("b", "claude", 7, "middle-x-7");
+    touchHeartbeat(db, "a", 1_700_000_000_000); // heartbeat flows into in_flight (#180)
     setRateLimited(db, {
       adapter: "codex",
       resetAt: Date.parse("2026-05-24T16:32:00Z"),
@@ -516,8 +526,20 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     expect(ctx.rateLimits.codex).toContain("RATE_LIMITED until 2026-05-24T16:32:00");
     expect(ctx.rateLimits.github).toBe("4180/5000");
     expect(ctx.inFlight).toEqual([
-      { issue: 6, adapter: "claude", progress: "running", session: "middle-x-6" },
-      { issue: 7, adapter: "claude", progress: "running", session: "middle-x-7" },
+      {
+        issue: 6,
+        adapter: "claude",
+        progress: "running",
+        session: "middle-x-6",
+        lastHeartbeat: 1_700_000_000_000,
+      },
+      {
+        issue: 7,
+        adapter: "claude",
+        progress: "running",
+        session: "middle-x-7",
+        lastHeartbeat: null,
+      },
     ]);
     expect(ctx.slots).toEqual({
       perAdapter: { claude: { used: 2, max: 2 }, codex: { used: 0, max: 1 } },

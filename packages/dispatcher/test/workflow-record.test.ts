@@ -15,12 +15,14 @@ import {
   getWorkflow,
   getWorkflowSource,
   hasNonTerminalEpicWorkflow,
+  listActiveImplementationWorkflows,
   listNonTerminalWorkflows,
   listRunningImplementationWorkflows,
   patchWorkflowMeta,
   promotePendingToFailed,
   readWorkflowMeta,
   setCheckboxReconcileState,
+  touchHeartbeat,
   updateWorkflow,
 } from "../src/workflow-record.ts";
 
@@ -416,6 +418,31 @@ describe("hasNonTerminalEpicWorkflow", () => {
       adapter: "claude",
     });
     expect(hasNonTerminalEpicWorkflow(db, "o/r", 9)).toBe(false); // recommender doesn't claim the slot
+  });
+});
+
+describe("listActiveImplementationWorkflows (#180)", () => {
+  test("returns lastHeartbeat (null when none observed, the touched epoch otherwise)", () => {
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 1,
+      adapter: "claude",
+    });
+    createWorkflowRecord(db, {
+      id: "b",
+      kind: "implementation",
+      repo: "o/r",
+      epicNumber: 2,
+      adapter: "claude",
+    });
+    touchHeartbeat(db, "b", 1_700_000_000_000);
+    const rows = listActiveImplementationWorkflows(db, "o/r");
+    expect(rows.map((r) => ({ epic: r.epicNumber, hb: r.lastHeartbeat }))).toEqual([
+      { epic: 1, hb: null },
+      { epic: 2, hb: 1_700_000_000_000 },
+    ]);
   });
 });
 
