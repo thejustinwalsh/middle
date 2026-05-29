@@ -121,6 +121,70 @@ of "unknown".
 `rate_limits.primary.{used_percent:3.0, resets_at:1780634498}`,
 `rate_limit_reached_type:null` on a healthy run.
 
+## DISCOVERY (blocker): codex's interactive SessionStart is prompt-triggered, not boot-triggered
+**File(s):** dispatcher launch→drive flow (`packages/dispatcher/src/workflows/implementation.ts`), `AgentAdapter` interface
+**Date:** 2026-05-29
+
+**Finding:** Live validation shows interactive `codex` does NOT create a session
+(no rollout file, no `SessionStart` hook) until the **first user prompt is
+submitted**. Confirmed: after answering the hooks-trust dialog and waiting 25s
+idle, zero hooks fired and zero rollout files existed; the instant a prompt was
+submitted, `SessionStart` (source `startup`) fired, then `turn.started`/`Stop`.
+There is no codex config/flag to start a session eagerly at boot (the `[PROMPT]`
+CLI arg is literally "the user prompt to start the session").
+
+**Why it's a blocker:** The dispatcher drives every adapter as
+`enterAutoMode` (parallel) → `awaitSessionStart(timeout)` → `sendText(prompt)`.
+Claude fires `SessionStart` at boot (after its dialogs), so it works. Codex never
+fires `SessionStart` until a prompt arrives — so `awaitSessionStart` blocks until
+timeout and a real dispatch **fails**. This is the launch→drive ORDER, not the
+adapter's internals.
+
+**Why I paused instead of fixing it unilaterally:** The issue's stated premise is
+"No signature change is required … all fixes are internal to
+`packages/adapters/codex/`." That premise holds for gaps 1–4 (all fixed with zero
+interface change). It does NOT hold for full live dispatch (acceptance criterion
+5): the only clean fix touches shared code — an additive optional
+`AgentAdapter` capability (e.g. `startsSessionOnFirstPrompt`) plus a dispatcher
+branch that, for such adapters, sends the prompt *first* (the hook server already
+stashes the resulting `SessionStart`, so ordering is race-safe) and has codex's
+`enterAutoMode` resolve once trust is answered. That contradicts the Phase-10
+"no interface change" headline, so it's a scope/design decision for the human,
+not something to re-architect unilaterally in a codex-adapter-scoped issue.
+
+**Candidate space (one clearly-leading approach):**
+1. Additive optional `AgentAdapter.startsSessionOnFirstPrompt?: boolean` + a
+   dispatcher launch-ordering branch (prompt-first for codex). Zero Claude-path
+   change. ← recommended.
+2. Generic "probe-then-prompt" fallback in the dispatcher (no interface change)
+   — risks a Claude regression if Claude boots slower than the probe window
+   (prompt sent before Claude is ready → lost).
+3. Pass the prompt as a `codex` CLI arg via `buildLaunchCommand` — needs the
+   prompt in `LaunchOpts` (a real interface change) and causes a double-send.
+4. Codex eager-session config — investigated, does not exist.
+
+## Discard curl's response body in the shared `hook.sh` (codex parses hook stdout)
+**File(s):** `packages/core/src/hook-script.ts`, `packages/cli/src/bootstrap-assets/hooks/hook.sh`
+**Date:** 2026-05-29
+
+**Decision:** Add `-o /dev/null` to the `curl` in the universal `HOOK_SH` (and
+its byte-identical bootstrap mirror), discarding the dispatcher's response body.
+
+**Why:** A live codex run logged `Stop hook (failed) — hook returned invalid
+stop hook JSON output` on every hook. Codex (unlike Claude) parses each hook's
+**stdout** as the hook's structured JSON output; the dispatcher's plain `ok`
+body, echoed to stdout by curl, isn't valid hook JSON. The events still POSTed
+(middle got the heartbeat), but the per-fire error is noisy and risks a future
+codex version treating invalid hook JSON as a hard block. Discarding the body
+leaves clean empty stdout — a no-op for both codex and Claude. This is a shared
+`@middle/core` change, but it's load-bearing for clean codex dispatch and
+strictly improves the Claude path too; the drift test keeps the mirror in lockstep.
+
+**Evidence:** Live tmux run showed the "Stop hook (failed)" error with the body
+echoed; the same run with `-o /dev/null` showed no hook error and the command
+ran clean. The end-to-end verify script (`scripts/verify-live-hooks.ts`) then
+passed all five heartbeat events with no codex-side hook errors.
+
 ## `transcript.ts` already matches the real rollout — keep it
 **File(s):** `packages/adapters/codex/src/transcript.ts`
 **Date:** 2026-05-29
