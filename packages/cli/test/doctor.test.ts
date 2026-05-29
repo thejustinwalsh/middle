@@ -1,6 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import type { AdapterConfig, MiddleConfig } from "@middle/core";
 import type { RetentionStatus } from "@middle/dispatcher/src/retention.ts";
-import { formatAgo, runDoctor, summarizeRetention } from "../src/commands/doctor.ts";
+import {
+  checkAdapterBinaries,
+  formatAgo,
+  runDoctor,
+  summarizeRetention,
+} from "../src/commands/doctor.ts";
 
 // runDoctor shells out to bun/tmux/claude/git/gh — these all exist on the
 // machine middle is built for, so the happy path is verifiable. We don't fake
@@ -44,6 +50,52 @@ describe("runDoctor — happy path", () => {
     ]) {
       expect(output).toContain(name);
     }
+  });
+});
+
+describe("checkAdapterBinaries", () => {
+  const adapter = (enabled: boolean, binary: string): AdapterConfig => ({
+    enabled,
+    binary,
+    extraArgs: [],
+  });
+  const withAdapters = (adapters: Record<string, AdapterConfig>): MiddleConfig =>
+    ({ adapters }) as MiddleConfig;
+
+  test("null config (unparseable) → single warn, no throw", async () => {
+    expect(await checkAdapterBinaries(null)).toEqual([
+      { name: "adapters", status: "warn", detail: "config unreadable — adapter checks skipped" },
+    ]);
+  });
+
+  test("no enabled adapters → warn", async () => {
+    expect(await checkAdapterBinaries(withAdapters({}))).toEqual([
+      { name: "adapters", status: "warn", detail: "no adapters enabled in config" },
+    ]);
+  });
+
+  test("reports a row per ENABLED adapter from the passed config — not a reloaded global one", async () => {
+    // `bun` is the runtime, so it's always on PATH: an adapter whose binary is
+    // `bun` reliably passes, proving the rows came from THIS config object (the
+    // repo-aware one runDoctor resolved) rather than a reloaded global default.
+    const checks = await checkAdapterBinaries(
+      withAdapters({
+        repoonly: adapter(true, "bun"),
+        disabled: adapter(false, "bun"),
+      }),
+    );
+    expect(checks.map((c) => c.name)).toEqual(["repoonly"]);
+    expect(checks[0]!.status).toBe("pass");
+    expect(checks[0]!.detail).toContain("on PATH");
+  });
+
+  test("enabled adapter with a missing binary → warn (never fail)", async () => {
+    const checks = await checkAdapterBinaries(
+      withAdapters({ ghost: adapter(true, "middle-no-such-binary-xyz") }),
+    );
+    expect(checks).toHaveLength(1);
+    expect(checks[0]!.status).toBe("warn");
+    expect(checks[0]!.detail).toContain("not installed");
   });
 });
 

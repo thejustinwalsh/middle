@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { readFileSync } from "node:fs";
 import {
   checkStateIssue,
@@ -36,5 +37,23 @@ describe("checkStateIssueRoundTrip", () => {
 describe("checkStateIssue", () => {
   test("passes against middle's own source tree", () => {
     expect(checkStateIssue().status).toBe("pass");
+  });
+
+  test("returns a structured fail (never throws) when the fixture is unreadable", () => {
+    // Schema doc + fixture still exist (existsSync untouched), so the check
+    // reaches the read; force that read to throw the way a permission/I/O error
+    // would. checkStateIssue must catch it and return a fail status rather than
+    // letting the exception propagate and abort `mm doctor`.
+    const spy = spyOn(fs, "readFileSync").mockImplementation(() => {
+      throw new Error("EACCES: permission denied");
+    });
+    try {
+      const result = checkStateIssue();
+      expect(result.status).toBe("fail");
+      expect(result.detail).toContain("unreadable");
+      expect(result.detail).toContain("EACCES");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

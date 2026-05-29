@@ -115,9 +115,16 @@ if [ -n "$RESTORE_ARCHIVE" ]; then
   tar -xzf "$RESTORE_ARCHIVE" -C "$tmp"
   [ -f "$tmp/db.sqlite3" ] || { echo "backup.sh: archive has no db.sqlite3 — not a middle backup?" >&2; exit 1; }
   # Drop stale WAL/SHM so the restored db is the single source of truth.
+  # Create each destination's parent dir first: a relocated --db / MIDDLE_CONFIG
+  # can point under a directory that doesn't exist yet, and bare `cp` would abort.
+  mkdir -p "$(dirname "$DB_PATH")"
   rm -f "$DB_PATH-wal" "$DB_PATH-shm"
   cp "$tmp/db.sqlite3" "$DB_PATH"
-  if [ -f "$tmp/config.toml" ]; then cp "$tmp/config.toml" "$CONFIG_PATH"; echo "  restored: config.toml"; fi
+  if [ -f "$tmp/config.toml" ]; then
+    mkdir -p "$(dirname "$CONFIG_PATH")"
+    cp "$tmp/config.toml" "$CONFIG_PATH"
+    echo "  restored: config.toml"
+  fi
   echo "  restored: db.sqlite3"
   echo "Done. Start the dispatcher with \`mm start\` (it will migrate the db if needed)."
   exit 0

@@ -27,8 +27,13 @@ function seedDb(): void {
 async function run(
   script: string,
   args: string[],
+  env?: Record<string, string>,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(["bash", script, ...args], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["bash", script, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: env ? { ...process.env, ...env } : process.env,
+  });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -114,6 +119,35 @@ describe("safety guards", () => {
     const reset = await run(RESET, ["--db", relocated, "--home", home, "--yes"]);
     expect(reset.code).toBe(0);
     expect(existsSync(relocated)).toBe(false); // the relocated db, not <home>/db.sqlite3
+  });
+
+  test("restore creates missing parent dirs for a relocated db and config", async () => {
+    // Back up a db + config from <home>, then restore into destinations whose
+    // parent directories do NOT exist yet (a relocated --db / MIDDLE_CONFIG).
+    // Bare `cp` would abort on the missing parents; restore must mkdir -p first.
+    seedDb();
+    writeFileSync(join(home, "config.toml"), 'default_adapter = "claude"\n');
+    const backup = await run(BACKUP, ["--home", home, "--out", out]);
+    expect(backup.code).toBe(0);
+    const archive = join(out, readdirSync(out).find((f) => f.endsWith(".tar.gz"))!);
+
+    const dbDest = join(out, "no", "such", "dir", "relocated.sqlite3");
+    const cfgDest = join(out, "other", "missing", "config.toml");
+    const restore = await run(
+      BACKUP,
+      ["--restore", archive, "--db", dbDest, "--home", join(out, "fresh-home"), "--yes"],
+      { MIDDLE_CONFIG: cfgDest },
+    );
+    expect(restore.code).toBe(0);
+    expect(existsSync(dbDest)).toBe(true);
+    expect(existsSync(cfgDest)).toBe(true);
+    expect(restore.stdout).toContain("restored: config.toml");
+
+    // The relocated db is the real, migrated db with the seeded row intact.
+    const db = openAndMigrate(dbDest);
+    const row = db.query("SELECT id FROM workflows WHERE id = 'wf-keep'").get();
+    expect(row).toEqual({ id: "wf-keep" });
+    db.close();
   });
 
   test("restore refuses while the dispatcher pidfile is live", async () => {

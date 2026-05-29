@@ -122,7 +122,7 @@ mm stop                     # everybody go home
 One Bun process. No build step. The dispatcher is `bunqueue` + a hook receiver + a watchdog ticker, all writing to a local SQLite (WAL) and serving a read-only dashboard over HTTP+SSE. GitHub is the source of truth for the work; the dispatcher spawns `tmux` sessions for the agents and `git` worktrees to isolate them.
 
 <p align="center">
-  <img src="docs/diagrams/architecture.svg" alt="middle dispatcher (single process) — bunqueue engine, hook receiver, and watchdog ticker write to SQLite (WAL); Bun.serve fronts HTTP + SSE on :8822 to a read-only dashboard; GitHub on the left is the source of truth; tmux sessions and git worktrees are spawned below." width="720" />
+  <img src="docs/diagrams/architecture.svg" alt="middle dispatcher (single process) — bunqueue engine, hook receiver, and watchdog ticker write to SQLite (WAL); Bun.serve fronts HTTP + SSE on :4120 to a read-only dashboard; GitHub on the left is the source of truth; tmux sessions and git worktrees are spawned below." width="720" />
 </p>
 
 ---

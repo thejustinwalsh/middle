@@ -97,9 +97,16 @@ export function checkStateIssue(): StateIssueCheckStatus {
   if (!existsSync(STATE_ISSUE_FIXTURE_PATH)) {
     return { status: "warn", detail: "canonical state-issue fixture not found — skipped" };
   }
-  const body = readFileSync(STATE_ISSUE_FIXTURE_PATH, "utf8");
-  const result = checkStateIssueRoundTrip(body, [...FIXTURE_ADAPTERS]);
-  return result.ok
-    ? { status: "pass", detail: result.detail }
-    : { status: "fail", detail: result.detail };
+  try {
+    const body = readFileSync(STATE_ISSUE_FIXTURE_PATH, "utf8");
+    const result = checkStateIssueRoundTrip(body, [...FIXTURE_ADAPTERS]);
+    return result.ok
+      ? { status: "pass", detail: result.detail }
+      : { status: "fail", detail: result.detail };
+  } catch (error) {
+    return {
+      status: "fail",
+      detail: `state-issue fixture unreadable — ${(error as Error).message}`,
+    };
+  }
 }

@@ -132,21 +132,17 @@ async function runBunPathFix(): Promise<void> {
  * Check the binary of every configured + enabled adapter (not just `claude`).
  * A missing binary is a **warning**, not a failure: middle can still dispatch
  * with whichever adapters are installed — the recommender / `mm dispatch` simply
- * won't pick the absent one. When the config file is absent, `loadConfig`'s
- * defaults still describe both `claude` and `codex`, so a default environment is
- * checked for both. The check `name` is the adapter name so each gets its own row.
+ * won't pick the absent one. Takes the **same** repo-aware config `runDoctor`
+ * already resolved (via {@link loadDoctorConfig}) rather than reloading global-only
+ * config — so a repo's `.middle/config.toml` adapter set is honored here too. A
+ * `null` config means it failed to parse (already a hard `fail` on the config row),
+ * so adapter checks are skipped with a warning. The check `name` is the adapter
+ * name so each gets its own row.
  */
-async function checkAdapterBinaries(): Promise<Check[]> {
-  let config: ReturnType<typeof loadConfig>;
-  try {
-    config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
-  } catch (error) {
+export async function checkAdapterBinaries(config: MiddleConfig | null): Promise<Check[]> {
+  if (!config) {
     return [
-      {
-        name: "adapters",
-        status: "warn",
-        detail: `config unreadable: ${(error as Error).message}`,
-      },
+      { name: "adapters", status: "warn", detail: "config unreadable — adapter checks skipped" },
     ];
   }
   const enabled = Object.entries(config.adapters).filter(([, a]) => a.enabled);
@@ -421,7 +417,7 @@ export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number
     await checkBinary("bun", ["bun", "--version"]),
     await checkBunPath(),
     await checkTmux(),
-    ...(await checkAdapterBinaries()),
+    ...(await checkAdapterBinaries(config)),
     await checkBinary("git", ["git", "--version"]),
     await checkBinary("gh", ["gh", "--version"]),
     await checkGhAuth(),
