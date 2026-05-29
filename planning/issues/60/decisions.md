@@ -259,3 +259,107 @@ ChatGPT"; `readlink -f ~/.bun/bin/mm` → `/home/tjw/Developer/middle/packages/c
 `gh issue view 60 --json labels` → no `approved`; `bun test` 794/0, typecheck/lint/format
 clean, `git rev-list --count origin/main...HEAD` → 7 ahead/0 behind, `gh pr view 155` →
 MERGEABLE / CLEAN (all re-verified this resume).
+
+## Resume #5 — live observation against real codex 0.133.0 (baselines disproven, not just unverified)
+
+**File(s):** `packages/adapters/codex/src/{hooks,transcript,index,classify,prompt}.ts`
+**Date:** 2026-05-29
+
+**What I did:** Codex is now installed + authenticated (`codex-cli 0.133.0`, "Logged
+in using ChatGPT"). Rather than re-park unchanged a 6th time, I exercised the real
+`codex` binary directly (bounded probes + minimal real `codex exec` sessions — no
+nested dispatch, no external PRs) to validate the adapter's deferred empirical
+baselines. This is the "build the verification" the live run was meant to provide; it
+can run against the real CLI even though the full daemon-driven dual-dispatch cannot
+(the daemon runs `main`, which lacks this PR's registry — see Resume #4).
+
+**Findings (all reproduced against codex 0.133.0):**
+
+1. **Launch command — CORRECT.** `codex` with no subcommand drops into the interactive
+   CLI ("If no subcommand is specified, options will be forwarded to the interactive
+   CLI"). `buildLaunchCommand` -> `["codex"]` holds.
+
+2. **`sandbox = "workspace-write"` — REJECTED.** `codex --strict-config` errors:
+   `unknown configuration field 'sandbox'` (config.toml:4:1). Without `--strict-config`
+   codex *silently ignores* the unknown field, so the sandbox policy the adapter intends
+   is never applied. The real key is not `sandbox` (and not `sandbox_mode`); it must be
+   confirmed during tightening (codex exposes sandbox via the `-s/--sandbox <MODE>` flag
+   and `sandbox_permissions`/`shell_environment_policy` config). `approval_policy` was
+   not reached (strict parsing aborts at the first unknown field).
+
+3. **Hook trust + hook schema — hooks DO NOT FIRE.** codex 0.133.0 *has* a hooks system
+   (it ships `--dangerously-bypass-hook-trust`: "Run enabled hooks without requiring
+   persisted hook trust"). But across real `codex exec` runs, the adapter's
+   `[[hooks.<event>]]` array-of-tables with event names `startup / turn-start / command /
+   turn-end / shutdown` produced **zero** hook invocations — even with `CODEX_HOME`
+   pointed at the config dir **and** `--dangerously-bypass-hook-trust` set. Two
+   independent causes, both load-bearing for dispatch:
+   - **Trust:** the adapter never establishes persisted hook trust and `buildLaunchCommand`
+     passes no `--dangerously-bypass-hook-trust`, so enabled hooks would be withheld on a
+     real launch regardless of schema.
+   - **Schema/event-names:** with trust bypassed they *still* didn't fire, so the
+     `[hooks.<event>]` taxonomy and/or the five event names don't match 0.133.0's real
+     hooks schema. (Confound: tested in `exec` mode, not interactive; `command` hooks also
+     need the model to actually run a shell command, which a "say PONG" turn doesn't — but
+     `startup`/`turn-start`/`turn-end` should have fired and didn't.) The real `[hooks]`
+     schema must be read off codex 0.133.0 directly before this works.
+   This is the single most load-bearing gap: middle's liveness/heartbeat, stop
+   classification, and the blocking PR-ready gate all ride hooks. **No hooks => codex is
+   not dispatchable** (the watchdog kills an agent that never emits a hook event).
+
+4. **Config location — WRONG.** codex loads config from `$CODEX_HOME/config.toml`
+   (default `~/.codex/config.toml`); there is no documented auto-load of a worktree-local
+   `<cwd>/.codex/config.toml`. `installHooks` writes `<worktree>/.codex/config.toml` and
+   `buildLaunchCommand` sets **no** `CODEX_HOME` in `env`, so on a real launch codex reads
+   the operator's global `~/.codex/config.toml` and the adapter's auto-mode + hooks config
+   is never loaded. Confirmed: a real session run from inside a worktree carrying the
+   adapter's `.codex/config.toml` fired none of its hooks. Fix shape: set
+   `CODEX_HOME=<worktree>/.codex` (or layer via `--profile-v2`) in `buildLaunchCommand`'s
+   `env` — but that repoints *all* of codex's state (auth, caches, sqlite) at the
+   worktree, so auth must be made reachable too.
+
+5. **Transcript storage — WRONG (JSONL rollout assumption).** codex 0.133.0 keeps session
+   state in **SQLite** under `~/.codex/` (`logs_2.sqlite`, `state_5.sqlite`,
+   `goals_1.sqlite`). No `~/.codex/sessions/` dir exists and a real session wrote **no**
+   JSONL rollout file anywhere under `CODEX_HOME`. `resolveTranscriptPath` (expects a
+   `transcript_path`/`rollout_path` in the startup payload) and `readTranscriptState`
+   (line-delimited JSON parse of a rollout) do not match this version. `classifyStop` /
+   `detectRateLimit` read that same (nonexistent) tail, so stop classification and
+   rate-limit detection have nothing to read. Fix shape: read the SQLite session store, or
+   locate whatever per-session artifact the startup hook actually advertises (the startup
+   payload is what carries the real path/handle — to be determined once hooks fire).
+
+**Interface verdict (the Epic's headline criterion):** every one of these gaps is
+*inside* `packages/adapters/codex/` — `installHooks`, `buildLaunchCommand`,
+`resolveTranscriptPath`/`readTranscriptState`, `classifyStop`. **The `AgentAdapter`
+interface itself needs no signature change** to fix any of them; that is the abstraction
+holding under real-world pressure (the exact thing Phase 10 set out to prove). What the
+observation disproves is not the interface — it's the *contents* of the start-generous
+baselines, which the Epic explicitly scoped as "tighten once observed live."
+
+**Scope call (why I did NOT fix these now):** the load-bearing fixes (#3 real hook
+schema, #5 SQLite/real-transcript reads) require reverse-engineering codex 0.133.0's
+hooks API and session store — a native, dotslash-distributed binary whose hooks are
+gated behind experimental/trust warnings. That is genuinely unbounded work against an
+evolving CLI, and the Epic's "Out of scope" deferred exactly this ("Tightening Codex
+… against a live run (future, once observed)"). Partial fixes (#2 sandbox key, #4
+`CODEX_HOME`, #3-trust flag) without the real hook schema would enlarge the diff while
+leaving codex still non-dispatchable — lipstick, not progress. So the disciplined call
+is to *document the now-concrete tightening work* and surface the scope decision, not to
+balloon this Epic mid-dispatch.
+
+**Consequence for criterion 2 / the PR-ready gate:** criterion 2 ("dispatched once per
+adapter … produces conforming output for both") is not merely *unrun* — as the codex
+adapter stands, it would **fail** (no hooks => no heartbeat => watchdog kill; no readable
+transcript => no stop classification). Marking PR #155 ready — even with a deferral —
+would overclaim that codex works. So the PR-ready transition is *correctly* blocked and
+the PR stays **draft**; the gate is right and I am explicitly not trying to pass it. The
+honest terminal state of this dispatch is: interface-proof delivered + the codex empirical
+tightening now *observed and documented* (real value added to #63), with a genuine
+**scope decision** left for the maintainer.
+
+**Reproduction (all commands run this resume):**
+- `codex --strict-config exec …` -> `Error loading config.toml: unknown configuration field 'sandbox'`
+- real `codex exec --dangerously-bypass-approvals-and-sandbox "Reply with PONG"` -> `PONG`, exit 0, no hook markers, no JSONL written
+- same with `CODEX_HOME=<wt>/.codex --dangerously-bypass-hook-trust` (auth copied in) -> `PONG`, still zero hook invocations
+- `ls ~/.codex` -> `*.sqlite` stores, no `sessions/`, no rollout JSONL
