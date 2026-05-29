@@ -7,6 +7,7 @@
 import type { RunnerPanel, SessionEvent } from "../../wire.ts";
 import { ago } from "../format.ts";
 import { CopyCommand } from "./CopyCommand.tsx";
+import { EpicRef } from "./EpicRef.tsx";
 
 /** Events that record a verification gate outcome — pulled out as evidence. */
 function isVerificationEvent(type: string): boolean {
@@ -37,7 +38,7 @@ export function Inspector({
     <aside className="inspector" role="dialog" aria-label={`Inspector for ${panel.session}`}>
       <div className="inspector-head">
         <h3>
-          #{panel.epic ?? "—"} · {panel.repo}
+          <EpicRef epicNumber={panel.epic} epicRef={panel.epicRef} fallback="#—" /> · {panel.repo}
         </h3>
         <button type="button" className="inspector-close" onClick={() => onClose?.()}>
           close
