@@ -28,3 +28,10 @@
 
 **Decision:** No db file → warn; db below retention schema (< v6) → warn; unreadable db → fail; a *failed* last retention run → warn (surfaced as `FAILED`).
 **Why:** Doctor must be safe to run any time. Only genuine corruption (can't open) is a hard fail; the rest are degraded-but-functional states. `existsSync` guards before `openDb` (which has `create:true`) so doctor never creates the db as a side effect.
+
+## scripts pass paths via env, not `bun -e` argv
+**File(s):** `scripts/backup.sh` (`snapshot_db`)
+**Date:** 2026-05-29
+
+**Decision:** The backup DB-snapshot one-liner reads source/target from `MIDDLE_SNAP_SRC`/`MIDDLE_SNAP_DST` env vars, not `process.argv`.
+**Why:** `bun -e '<code>' a b` does NOT expose `a`/`b` as `process.argv[2+]` — `new Database(undefined)` silently opens an *in-memory* db, so an argv-based snapshot writes an empty file with no error. Env vars are the reliable channel. The snapshot uses `VACUUM INTO` on a read-write handle (readonly → SQLITE_CANTOPEN), which is a consistent single-file snapshot even against a live WAL — so backup works without stopping the dispatcher. Restore, which overwrites the db, refuses while the dispatcher is up.
