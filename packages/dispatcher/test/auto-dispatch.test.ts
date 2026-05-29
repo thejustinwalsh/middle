@@ -3,7 +3,9 @@ import type { ParsedState, ReadyRow } from "@middle/state-issue";
 import {
   autoDispatch,
   createParseFailureSurfacer,
+  didReadState,
   type AutoDispatchDeps,
+  type AutoDispatchResult,
 } from "../src/auto-dispatch.ts";
 import type { SlotState } from "../src/slots.ts";
 
@@ -318,6 +320,42 @@ describe("createParseFailureSurfacer (#180)", () => {
     const err = new Error("state issue #1 does not parse: boom");
     expect(await surfacer.surface("o/r", 1, err)).toBe(true);
     expect(await surfacer.surface("x/y", 1, err)).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+});
+
+describe("didReadState (#180) — gate re-arming on an actual read", () => {
+  const resultWith = (reason: AutoDispatchResult["reason"]): AutoDispatchResult => ({
+    enqueued: [],
+    reason,
+  });
+
+  test("a `disabled` pass did not read — must NOT re-arm surfacing", () => {
+    expect(didReadState(resultWith("disabled"))).toBe(false);
+  });
+
+  test("every reason that runs after readState counts as a read", () => {
+    expect(didReadState(resultWith("drained"))).toBe(true);
+    expect(didReadState(resultWith("slots-exhausted"))).toBe(true);
+  });
+
+  // The orchestration class fix: a disabled tick between a parse-failure surface
+  // and its recurrence must keep the message deduped (no spurious second comment),
+  // because no healthy read happened in between. A `drained` tick re-arms.
+  test("disabled tick does not re-arm; a healthy (drained) read does", async () => {
+    const calls: string[] = [];
+    const surfacer = createParseFailureSurfacer(async (o) => {
+      calls.push(o.problem);
+    });
+    const err = new Error("state issue #84 does not parse: boom");
+
+    expect(await surfacer.surface("o/r", 84, err)).toBe(true); // first surface
+    if (didReadState(resultWith("disabled"))) surfacer.reset("o/r"); // disabled — no read, no reset
+    expect(await surfacer.surface("o/r", 84, err)).toBe(false); // still deduped
+    expect(calls).toHaveLength(1);
+
+    if (didReadState(resultWith("drained"))) surfacer.reset("o/r"); // healthy read — re-arm
+    expect(await surfacer.surface("o/r", 84, err)).toBe(true); // recurrence re-announces
     expect(calls).toHaveLength(2);
   });
 });

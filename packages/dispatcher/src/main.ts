@@ -13,7 +13,7 @@ import { loadConfig } from "@middle/core";
 import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import type { Database } from "bun:sqlite";
 import { getAdapter, isKnownAdapter } from "./adapters.ts";
-import { autoDispatch, createParseFailureSurfacer } from "./auto-dispatch.ts";
+import { autoDispatch, createParseFailureSurfacer, didReadState } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
@@ -351,7 +351,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         );
       throw error;
     }
-    parseFailureSurfacer.reset(repo); // healthy read — re-arm surfacing for next time
+    // Re-arm surfacing only after a pass that actually read the state — a
+    // `"disabled"` pass never read, so re-arming there would re-surface an
+    // unfixed parse failure without an intervening healthy read (#180).
+    if (didReadState(result)) parseFailureSurfacer.reset(repo);
     if (result.enqueued.length > 0) {
       const list = result.enqueued.map((e) => `#${e.epicNumber}(${e.adapter})`).join(", ");
       console.log(`[auto-dispatch] ${repo}: enqueued ${list} — ${result.reason}`);
