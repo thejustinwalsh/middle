@@ -611,6 +611,43 @@ describe("recommender workflow — #180 dispatcher is the sole In-flight writer"
     expect(h.surfaced).toEqual([]);
   });
 
+  test("no-op: when the agent body already matches the dispatcher's sections, reapply skips the write", async () => {
+    // An empty context maps to exactly validBody()'s three owned sections, so the
+    // reapply render equals the agent body → no `gh` write, but the run completes.
+    const emptyContext: RecommenderContext = {
+      rateLimits: { claude: "AVAILABLE", codex: "UNKNOWN", github: "UNKNOWN" },
+      inFlight: [],
+      slots: { perAdapter: {}, total: { used: 0, max: 0, globalUsed: 0, globalMax: 0 } },
+    };
+    const h = makeHarness({ bodies: [validBody(), validBody()], context: emptyContext });
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    expect(h.getWritten()).toBeNull(); // no-op: writeBody never called
+    expect(h.trace).not.toContain("reapply:write");
+  });
+
+  test("a throwing reapply write compensates (worktree rolled back, no dispatch)", async () => {
+    // If the dispatcher's overwrite write fails, the step propagates: the
+    // prepare-shallow-worktree compensation tears the worktree down and the run
+    // ends 'compensated' — it must NOT proceed to verify/trigger with a half-done body.
+    const h = makeHarness({
+      bodies: [validBody(), validBody()],
+      context: SAMPLE_CONTEXT,
+      autoDispatch: true,
+      wireTrigger: true,
+    });
+    h.deps.stateIssue.writeBody = async () => {
+      throw new Error("write boom");
+    };
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("compensated");
+    expect(h.triggered).toEqual([]); // never dispatched off a failed reapply
+    expect(h.trace).not.toContain("trigger");
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]); // rolled back
+  });
+
   test("exact bug shape: agent body with a 4-field In-flight line is left to verify, which surfaces it", async () => {
     // The agent disobeyed and authored the malformed line from the issue. A
     // surgical overwrite is impossible (the body won't parse), so reapply skips
