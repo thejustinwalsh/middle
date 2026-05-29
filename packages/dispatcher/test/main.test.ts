@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -180,6 +180,50 @@ describe("dispatcher main", () => {
       proc.kill("SIGKILL");
     }
   }, 20_000);
+
+  test("a terminal prepare-worktree failure marks the row failed, so the next dispatch isn't 409-blocked (issue #179)", async () => {
+    // repoPath exists but is NOT a git repo, so createWorktree fails terminally
+    // (after its retries). The row would otherwise strand at `pending` and
+    // 409-block every re-dispatch of this Epic; the daemon promotes the orphan
+    // to `failed` off bunqueue's `workflow:failed`, freeing the next dispatch.
+    const notARepo = join(realpathSync(dir), "not-a-repo");
+    mkdirSync(notARepo, { recursive: true });
+
+    const { proc, port } = await startDaemon();
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const events = await fetch(`${base}/control/events`);
+      expect(events.status).toBe(200);
+
+      const body = JSON.stringify({
+        repo: "o/r",
+        repoPath: notARepo,
+        epicNumber: 77,
+        adapter: "claude",
+      });
+      const first = await fetch(`${base}/control/dispatch`, { method: "POST", body });
+      expect(first.status).toBe(200);
+      const { workflowId } = (await first.json()) as { workflowId: string };
+
+      // Wait until the orphan has been promoted to `failed` on the feed.
+      const failedFrame = await readUntil(
+        events,
+        (f) => f.includes("event: workflow") && f.includes(workflowId) && f.includes('"failed"'),
+        15_000,
+      );
+      expect(failedFrame).not.toBeNull();
+
+      // The Epic's row is terminal now → a re-dispatch is accepted (200), not the
+      // 409 "already has an active workflow" a stranded `pending` row would force.
+      const second = await fetch(`${base}/control/dispatch`, { method: "POST", body });
+      expect(second.status).toBe(200);
+
+      proc.kill("SIGTERM");
+      expect(await proc.exited).toBe(0);
+    } finally {
+      proc.kill("SIGKILL");
+    }
+  }, 30_000);
 
   test("daemon rejects a disabled adapter on /control/dispatch (configured+enabled+implemented gate)", async () => {
     // Override codex to disabled in this test's config; claude stays on (default).

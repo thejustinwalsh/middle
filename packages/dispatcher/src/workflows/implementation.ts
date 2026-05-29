@@ -725,6 +725,13 @@ export function createImplementationWorkflow(
       writeResumeBrief(handle.path, ctx.input.epicNumber, resume, reviewRoundCap);
       return { handle };
     }
+    // NB: a *terminal* failure of this (first) step strands the row at `pending`
+    // — the saga only compensates completed steps, so cleanupWorktree never runs
+    // to mark it terminal. The daemon promotes that orphan to `failed` off
+    // bunqueue's `workflow:failed` (retries-exhausted) signal — see
+    // `promotePendingToFailed` in main.ts (issue #179). It is NOT done here: this
+    // body re-runs on every retry attempt (default retry: 3), so flipping here
+    // would mark a row `failed` that the very next attempt recovers (#108).
     const handle = await deps.worktree.createWorktree({
       repoPath: deps.resolveRepoPath(ctx.input.repo),
       repo: ctx.input.repo,
