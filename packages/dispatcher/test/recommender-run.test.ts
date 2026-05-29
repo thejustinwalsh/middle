@@ -108,6 +108,7 @@ function makeOverrides(extra?: Partial<RecommenderRunOverrides>): RecommenderRun
       async readBody() {
         return validBody();
       },
+      async writeBody() {},
     },
     gatherContext: () => STUB_CONTEXT,
     surfaceProblem: async () => {},

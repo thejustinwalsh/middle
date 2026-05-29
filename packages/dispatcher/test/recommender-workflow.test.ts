@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, RepoConfig } from "@middle/core";
-import { renderStateIssue } from "@middle/state-issue";
+import { isParseError, parseStateIssue, renderStateIssue } from "@middle/state-issue";
 import { Engine } from "bunqueue/workflow";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
@@ -20,6 +20,8 @@ import {
   assembleRecommenderPrompt,
   buildRecommenderContext,
   createRecommenderWorkflow,
+  dispatcherSectionsFromContext,
+  heartbeatRel,
   type RecommenderContext,
   type RecommenderDeps,
   type RecommenderInput,
@@ -123,6 +125,7 @@ function makeHarness(opts?: {
   const surfaced: string[] = [];
   const bodies = opts?.bodies ?? [validBody(), validBody()];
   let readCount = 0;
+  let written: string | null = null;
 
   const tmux = {
     async newSession(o: { sessionName: string }) {
@@ -184,10 +187,22 @@ function makeHarness(opts?: {
     schemaPath: "/abs/schemas/state-issue.v1.md",
     stateIssue: {
       async readBody() {
-        trace.push(readCount === 0 ? "build-prompt:read-prior" : "verify:read");
-        const body = bodies[Math.min(readCount, bodies.length - 1)]!;
+        // Three reads now: build-prompt (prior) → reapply (agent output) → verify.
+        // Once the dispatcher reapply has written, later reads see that body.
+        const label =
+          readCount === 0
+            ? "build-prompt:read-prior"
+            : readCount === 1
+              ? "reapply:read"
+              : "verify:read";
+        trace.push(label);
+        const body = written ?? bodies[Math.min(readCount, bodies.length - 1)]!;
         readCount += 1;
         return body;
+      },
+      async writeBody(_repo: string, _issue: number, body: string) {
+        trace.push("reapply:write");
+        written = body;
       },
     },
     repoConfig: REPO_CONFIG,
@@ -197,7 +212,7 @@ function makeHarness(opts?: {
       prMode: "worktree",
     },
     gatherContext: () => {
-      trace.push("build-prompt:gather");
+      trace.push("gather");
       return opts?.context ?? SAMPLE_CONTEXT;
     },
     launchTimeoutMs: 2000,
@@ -213,7 +228,7 @@ function makeHarness(opts?: {
       : undefined,
   };
 
-  return { deps, trace, created, killed, sent, triggered, surfaced };
+  return { deps, trace, created, killed, sent, triggered, surfaced, getWritten: () => written };
 }
 
 async function runToEnd(deps: RecommenderDeps, timeoutMs = 5000): Promise<string> {
@@ -246,6 +261,7 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
       "prepare-shallow-worktree",
       "build-prompt",
       "spawn-recommender-agent",
+      "reapply-dispatcher-sections",
       "verify-state-issue-parses",
       "trigger-auto-dispatch",
       "cleanup-worktree",
@@ -261,8 +277,12 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
     expect(h.trace).toEqual([
       "prepare",
       "build-prompt:read-prior",
-      "build-prompt:gather",
+      "gather",
       "spawn",
+      // reapply: read the agent body, re-gather context, overwrite the 3 sections.
+      "reapply:read",
+      "gather",
+      "reapply:write",
       "verify:read",
       "trigger",
       "cleanup",
@@ -377,6 +397,13 @@ describe("recommender workflow — #44 build-prompt: every required input, verba
     expect(prompt).toContain('"global_max": 4');
     expect(prompt).toContain('"global_used": 2');
     expect(prompt).toMatch(/"claude":\s*\{\s*"used": 1,\s*"max": 2\s*\}/);
+    // #180: the agent is told NOT to author the dispatcher-owned sections — emit
+    // the In-flight empty placeholder, and treat the context blocks as ranking
+    // input, not body content (the dispatcher overwrites them after the run).
+    expect(prompt).toContain("DISPATCHER-OWNED");
+    expect(prompt).toContain("- _no agents in flight_");
+    expect(prompt).toContain("reconstruct agent lines");
+    expect(prompt).toContain("decision INPUT");
   });
 
   test("writes the assembled prompt to .middle/prompt.md and launches it via the @-reference", async () => {
@@ -400,11 +427,12 @@ describe("recommender workflow — #44 build-prompt: every required input, verba
     expect(writtenPrompt).toContain('"github": "4180/5000"'); // dispatcher-owned context verbatim
     // …and the launch referenced that file (not an inline prompt — multi-line context).
     expect(h.sent.some((t) => t === "/recommending-github-issues @.middle/prompt.md")).toBe(true);
-    // gatherContext called exactly once (no recompute); prior_body read before gather.
-    expect(h.trace.filter((t) => t === "build-prompt:gather")).toHaveLength(1);
-    expect(h.trace.indexOf("build-prompt:read-prior")).toBeLessThan(
-      h.trace.indexOf("build-prompt:gather"),
-    );
+    // build-prompt gathers once (no recompute within the step) before the agent,
+    // with prior_body read first; reapply gathers a second time after the agent
+    // (fresher in-flight/heartbeat snapshot), so two gathers total.
+    expect(h.trace.filter((t) => t === "gather")).toHaveLength(2);
+    expect(h.trace.indexOf("build-prompt:read-prior")).toBeLessThan(h.trace.indexOf("gather"));
+    expect(h.trace.indexOf("gather")).toBeLessThan(h.trace.indexOf("spawn"));
   });
 });
 
@@ -487,6 +515,122 @@ describe("recommender workflow — #45 verify-state-issue-parses: gate auto-disp
 
     expect(getWorkflow(db, id)!.state).toBe("failed");
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]); // still cleaned up
+  });
+});
+
+describe("recommender workflow — #180 dispatcher is the sole In-flight writer", () => {
+  test("heartbeatRel formats epoch deltas; null → 'unknown'", () => {
+    const now = 1_700_000_000_000;
+    expect(heartbeatRel(null, now)).toBe("unknown");
+    expect(heartbeatRel(now, now)).toBe("0s ago");
+    expect(heartbeatRel(now - 42_000, now)).toBe("42s ago");
+    expect(heartbeatRel(now - 5 * 60_000, now)).toBe("5m ago");
+    expect(heartbeatRel(now - 3 * 3_600_000, now)).toBe("3h ago");
+    expect(heartbeatRel(now - 2 * 86_400_000, now)).toBe("2d ago");
+    // A heartbeat in the future (clock skew) clamps to 0, never negative.
+    expect(heartbeatRel(now + 9_999, now)).toBe("0s ago");
+  });
+
+  test("dispatcherSectionsFromContext builds canonical sections (heartbeat, null-issue dropped, null-session→pending)", () => {
+    const now = 1_700_000_000_000;
+    const ctx: RecommenderContext = {
+      rateLimits: { claude: "AVAILABLE", codex: "UNKNOWN", github: "4180/5000" },
+      inFlight: [
+        {
+          issue: 6,
+          adapter: "claude",
+          progress: "sub-issue 2/5",
+          session: "middle-x-6",
+          lastHeartbeat: now - 30_000,
+        },
+        // A non-issue workflow — can't be rendered as #<n>, so it's dropped.
+        { issue: null, adapter: "claude", progress: "running", session: "x", lastHeartbeat: now },
+        // Not yet launched (null session) and no heartbeat → "pending"/"unknown".
+        { issue: 8, adapter: "codex", progress: "running", session: null, lastHeartbeat: null },
+      ],
+      slots: {
+        perAdapter: { claude: { used: 1, max: 2 }, codex: { used: 0, max: 1 } },
+        total: { used: 1, max: 3, globalUsed: 2, globalMax: 4 },
+      },
+    };
+    const sections = dispatcherSectionsFromContext(ctx, now);
+    expect(sections.inFlight).toEqual([
+      {
+        issue: 6,
+        adapter: "claude",
+        progress: "sub-issue 2/5",
+        lastHeartbeat: "30s ago",
+        tmuxSession: "middle-x-6",
+      },
+      {
+        issue: 8,
+        adapter: "codex",
+        progress: "running",
+        lastHeartbeat: "unknown",
+        tmuxSession: "pending",
+      },
+    ]);
+    expect(sections.rateLimits).toEqual(ctx.rateLimits);
+    expect(sections.slotUsage).toEqual({
+      adapters: [
+        { adapter: "claude", used: 1, max: 2 },
+        { adapter: "codex", used: 0, max: 1 },
+      ],
+      total: { used: 1, max: 3 },
+      global: { used: 2, max: 4 },
+    });
+  });
+
+  test("self-heal: agent emits empty In-flight; dispatcher overwrites with the canonical 5-field line", async () => {
+    // The agent produces a body with the canonical empty In-flight placeholder
+    // (per the new prompt). The dispatcher's context has a live agent → reapply
+    // rewrites In-flight as the 5-field line the agent could never produce.
+    const h = makeHarness({
+      bodies: [validBody(), validBody()],
+      context: SAMPLE_CONTEXT,
+      autoDispatch: true,
+      wireTrigger: true,
+    });
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("completed");
+    const written = h.getWritten();
+    expect(written).not.toBeNull();
+    // Canonical 5-field In-flight line (the bug was a 4-field line, no heartbeat).
+    expect(written).toMatch(
+      /- \*\*#6\*\* · claude · sub-issue 2\/5 · last heartbeat .+ · \[tmux: middle-x-6\]/,
+    );
+    // Rate limits + slots are the dispatcher's, not whatever the agent wrote.
+    expect(written).toContain("4180/5000");
+    // It parses, and round-trips byte-identically (AC3).
+    const parsed = parseStateIssue(written!);
+    expect(isParseError(parsed)).toBe(false);
+    if (!isParseError(parsed)) expect(renderStateIssue(parsed)).toBe(written!);
+    // A clean run proceeded to auto-dispatch and surfaced nothing.
+    expect(h.triggered).toEqual([{ repo: REPO, stateIssue: STATE_ISSUE }]);
+    expect(h.surfaced).toEqual([]);
+  });
+
+  test("exact bug shape: agent body with a 4-field In-flight line is left to verify, which surfaces it", async () => {
+    // The agent disobeyed and authored the malformed line from the issue. A
+    // surgical overwrite is impossible (the body won't parse), so reapply skips
+    // and verify is the single surfacing point — no double comment.
+    const malformed = validBody().replace(
+      "- _no agents in flight_",
+      "- **#60** · claude · running · [tmux: middle-thejustinwalsh-middle-60]",
+    );
+    const h = makeHarness({
+      bodies: [validBody(), malformed],
+      autoDispatch: true,
+      wireTrigger: true,
+    });
+    const id = await runToEnd(h.deps);
+
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(h.getWritten()).toBeNull(); // reapply did not write a body it couldn't parse
+    expect(h.triggered).toEqual([]);
+    expect(h.surfaced).toHaveLength(1); // exactly once, not doubled
+    expect(h.surfaced[0]).toContain('malformed "In-flight"');
   });
 });
 

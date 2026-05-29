@@ -2,11 +2,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter, RepoConfig } from "@middle/core";
-import { isParseError, parseStateIssue, validate } from "@middle/state-issue";
-import type { RateLimits } from "@middle/state-issue";
+import { isParseError, parseStateIssue, renderStateIssue, validate } from "@middle/state-issue";
+import type { InFlightItem, RateLimits, SlotUsage } from "@middle/state-issue";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import type { SessionGate } from "../hook-server.ts";
+import { applyDispatcherSections } from "../state-issue.ts";
+import type { DispatcherSections, StateIssueGateway } from "../state-issue.ts";
 import { getRateLimitState } from "../rate-limits.ts";
 import type { RateLimitState } from "../rate-limits.ts";
 import {
@@ -70,7 +72,13 @@ export type RecommenderContext = {
   slots: SlotsView;
 };
 
-/** Reads a repo's state issue body (for `prior_body` and the verify step). */
+/**
+ * Reads a repo's state issue body (for `prior_body` and the verify step).
+ *
+ * @deprecated The recommender now also *writes* the body (the dispatcher reapplies
+ * its owned sections — see {@link RecommenderDeps.stateIssue}), so the dep is the
+ * full {@link StateIssueGateway}. Kept as a structural read-only view.
+ */
 export type StateIssueReader = {
   readBody(repo: string, issueNumber: number): Promise<string>;
 };
@@ -98,8 +106,12 @@ export type RecommenderDeps = {
    * on the daemon; the standalone runner supplies it statically.
    */
   schemaPath?: string;
-  /** Reads the state issue body — `prior_body` for the prompt, and the produced body to verify. */
-  stateIssue: StateIssueReader;
+  /**
+   * Reads AND writes the state issue body: `prior_body` for the prompt, the
+   * produced body to verify, and the `reapply-dispatcher-sections` overwrite that
+   * makes the dispatcher the sole writer of the three owned sections (#180).
+   */
+  stateIssue: StateIssueGateway;
   /** Configured adapter names, for `validate()` in the verify step (static-runner path). */
   repoConfig?: RepoConfig;
   /** The `config` block reported to the recommender (static-runner path). */
@@ -228,8 +240,18 @@ ${json(slotsForPrompt)}
 
 ## prior_body
 The current contents of state issue #${stateIssue}, between the markers below.
-The In-flight, Rate limits, and Slot usage sections above are dispatcher-owned —
-copy them through verbatim, do not recompute them.
+
+The In-flight, Rate limits, and Slot usage sections are DISPATCHER-OWNED — the
+dispatcher overwrites all three with authoritative values (heartbeats included)
+immediately after your run, so do not compute them:
+- In-flight: emit exactly the empty placeholder \`- _no agents in flight_\`. Do
+  NOT reconstruct agent lines from the \`in_flight\` data above — that data is
+  ranking input only, and it has no heartbeat, so any line you build from it is
+  malformed.
+- Rate limits, Slot usage: copy through verbatim from prior_body.
+
+The \`rate_limits\` / \`in_flight\` / \`slots\` blocks above are decision INPUT for
+your ranking, never body content.
 
 <<<PRIOR_BODY
 ${priorBody}
@@ -300,6 +322,61 @@ export function buildRecommenderContext(opts: {
   };
 }
 
+/**
+ * Format an epoch-ms heartbeat as the schema's `last heartbeat <rel>` value
+ * (`42s ago`, `3m ago`, `2h ago`, `1d ago`); a null heartbeat (none observed) →
+ * `unknown`. The parser captures this field loosely (`.+?`), so the format is
+ * cosmetic — but it must be non-empty so the canonical line stays parseable.
+ */
+export function heartbeatRel(ts: number | null, now: number): string {
+  if (ts === null) return "unknown";
+  const secs = Math.max(0, Math.floor((now - ts) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * Convert the dispatcher-owned context into a full {@link DispatcherSections}
+ * patch — the canonical content the dispatcher overwrites onto the three
+ * dispatcher-owned sections after the agent runs (#180). The dispatcher, not the
+ * recommender agent, is the single source of truth for these:
+ * - In-flight: each summary becomes a 5-field {@link InFlightItem}, with the
+ *   heartbeat the agent never had. Entries with no issue number are dropped — the
+ *   section's `#<n>` shape can't represent a non-issue workflow.
+ * - Rate limits: passed through (already the dispatcher's shape).
+ * - Slot usage: the per-adapter/total/global view flattened to {@link SlotUsage}.
+ */
+export function dispatcherSectionsFromContext(
+  ctx: RecommenderContext,
+  now: number,
+): Required<DispatcherSections> {
+  const inFlight: InFlightItem[] = ctx.inFlight
+    .filter((s): s is InFlightSummary & { issue: number } => s.issue !== null)
+    .map((s) => ({
+      issue: s.issue,
+      adapter: s.adapter,
+      progress: s.progress,
+      lastHeartbeat: heartbeatRel(s.lastHeartbeat, now),
+      // tmuxSession must be non-empty for the canonical line; a not-yet-launched
+      // agent (null session) reads as "pending".
+      tmuxSession: s.session ?? "pending",
+    }));
+  const slotUsage: SlotUsage = {
+    adapters: Object.entries(ctx.slots.perAdapter).map(([adapter, { used, max }]) => ({
+      adapter,
+      used,
+      max,
+    })),
+    total: { used: ctx.slots.total.used, max: ctx.slots.total.max },
+    global: { used: ctx.slots.total.globalUsed, max: ctx.slots.total.globalMax },
+  };
+  return { inFlight, rateLimits: ctx.rateLimits, slotUsage };
+}
+
 type PrepareResult = { handle: WorktreeHandle };
 // `settings` is resolved ONCE here and threaded to the later steps (spawn,
 // verify, trigger) via ctx — so a live config edit mid-run can't mix different
@@ -316,8 +393,8 @@ type VerifyResult = { ok: boolean; errors: string[] };
  * "recommender workflow"):
  *
  *   check-rate-limit → prepare-shallow-worktree → build-prompt
- *     → spawn-recommender-agent (5-min hard cap) → verify-state-issue-parses
- *     → trigger-auto-dispatch → cleanup-worktree
+ *     → spawn-recommender-agent (5-min hard cap) → reapply-dispatcher-sections
+ *     → verify-state-issue-parses → trigger-auto-dispatch → cleanup-worktree
  *
  * Linear (no park/resume — the recommender is a short one-shot). The recommender
  * records its `workflows` row with `kind:"recommender"`, so it runs on its own
@@ -478,6 +555,34 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     }
   }
 
+  /**
+   * Overwrite the three dispatcher-owned sections (In-flight / Rate limits / Slot
+   * usage) with canonical content built from the dispatcher's own state — making
+   * the dispatcher the single writer of those sections (#180). The recommender
+   * agent is told to emit the canonical empty placeholder for them; this step
+   * replaces that placeholder with the authoritative values (heartbeat included).
+   *
+   * Best-effort by design: if the agent disobeyed and produced a body that
+   * doesn't even parse, a surgical section overwrite is impossible, so this skips
+   * and lets `verify-state-issue-parses` be the single surfacing point (no double
+   * comment). Re-gathers context here (not from build-prompt) so the In-flight
+   * snapshot reflects state *after* the agent's run.
+   */
+  async function reapplyDispatcherSections(ctx: StepContext<RecommenderInput>): Promise<void> {
+    const before = await deps.stateIssue.readBody(ctx.input.repo, ctx.input.stateIssue);
+    const parsed = parseStateIssue(before);
+    if (isParseError(parsed)) {
+      console.error(
+        `[recommender] reapply skipped — agent body for #${ctx.input.stateIssue} does not parse: ${parsed.message}`,
+      );
+      return;
+    }
+    const sections = dispatcherSectionsFromContext(deps.gatherContext(ctx.input.repo), Date.now());
+    const after = renderStateIssue(applyDispatcherSections(parsed, sections));
+    if (after === before) return; // already canonical — skip a no-op write
+    await deps.stateIssue.writeBody(ctx.input.repo, ctx.input.stateIssue, after);
+  }
+
   async function verifyStateIssueParses(ctx: StepContext<RecommenderInput>): Promise<VerifyResult> {
     const body = await deps.stateIssue.readBody(ctx.input.repo, ctx.input.stateIssue);
     const parsed = parseStateIssue(body);
@@ -550,6 +655,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
         // `awaitStop` is clamped to that ceiling, so this always exceeds it.
         timeout: launchTimeout + MAX_AGENT_TIMEOUT_MS + 30_000,
       })
+      .step("reapply-dispatcher-sections", reapplyDispatcherSections)
       .step("verify-state-issue-parses", verifyStateIssueParses)
       .step("trigger-auto-dispatch", triggerAutoDispatch)
       .step("cleanup-worktree", cleanupWorktree)
