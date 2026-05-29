@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EpicListItem, GitHubGateway } from "../src/github.ts";
+import type { EpicListItem, EpicGateway } from "../src/github.ts";
 import { readEpics, refreshEpics } from "../src/epics-cache.ts";
 import { openAndMigrate } from "../src/db.ts";
 import type { Database } from "bun:sqlite";
@@ -20,8 +20,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function fakeGitHub(epics: EpicListItem[]): GitHubGateway {
-  return { listOpenEpics: async () => epics } as unknown as GitHubGateway;
+function fakeGitHub(epics: EpicListItem[]): EpicGateway {
+  return { listOpenEpics: async () => epics } as unknown as EpicGateway;
 }
 
 describe("epics-cache", () => {

@@ -21,7 +21,7 @@
  * pass *does* write (it reverts the body and comments).
  */
 import type { Database } from "bun:sqlite";
-import type { GitHubGateway } from "../github.ts";
+import type { EpicGateway } from "../github.ts";
 import type { RateLimitStatus } from "../poller.ts";
 import {
   getCheckboxReconcileState,
@@ -57,7 +57,7 @@ function defaultLoadConfig(worktreePath: string): VerifyConfig | null {
 export type CheckboxRevertPassDeps = {
   db: Database;
   /** Write-capable GitHub access: find the Epic PR, edit its body, comment, post evidence. */
-  github: GitHubGateway;
+  github: EpicGateway;
   /**
    * GitHub's remaining REST budget — the free `rate_limit` read (wired from the
    * poll gateway in prod). The pass is skipped when the budget is below the buffer.

@@ -1,6 +1,6 @@
 /**
  * Standing backlog audit (Epic #143, sub-issue #144) — the recommender-sibling
- * pass. Exercises the real pass against the real `GitHubGateway` interface (an
+ * pass. Exercises the real pass against the real `EpicGateway` interface (an
  * in-memory implementation), then the cron pass over a managed-repo registry.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";

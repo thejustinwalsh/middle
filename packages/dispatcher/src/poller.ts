@@ -81,7 +81,7 @@ export type RateLimitStatus = { remaining: number; resetAt: number };
 export type EpicPrLifecycle = { number: number; state: "OPEN" | "MERGED" | "CLOSED" };
 
 /** The read-only GitHub surface the poller needs — injectable so tests need no `gh`. */
-export type GitHubPollGateway = {
+export type PollGateway = {
   listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   /** The Epic's one open PR, or null if it hasn't been opened yet. */
   findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null>;
@@ -115,7 +115,7 @@ export type ReviewOutcome = "changes-requested" | "resolved";
 
 export type PollerDeps = {
   db: Database;
-  github: GitHubPollGateway;
+  github: PollGateway;
   /** Deliver the resume signal to the parked workflow (engine.signal in prod). */
   fireSignal: (workflowId: string, payload: ResumeSignalPayload) => Promise<void>;
   now?: () => number;
@@ -369,7 +369,7 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
 export type ReconcileDeps = {
   db: Database;
   /** Only the two PR-lifecycle/budget reads the reconciler makes. */
-  github: Pick<GitHubPollGateway, "findEpicPrLifecycle" | "getRateLimit">;
+  github: Pick<PollGateway, "findEpicPrLifecycle" | "getRateLimit">;
   /** Best-effort worktree teardown for a finalized row; omitted → skip cleanup. */
   removeWorktree?: (repo: string, worktreePath: string | null) => Promise<void>;
   /** Skip the pass when GitHub's budget is below this. Defaults to {@link DEFAULT_RATE_LIMIT_BUFFER}. */

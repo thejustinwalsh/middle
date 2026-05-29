@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { Bunqueue } from "bunqueue/client";
 import { runBacklogAudit } from "./audit.ts";
-import type { GitHubGateway } from "./github.ts";
+import type { EpicGateway } from "./github.ts";
 import { isPaused, listManagedRepos } from "./repo-config.ts";
 
 /**
@@ -18,7 +18,7 @@ export const AUDIT_CRON_INTERVAL_MS = 60 * 60_000;
  */
 export type AuditCronDeps = {
   db: Database;
-  github: Pick<GitHubGateway, "listOpenIssues" | "addLabel">;
+  github: Pick<EpicGateway, "listOpenIssues" | "addLabel">;
   now?: () => number;
 };
 

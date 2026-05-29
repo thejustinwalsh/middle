@@ -7,7 +7,7 @@
  * proposal-first "reconcile the spec" task. It never edits the spec prose and
  * never closes an issue without an evidence trail.
  */
-import type { GitHubGateway, MergedPrRef } from "./github.ts";
+import type { EpicGateway, MergedPrRef } from "./github.ts";
 
 /** Default cap on issues closed / tasks filed per pass, so one sweep can't storm. */
 const DEFAULT_MAX_PER_PASS = 25;
@@ -67,7 +67,7 @@ export type StalenessDeps = {
   /** The `owner/name` repo slug to reconcile. */
   repo: string;
   github: Pick<
-    GitHubGateway,
+    EpicGateway,
     "listOpenIssues" | "listMergedPrsClosingRefs" | "closeIssue" | "createIssue"
   >;
   /** Read the build-spec text, or null if the repo has no spec to check. */

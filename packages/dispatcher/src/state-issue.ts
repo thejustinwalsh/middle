@@ -18,7 +18,7 @@ import {
  * Slot usage) eagerly between recommender runs. Injecting this gateway keeps the
  * read/write logic testable without `gh`. `repo` is an `owner/name` slug.
  */
-export type StateIssueGateway = {
+export type StateGateway = {
   readBody(repo: string, issueNumber: number): Promise<string>;
   writeBody(repo: string, issueNumber: number, body: string): Promise<void>;
 };
@@ -67,7 +67,7 @@ export function insertDispatcherTick(body: string, ts: string): string {
 
 /** Read and parse a repo's state issue. Throws if the body does not conform. */
 export async function readState(
-  gw: StateIssueGateway,
+  gw: StateGateway,
   repo: string,
   issueNumber: number,
 ): Promise<ParsedState> {
@@ -89,7 +89,7 @@ export type UpdateOptions = {
  * Recommender-owned sections survive byte-identically.
  */
 export async function updateDispatcherSections(
-  gw: StateIssueGateway,
+  gw: StateGateway,
   repo: string,
   issueNumber: number,
   patch: DispatcherSections,
@@ -123,7 +123,7 @@ async function run(
 }
 
 /** The production gateway — reads/writes the state issue through the `gh` CLI. */
-export const ghStateIssueGateway: StateIssueGateway = {
+export const ghStateIssueGateway: StateGateway = {
   async readBody(repo: string, issueNumber: number): Promise<string> {
     const result = await run([
       "gh",
