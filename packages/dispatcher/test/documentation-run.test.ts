@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, MiddleConfig } from "@middle/core";
 import { openAndMigrate } from "../src/db.ts";
+import {
+  makeGhPersistDocs,
+  type CommitResult,
+  type DocsPersistInput,
+} from "../src/docs-persist.ts";
 import type { SessionGate } from "../src/hook-server.ts";
+import { DOCS_WORKTREE_UNIT } from "../src/workflows/documentation.ts";
 import {
   dispatchDocumentation,
   resolveDocumentationOptions,
@@ -33,11 +39,30 @@ async function git(cwd: string, args: string[]): Promise<void> {
     throw new Error(`git ${args.join(" ")}: ${await new Response(proc.stderr).text()}`);
 }
 
+/** Like {@link git} but returns trimmed stdout — for read-only inspection in asserts. */
+async function gitOut(cwd: string, args: string[]): Promise<string> {
+  const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe" });
+  const [out, err] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  if ((await proc.exited) !== 0) throw new Error(`git ${args.join(" ")}: ${err}`);
+  return out.trim();
+}
+
 beforeEach(async () => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "middle-docsrun-")));
   repoPath = join(scratch, "repo");
   await git(scratch, ["init", "repo"]);
-  await git(repoPath, ["commit", "--allow-empty", "-m", "init"]);
+  // A committer identity local to the fixture — the wired persist seam commits
+  // with the repo's configured identity (no overrides), like a real checkout.
+  await git(repoPath, ["config", "user.email", "docs-bot@example.invalid"]);
+  await git(repoPath, ["config", "user.name", "docs-bot"]);
+  // `.middle/` is gitignored in real repos, so the harvester's `.middle/prompt.md`
+  // scratch is never committed. Commit it so worktrees inherit it.
+  writeFileSync(join(repoPath, ".gitignore"), ".middle/\n");
+  await git(repoPath, ["add", ".gitignore"]);
+  await git(repoPath, ["commit", "-m", "init"]);
 });
 
 afterEach(() => {
@@ -99,7 +124,10 @@ function baseOptions(
   };
 }
 
-/** A minimal config with the global defaults and the given `[docs]` block. */
+/** A minimal config with the global defaults and the given `[docs]` block.
+ *  The adapter table mirrors the production-loaded defaults (`loadConfig` fills
+ *  these from the schema) so `resolveDocumentationOptions`'s enabled-gate sees
+ *  realistic data. */
 function configWith(docs?: MiddleConfig["docs"]): MiddleConfig {
   return {
     global: {
@@ -110,7 +138,10 @@ function configWith(docs?: MiddleConfig["docs"]): MiddleConfig {
       worktreeRoot: join(scratch, "worktrees"),
       dbPath: join(scratch, "db.sqlite3"),
     },
-    adapters: {},
+    adapters: {
+      claude: { enabled: true, binary: "claude", extraArgs: [] },
+      codex: { enabled: true, binary: "codex", extraArgs: [] },
+    },
     dashboard: { windowed: false, theme: "auto" },
     docs,
   };
@@ -141,13 +172,15 @@ describe("dispatchDocumentation — enqueues a documentation workflow (read-only
     }
   });
 
-  test("is read-only: a clean run persists nothing (persistDocs stays unwired) even with write=true", async () => {
+  test("write=true but a clean worktree: the wired seam opens no PR (no empty commit)", async () => {
     const dbPath = join(scratch, "db.sqlite3");
+    // The stub agent authors nothing; the persist seam is wired (default), but a
+    // clean worktree means commitDocs returns null → push/PR is never reached. The
+    // default push would fail (the fixture has no remote), so reaching it = bug.
     const opts = baseOptions(dbPath, makeOverrides());
     opts.runConfig.write = true;
     const result = await dispatchDocumentation(opts);
     expect(result.state).toBe("completed");
-    // The run produced exactly one workflow row, no implementation/PR side effects.
     const db = openAndMigrate(dbPath);
     try {
       const rows = db.query("SELECT kind FROM workflows").all() as { kind: string }[];
@@ -158,15 +191,91 @@ describe("dispatchDocumentation — enqueues a documentation workflow (read-only
   });
 });
 
+describe("dispatchDocumentation — integration: authors markdown into docs/ and persists it", () => {
+  test("no docs surface + write=true: the agent authors docs/, the run commits + pushes it", async () => {
+    const dbPath = join(scratch, "db.sqlite3");
+
+    // Stand in for the real agent's authoring: write Diátaxis markdown into the
+    // worktree (the markdown target's `docs/` root) when the docs session starts.
+    const authored = ["docs/index.md", "docs/guides/getting-started.md", "docs/CLAUDE.md"];
+    const tmux = {
+      async newSession(o: { cwd?: string }) {
+        const root = o.cwd!;
+        for (const rel of authored) {
+          const abs = join(root, rel);
+          mkdirSync(join(abs, ".."), { recursive: true });
+          writeFileSync(abs, `# ${rel}\n\nAuthored by the docs harvester.\n`);
+        }
+      },
+      async sendText() {},
+      async sendEnter() {},
+      async killSession() {},
+    };
+
+    // Real commit path; only the external push/PR step is stubbed (and records
+    // what it was handed) so the test exercises the genuine authoring+commit path.
+    const pushed: Array<DocsPersistInput & { commit: CommitResult }> = [];
+    const persistDocs = makeGhPersistDocs(async (o) => {
+      pushed.push(o);
+    });
+
+    const opts = baseOptions(dbPath, { ...makeOverrides({ tmux }), persistDocs });
+    opts.runConfig.write = true;
+
+    const result = await dispatchDocumentation(opts);
+    expect(result.state).toBe("completed");
+
+    // The persist seam ran once, with the docs the agent authored, committed.
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]!.branch).toBe(`middle-${DOCS_WORKTREE_UNIT}`);
+    expect(pushed[0]!.commit.files).toEqual([...authored].sort());
+    // The commit is real: HEAD of the worktree branch carries the docs.
+    const tracked = await gitOut(repoPath, ["ls-tree", "-r", "--name-only", pushed[0]!.commit.sha]);
+    expect(tracked.split("\n").filter(Boolean).sort()).toEqual(
+      ["docs/CLAUDE.md", "docs/guides/getting-started.md", "docs/index.md", ".gitignore"].sort(),
+    );
+  });
+});
+
 describe("resolveDocumentationOptions", () => {
-  test("rejects a non-claude adapter in Phase 1", async () => {
+  test("accepts a configured non-default adapter (e.g. codex)", async () => {
     const result = await resolveDocumentationOptions(
       repoPath,
       configWith({ enabled: true, intervalMinutes: 60, adapter: "codex", write: false }),
       stubAdapter,
     );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects an adapter the registry doesn't know", async () => {
+    const knownOnly = (name: string): AgentAdapter => {
+      if (name !== "claude" && name !== "codex") throw new Error(`unknown adapter: ${name}`);
+      return stubAdapter();
+    };
+    const result = await resolveDocumentationOptions(
+      repoPath,
+      configWith({ enabled: true, intervalMinutes: 60, adapter: "ghost", write: false }),
+      knownOnly,
+    );
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("only the 'claude' adapter");
+    if (!result.ok) expect(result.error).toContain("unknown adapter: ghost");
+  });
+
+  test("rejects an implemented-but-disabled adapter — mirrors the daemon's dispatch gate", async () => {
+    // The daemon's manual-dispatch route already gates on configured+enabled+
+    // implemented (`adapterRejectionReason` in main.ts); the docs validator must match so
+    // a `[docs] adapter = "x"` pointing at a disabled adapter can't sneak in
+    // through `/control/dispatch` (CLI gates earlier, the dashboard hits here).
+    const config = configWith({
+      enabled: true,
+      intervalMinutes: 60,
+      adapter: "codex",
+      write: false,
+    });
+    config.adapters.codex = { enabled: false, binary: "codex", extraArgs: [] };
+    const result = await resolveDocumentationOptions(repoPath, config, stubAdapter);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("adapter codex is disabled in config");
   });
 
   test("resolves the markdown fallback target for a plain repo", async () => {

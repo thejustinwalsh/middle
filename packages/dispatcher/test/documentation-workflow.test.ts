@@ -339,6 +339,50 @@ describe("documentation workflow — assembleDocumentationPrompt", () => {
     });
     expect(prompt).toContain('"write": true');
   });
+
+  test("write=true selects write mode: discover-or-author, agent does not commit", () => {
+    const prompt = assembleDocumentationPrompt({
+      repo: REPO,
+      target: { name: "markdown", docsRoot: "docs", supportsLlmsTxt: true },
+      config: { defaultAdapter: "claude", write: true },
+    });
+    expect(prompt).toContain("`mode`: write");
+    expect(prompt).not.toContain("`mode`: audit");
+    // Discover-or-author both spelled out, rooted at the resolved target.
+    expect(prompt).toContain("Discover first.");
+    expect(prompt).toContain("Author when none exists.");
+    expect(prompt).toContain("rooted at `docs`");
+    // The agent writes to disk; the dispatcher commits + PRs. The agent must not.
+    expect(prompt).toMatch(/Do \*\*not\*\* commit, push, or open a PR/);
+  });
+
+  test("write=false stays in audit mode (read-only), never write mode", () => {
+    const prompt = assembleDocumentationPrompt({
+      repo: REPO,
+      target: TARGET,
+      config: { defaultAdapter: "claude", write: false },
+    });
+    expect(prompt).toContain("`mode`: audit");
+    expect(prompt).not.toContain("`mode`: write");
+    expect(prompt).toContain("do not persist changes");
+    expect(prompt).not.toContain("Discover first.");
+  });
+
+  test("write mode keeps the llms.txt instruction only when the target supports it", () => {
+    const withLlms = assembleDocumentationPrompt({
+      repo: REPO,
+      target: { name: "markdown", docsRoot: "docs", supportsLlmsTxt: true },
+      config: { defaultAdapter: "claude", write: true },
+    });
+    expect(withLlms).toContain("maintain the llms.txt surface");
+
+    const withoutLlms = assembleDocumentationPrompt({
+      repo: REPO,
+      target: { name: "mkdocs", docsRoot: "docs", supportsLlmsTxt: false },
+      config: { defaultAdapter: "claude", write: true },
+    });
+    expect(withoutLlms).not.toContain("llms.txt");
+  });
 });
 
 describe("documentation workflow — sessionNameFor collision-resistance", () => {

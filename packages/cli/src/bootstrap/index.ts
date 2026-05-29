@@ -8,7 +8,8 @@
  * Public surface:
  * - `initRepo` / `uninitRepo` — the bootstrap + teardown entry points
  * - `realDeps` — the production dependency bundle (fs + git + gh)
- * - `buildInitialStateIssueBody`, `renderRepoConfig` — content templates
+ * - `buildInitialStateIssueBody` — state-issue content template
+ * - `renderRepoPolicy` / `renderLocalConfig` — the committed-policy / local-cache templates
  * - bootstrap types + constants (`BOOTSTRAP_VERSION`, `STATE_ISSUE_TITLE`, …)
  *
  * Where things live:
@@ -21,6 +22,8 @@
  *
  * Gotchas:
  * - Skills must stay byte-identical canonical↔mirror; see this dir's CLAUDE.md.
+ * - Config is split (issue #103): `policy.toml` is committed/shared, `config.toml`
+ *   is the gitignored local cache. `mm init` writes policy.toml only when absent.
  *
  * claude-md: true
  */
@@ -28,7 +31,7 @@ export { initRepo } from "./init.ts";
 export { uninitRepo } from "./uninit.ts";
 export { realDeps } from "./deps.ts";
 export { buildInitialStateIssueBody } from "./state-issue-body.ts";
-export { renderRepoConfig } from "./config-template.ts";
+export { renderLocalConfig, renderRepoPolicy } from "./config-template.ts";
 export type {
   BootstrapDeps,
   BootstrapOptions,

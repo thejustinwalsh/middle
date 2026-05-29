@@ -283,6 +283,8 @@ Consult CLAUDE.md / repo skills / project docs first. If they decide it, just de
 ### 7d. Verify the phase
 Per the **Verification mindset** section above. Tests, `agent-browser`, build-artifact inspection, dev-server probes — whatever fits the work. Capture verification evidence in commit messages and/or in `decisions.md`.
 
+**Definition of done — a feature phase is not done until an integration test runs the real path.** Green unit tests are *not* the artifact (Epic #143). A feature phase isn't done until the feature is *wired into the running product* (mounted/served/invoked/reachable — not merely exported) **and** an integration/smoke/e2e test exercises that real path (boots the daemon and hits it; drives the real CLI; GETs the live endpoint). This is the same integration rubric `verifying-requirements` and `mm audit-issues` apply to the issue, now applied to the work: the test that proves the wiring IS the verification evidence. If integration is genuinely infeasible for a phase, declare it explicitly with a human-authored `(integration-exempt: <comment-url>)` annotation on the criterion — never silently ship unit-only. The PR-ready gate enforces this: a feature whose integration criterion isn't evidenced by a named test (and isn't exempted) is **blocked from ready** (see Phase 10a), and the repo's `verify.toml` can declare an `integration`-category gate distinct from its unit gates.
+
 **Integration test gate** (when the project has a vitexec suite — see "Integration test gate" subsection above): if the phase touched the simulation pipeline, full-system invariants, or wall-clock-dependent behavior, run the integration suite and require green BEFORE moving to 7e. New invariants that only emerge in full play should ship with a new probe + harness in the same commit — the test IS the verification evidence. A green unit suite + missing integration coverage is not enough for items in this category.
 
 ### 7e. Update the PR description
@@ -721,6 +723,8 @@ After your plan step, the dispatcher's **plan-comment guard** verifies a comment
 ### `gh pr ready` is mechanically gated (reinforces Phase 10)
 
 A `PreToolUse` hook intercepts `gh pr ready`. The dispatcher walks every acceptance criterion in the PR body and requires each to have **either** an evidence link **or** the literal annotation `(deferred: <comment-url>)` where the linked comment is from a non-bot user. Missing evidence → the command is denied with a reason and you must fill the gap or get a deferral. Use the exact `(deferred: <comment-url>)` token — the guard greps for it.
+
+On top of that, the **integration-verified definition of done** (Epic #143) requires the PR to evidence ≥1 *integration criterion* — one that wires the feature into the running product **and** names an integration/smoke/e2e test as its evidence (a link/`#ref` or a `*.test.ts` path). A PR whose criteria are all unit-level is **denied** ("no acceptance criterion evidences an integration test"). The escape hatch is a human-authored `(integration-exempt: <comment-url>)` annotation (a bot-authored one is rejected). So a feature phase reaches ready only once its real-path test exists and is cited in the criteria.
 
 ### Status checkboxes trigger verification gates (reinforces Phase 7e)
 

@@ -26,17 +26,9 @@
 
 ## How the org chart works
 
-```
-        you  (the executive — scope calls, final review, the merge)
-         ▲
-         │  escalates · reports up · "did you get the memo?"
-         │
-       middle  (the manager — dispatch, track, nudge, escalate)
-         │
-         │  delegates the TPS reports (Epics) · drives · watches hooks
-         ▼
-   your coding agents  (the ones who actually do the work)
-```
+<p align="center">
+  <img src="docs/diagrams/org-chart.svg" alt="middle's org chart — you delegate Epics down to middle; middle drives the agents; hooks and escalations report back up. middle never merges its own work." width="560" />
+</p>
 
 - **One Epic = one branch = one PR.** The Epic's open sub-issues are the workstream's phases. The agent works *down* them on a single branch.
 - **The PR opens as a draft** and stays draft until every phase passes its mechanical verification gates. Then the agent marks it ready for review and writes you a reviewer's brief.
@@ -118,6 +110,20 @@ mm stop                     # everybody go home
 `mm dispatch <repo> <epic>` takes the path to a local repo checkout and an Epic (or standalone issue) number. For local development you can also run the dispatcher in the foreground with `scripts/dev.sh`.
 
 **What a dispatch actually does:** middle creates a fresh worktree (a clean cubicle), launches the agent in `tmux`, hands it the dispatch brief (`.middle/prompt.md`), and listens to its hooks — the turn-by-turn TPS reports — while a watchdog keeps an eye out for anyone asleep at their desk. The agent works the Epic's sub-issues phase by phase, closing each one as it lands, pushes commits to the draft PR, and when every phase passes the mechanical gates it flips the PR to ready-for-review and posts a reviewer's brief on both the Epic and the PR. Then it stops and waits for you.
+
+<p align="center">
+  <img src="docs/diagrams/dispatch-lifecycle.svg" alt="dispatch lifecycle — `mm dispatch` spins up a fresh worktree and tmux session, hands the brief, then the agent works phases and closes sub-issues; the verification gate loops back on 'needs work' and flows down on pass to a PR that flips to ready, then to you for review and merge." width="720" />
+</p>
+
+---
+
+## What's under the hood
+
+One Bun process. No build step. The dispatcher is `bunqueue` + a hook receiver + a watchdog ticker, all writing to a local SQLite (WAL) and serving a read-only dashboard over HTTP+SSE. GitHub is the source of truth for the work; the dispatcher spawns `tmux` sessions for the agents and `git` worktrees to isolate them.
+
+<p align="center">
+  <img src="docs/diagrams/architecture.svg" alt="middle dispatcher (single process) — bunqueue engine, hook receiver, and watchdog ticker write to SQLite (WAL); Bun.serve fronts HTTP + SSE on :8822 to a read-only dashboard; GitHub on the left is the source of truth; tmux sessions and git worktrees are spawned below." width="720" />
+</p>
 
 ---
 

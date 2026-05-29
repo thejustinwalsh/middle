@@ -44,9 +44,9 @@ beforeEach(async () => {
   mkdirSync(repoPath, { recursive: true });
   await git(repoPath, ["init"]);
   await git(repoPath, ["commit", "--allow-empty", "-m", "init"]);
-  // Phase 7 schema lives at the repo root.
-  mkdirSync(join(repoPath, "schemas"), { recursive: true });
-  writeFileSync(join(repoPath, "schemas", "state-issue.v1.md"), "# schema\n");
+  // No per-repo schema fixture: runRecommender is a thin daemon client (it never
+  // reads the schema), and the recommender resolves it from the @middle/state-issue
+  // package, not <repo>/schemas/ (issue #107).
   // Per-repo config with a state issue number.
   mkdirSync(join(repoPath, ".middle"), { recursive: true });
   writeFileSync(

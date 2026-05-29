@@ -10,9 +10,13 @@ import {
   BLOCKED_HANDOFF_EVENT,
   FAILED_EVENT,
   IDLE_EVENT,
+  NOTIFICATION_CAPTURED_EVENT,
+  NOTIFICATION_INTERVENED_EVENT,
+  reconcileNotifications,
   reconcileTranscriptDrift,
   runWatchdog,
   type WatchdogDeps,
+  type WatchdogTmux,
 } from "../src/watchdog.ts";
 
 const NOW = 10_000_000;
@@ -479,5 +483,298 @@ describe("reconcileTranscriptDrift", () => {
       last_heartbeat: number;
     };
     expect(row.last_heartbeat).toBe(NOW - 1 * MIN);
+  });
+});
+
+/** A tmux stub with the notification-failsafe surface; records pane reads, nudges, kills. */
+function makeNotifTmux(opts?: { pane?: string; alive?: boolean }) {
+  const killed: string[] = [];
+  const sent: Array<{ session: string; text: string }> = [];
+  const entered: string[] = [];
+  const ops: WatchdogTmux = {
+    status: async () => ({ alive: opts?.alive ?? true, paneCount: 1 }),
+    killSession: async (name: string) => {
+      killed.push(name);
+    },
+    capturePane: async () => opts?.pane ?? "",
+    sendText: async (session: string, text: string) => {
+      sent.push({ session, text });
+    },
+    sendEnter: async (session: string) => {
+      entered.push(session);
+    },
+  };
+  return { killed, sent, entered, ops };
+}
+
+/** Record an `agent.notification` event with an optional `message` payload. */
+function seedNotification(id: string, ts: number, message?: string): void {
+  recordEvent(db, {
+    workflowId: id,
+    ts,
+    type: "agent.notification",
+    payloadJson: message === undefined ? null : JSON.stringify({ message }),
+  });
+}
+
+function capturedPayload(id: string): { kind?: string; message?: string; pane?: string } | null {
+  const row = db
+    .query(
+      "SELECT payload_json FROM events WHERE workflow_id = ? AND type = ? ORDER BY ts DESC, id DESC LIMIT 1",
+    )
+    .get(id, NOTIFICATION_CAPTURED_EVENT) as { payload_json: string | null } | null;
+  return row?.payload_json ? JSON.parse(row.payload_json) : null;
+}
+
+describe("notification failsafe — detect + capture + intervene", () => {
+  test("a notification still within the grace window is left alone", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 5 * MIN,
+      updatedAt: NOW - 5 * MIN,
+    });
+    seedNotification(id, NOW - 30_000, "Claude is waiting for your input"); // < 60s grace
+    const tmux = makeNotifTmux();
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(0);
+    expect(eventTypes(id)).toEqual(["agent.notification"]);
+    expect(tmux.sent).toHaveLength(0);
+  });
+
+  test("a notification past the grace window captures the pane, classifies, and nudges", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 5 * MIN,
+      updatedAt: NOW - 5 * MIN,
+    });
+    seedNotification(id, NOW - 2 * MIN, "Claude needs your permission to use Bash");
+    const tmux = makeNotifTmux({ pane: "tool: Bash\nDo you want to proceed?" });
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(1);
+    expect(eventTypes(id)).toEqual([
+      "agent.notification",
+      NOTIFICATION_CAPTURED_EVENT,
+      NOTIFICATION_INTERVENED_EVENT,
+    ]);
+    const payload = capturedPayload(id);
+    expect(payload?.kind).toBe("permission");
+    expect(payload?.message).toBe("Claude needs your permission to use Bash");
+    expect(payload?.pane).toContain("Do you want to proceed?");
+    // The nudge was typed + submitted into the right session.
+    expect(tmux.sent).toEqual([{ session: "middle-14", text: expect.any(String) }]);
+    expect(tmux.sent[0]!.text).toContain("headless");
+    expect(tmux.sent[0]!.text).toContain(".middle/blocked.json");
+    expect(tmux.entered).toEqual(["middle-14"]);
+    // No kill yet — the agent gets the kill-grace to act on the nudge.
+    expect(tmux.killed).toHaveLength(0);
+    expect(getWorkflow(db, id)!.state).toBe("running");
+  });
+
+  test("classifies a plain 'waiting for input' notification as a question (kind=input)", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 5 * MIN,
+      updatedAt: NOW - 5 * MIN,
+    });
+    seedNotification(id, NOW - 2 * MIN, "Claude is waiting for your input");
+    await reconcileNotifications(baseDeps({ tmux: makeNotifTmux({ pane: "idle" }).ops }));
+    expect(capturedPayload(id)?.kind).toBe("input");
+  });
+
+  test("an agent that resumed after the notification (newer activity) is left alone", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 30_000, // newer than the notification → working again
+      updatedAt: NOW - 5 * MIN,
+    });
+    seedNotification(id, NOW - 2 * MIN, "Claude is waiting for your input");
+    const tmux = makeNotifTmux();
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(0);
+    expect(tmux.sent).toHaveLength(0);
+  });
+
+  test("a human-controlled session is never rescued (a human will answer)", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 5 * MIN,
+      updatedAt: NOW - 5 * MIN,
+      controlledBy: "human",
+    });
+    seedNotification(id, NOW - 2 * MIN, "Claude is waiting for your input");
+    const acted = await reconcileNotifications(baseDeps({ tmux: makeNotifTmux().ops }));
+    expect(acted).toBe(0);
+    expect(getWorkflow(db, id)!.state).toBe("running");
+  });
+
+  test("no-op when the tmux surface lacks the failsafe methods", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 5 * MIN,
+      updatedAt: NOW - 5 * MIN,
+    });
+    seedNotification(id, NOW - 2 * MIN, "Claude is waiting for your input");
+    // baseDeps' default tmux has only status + killSession.
+    const acted = await reconcileNotifications(baseDeps({}));
+    expect(acted).toBe(0);
+    expect(eventTypes(id)).toEqual(["agent.notification"]);
+  });
+
+  test("a capture-only notification (no message payload) still classifies + nudges", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 5 * MIN,
+      updatedAt: NOW - 5 * MIN,
+    });
+    seedNotification(id, NOW - 2 * MIN); // null payload
+    await reconcileNotifications(baseDeps({ tmux: makeNotifTmux({ pane: "❯ 1. Yes" }).ops }));
+    // empty message but the pane shows a dialog → permission
+    expect(capturedPayload(id)?.kind).toBe("permission");
+  });
+});
+
+describe("notification failsafe — fast-fail backstop", () => {
+  /** Seed a row already captured + nudged for its notification, still idle. */
+  function seedHandled(opts: { kind: string; intervenedAt: number; notifAt: number }): string {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 10 * MIN,
+      updatedAt: NOW - 10 * MIN,
+    });
+    seedNotification(id, opts.notifAt, "Claude is waiting for your input");
+    recordEvent(db, {
+      workflowId: id,
+      ts: opts.intervenedAt,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: opts.kind, message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: opts.intervenedAt,
+      type: NOTIFICATION_INTERVENED_EVENT,
+      payloadJson: JSON.stringify({ kind: opts.kind }),
+    });
+    return id;
+  }
+
+  test("still idle past the kill-grace → fast-fails with the captured kind and kills the session", async () => {
+    const id = seedHandled({
+      kind: "permission",
+      notifAt: NOW - 5 * MIN,
+      intervenedAt: NOW - 3 * MIN,
+    });
+    const tmux = makeNotifTmux();
+    const compensated: string[] = [];
+    const acted = await reconcileNotifications(
+      baseDeps({ tmux: tmux.ops, triggerCompensation: (wid) => compensated.push(wid) }),
+    );
+    expect(acted).toBe(1);
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("notification-block:permission");
+    expect(tmux.killed).toContain("middle-14");
+    expect(compensated).toEqual([id]);
+  });
+
+  test("two captures sharing a ts → the latest-by-id kind wins (contract lock)", async () => {
+    // Same-ts tie: the failsafe can write captures sharing a ts. Pins the
+    // latest-row-wins contract of `latestEventPayload` — the fail reason must use
+    // the later-inserted capture's kind ("permission"), not the earlier ("input").
+    // (Today `idx_events_workflow_ts` already orders the tie latest-first, so this
+    // guards the contract against a future index/plan change rather than a live
+    // bug; the explicit `ORDER BY … id DESC` is what makes it plan-independent.)
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      lastHeartbeat: NOW - 10 * MIN,
+      updatedAt: NOW - 10 * MIN,
+    });
+    seedNotification(id, NOW - 5 * MIN, "Claude is waiting for your input");
+    const capturedAt = NOW - 3 * MIN;
+    recordEvent(db, {
+      workflowId: id,
+      ts: capturedAt,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: "input", message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: capturedAt,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: "permission", message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: capturedAt,
+      type: NOTIFICATION_INTERVENED_EVENT,
+      payloadJson: JSON.stringify({ kind: "permission" }),
+    });
+    const acted = await reconcileNotifications(baseDeps({ tmux: makeNotifTmux().ops }));
+    expect(acted).toBe(1);
+    expect(failureReason(id)).toBe("notification-block:permission");
+  });
+
+  test("within the kill-grace → not yet failed (the nudge still has time to take)", async () => {
+    const id = seedHandled({ kind: "input", notifAt: NOW - 90_000, intervenedAt: NOW - 30_000 });
+    const tmux = makeNotifTmux();
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(0);
+    expect(getWorkflow(db, id)!.state).toBe("running");
+    expect(tmux.killed).toHaveLength(0);
+  });
+
+  test("a repeat notification with no activity does NOT reset the kill clock — still fast-fails", async () => {
+    // The infinite-re-arm trap: a stuck agent re-emitting the same "waiting"
+    // notification must not push the deadline out. Old nudge at NOW-3min, a fresh
+    // notification at NOW-10s, but NO activity since NOW-10min → handled stays true
+    // (anchored on activity, not the notification), so the kill clock runs.
+    const id = seedHandled({ kind: "input", notifAt: NOW - 3 * MIN, intervenedAt: NOW - 3 * MIN });
+    seedNotification(id, NOW - 10_000, "Claude is waiting for your input");
+    const tmux = makeNotifTmux();
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(1);
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("notification-block:input");
+    // it escalated rather than re-capturing on the repeat notification
+    expect(tmux.sent).toHaveLength(0);
+  });
+
+  test("a fresh notification AFTER genuine activity re-arms the failsafe (re-captures)", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-14",
+      // activity (NOW-4min) is newer than the old capture (NOW-9min): the agent
+      // resumed and then got stuck again → a genuinely new stall.
+      lastHeartbeat: NOW - 4 * MIN,
+      updatedAt: NOW - 4 * MIN,
+    });
+    seedNotification(id, NOW - 9 * MIN, "Claude is waiting for your input");
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 9 * MIN,
+      type: NOTIFICATION_CAPTURED_EVENT,
+      payloadJson: JSON.stringify({ kind: "input", message: "", pane: "" }),
+    });
+    recordEvent(db, {
+      workflowId: id,
+      ts: NOW - 9 * MIN,
+      type: NOTIFICATION_INTERVENED_EVENT,
+      payloadJson: JSON.stringify({ kind: "input" }),
+    });
+    seedNotification(id, NOW - 2 * MIN, "Claude needs your permission to use Bash");
+    const tmux = makeNotifTmux({ pane: "idle" });
+    const acted = await reconcileNotifications(baseDeps({ tmux: tmux.ops }));
+    expect(acted).toBe(1);
+    // re-captured for the new stall rather than escalating on the stale one
+    expect(getWorkflow(db, id)!.state).toBe("running");
+    expect(capturedPayload(id)?.kind).toBe("permission");
+    expect(tmux.sent).toHaveLength(1);
   });
 });

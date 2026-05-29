@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { claudeAdapter } from "@middle/adapter-claude";
-import type { AgentAdapter } from "@middle/core";
 import { loadConfig } from "@middle/core";
+import { getAdapter } from "@middle/dispatcher/src/adapters.ts";
 import {
   dispatchDocumentation,
   resolveDocumentationOptions,
@@ -15,18 +14,13 @@ export type RunDocsOptions = {
   dispatch?: typeof dispatchDocumentation;
 };
 
-/** Phase 7 adapter registry — only `claude` is implemented. */
-function getAdapter(name: string): AgentAdapter {
-  if (name !== "claude") throw new Error(`unknown adapter: ${name}`);
-  return claudeAdapter;
-}
-
 /**
  * `mm docs <repo>` — trigger a documentation run for the given repo. Resolves
  * the repo's docs target (Starlight / Docusaurus / MkDocs / TypeDoc, or the
- * markdown fallback), then runs the docs harvester to audit the docs surface.
- * Read-only/dry-run first: the run reports drift but persists nothing. Returns a
- * process exit code: 0 when the run completes, 1 otherwise.
+ * markdown fallback), then runs the docs harvester. With `[docs] write` off
+ * (default) the run audits the surface and persists nothing; with it on, the
+ * agent discovers-or-authors and the run commits the result and opens a draft
+ * PR. Returns a process exit code: 0 when the run completes, 1 otherwise.
  */
 export async function runDocs(repoPath: string, opts: RunDocsOptions = {}): Promise<number> {
   if (!existsSync(join(repoPath, ".git"))) {

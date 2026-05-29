@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 
 /**
@@ -100,6 +100,19 @@ export type BootstrapSettings = {
 };
 
 /**
+ * The `[staleness]` section — per-repo overrides for the anti-staleness drift
+ * check. `spec_path` is the repo-relative build-spec path the check reads; omit
+ * it to keep the dispatcher's default convention. The whole section is optional,
+ * and so is every field within it (a bare `[staleness]` block is valid and just
+ * means "use the defaults") — a repo that doesn't ship a spec at all still gets
+ * the landed-issue reconcile, just no drift check.
+ */
+export type StalenessSettings = {
+  /** Repo-relative build-spec path the drift check reads. Omit for the default. */
+  specPath?: string;
+};
+
+/**
  * The merged result of the global and per-repo config files. The global-derived
  * sections are always present (documented defaults fill any gap); the per-repo
  * sections are present only when a per-repo config file was loaded.
@@ -114,13 +127,21 @@ export type MiddleConfig = {
   stateIssue?: StateIssueSettings;
   bootstrap?: BootstrapSettings;
   docs?: DocsSettings;
+  staleness?: StalenessSettings;
 };
 
 export type LoadConfigOptions = {
   /** Path to the global config; defaults to `~/.middle/config.toml`. */
   globalPath?: string;
-  /** Path to the per-repo config (`<repo>/.middle/config.toml`); optional. */
+  /** Path to the per-repo local cache (`<repo>/.middle/config.toml`); optional. */
   repoPath?: string;
+  /**
+   * Path to the committed per-repo policy (`<repo>/.middle/policy.toml`). When
+   * omitted but `repoPath` is set, it defaults to `policy.toml` alongside
+   * `repoPath` — so the 8+ existing call sites that pass only `repoPath` pick up
+   * committed policy with no change. Pass explicitly to point elsewhere (tests).
+   */
+  repoPolicyPath?: string;
 };
 
 type RawTable = Record<string, unknown>;
@@ -280,15 +301,34 @@ function mapDocs(raw: RawTable): DocsSettings | undefined {
 }
 
 /**
- * Load and merge the global and per-repo config files into one typed object.
- * Per-repo values override global on any colliding key (deep merge). Missing
- * files are tolerated: an absent global file falls back to documented defaults,
- * an absent per-repo file leaves the per-repo sections undefined.
+ * Map the `[staleness]` section. Optional like the per-repo mappers, but its one
+ * field is optional too: a bare `[staleness]` block maps to `{ specPath: undefined }`,
+ * which the cron reads as "use the default spec path".
+ */
+function mapStaleness(raw: RawTable): StalenessSettings | undefined {
+  if (!isPlainObject(raw.staleness)) return undefined;
+  return { specPath: raw.staleness.spec_path as string | undefined };
+}
+
+/**
+ * Load and merge the config layers into one typed object. Precedence, lowest to
+ * highest: documented defaults < global file < committed repo policy
+ * (`policy.toml`) < local repo cache (`config.toml`). Each layer deep-merges
+ * onto the one below, so the most-local value wins on a colliding key. Missing
+ * files are tolerated: an absent global file falls back to documented defaults;
+ * an absent policy/local file simply contributes nothing — a fresh clone with a
+ * committed `policy.toml` but no local cache yet still reads the shared policy.
  */
 export function loadConfig(opts: LoadConfigOptions): MiddleConfig {
   const globalPath = opts.globalPath ?? join(homedir(), ".middle", "config.toml");
+  // Committed policy lives alongside the local cache as `policy.toml` unless the
+  // caller overrides it; only derived when a `repoPath` anchors the directory.
+  const policyPath =
+    opts.repoPolicyPath ??
+    (opts.repoPath === undefined ? undefined : join(dirname(opts.repoPath), "policy.toml"));
   const globalRaw = deepMerge(GLOBAL_DEFAULTS, readToml(globalPath));
-  const merged = deepMerge(globalRaw, readToml(opts.repoPath));
+  const withPolicy = deepMerge(globalRaw, readToml(policyPath));
+  const merged = deepMerge(withPolicy, readToml(opts.repoPath));
 
   return {
     global: mapGlobal(merged),
@@ -300,5 +340,6 @@ export function loadConfig(opts: LoadConfigOptions): MiddleConfig {
     stateIssue: mapStateIssue(merged),
     bootstrap: mapBootstrap(merged),
     docs: mapDocs(merged),
+    staleness: mapStaleness(merged),
   };
 }

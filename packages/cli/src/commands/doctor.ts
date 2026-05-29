@@ -26,9 +26,9 @@ import { checkModuleIndex } from "../checks/module-index.ts";
 import { checkStateIssue } from "../checks/state-issue.ts";
 import { checkTsdocCoverage } from "../checks/tsdoc-coverage.ts";
 
-/** Schema version migration 006 (retention) brings the db to — `mm doctor`
+/** Schema version migration 007 (retention) brings the db to — `mm doctor`
  * reports retention status only once the db is at least here. */
-const RETENTION_SCHEMA_VERSION = 6;
+const RETENTION_SCHEMA_VERSION = 7;
 
 type CheckStatus = "pass" | "warn" | "fail";
 type Check = { name: string; status: CheckStatus; detail: string };
@@ -126,6 +126,43 @@ async function runBunPathFix(): Promise<void> {
   } else {
     console.log(`--fix: ${rc.rcPath} already configured — open a new shell to pick it up.`);
   }
+}
+
+/**
+ * Check the binary of every configured + enabled adapter (not just `claude`).
+ * A missing binary is a **warning**, not a failure: middle can still dispatch
+ * with whichever adapters are installed — the recommender / `mm dispatch` simply
+ * won't pick the absent one. When the config file is absent, `loadConfig`'s
+ * defaults still describe both `claude` and `codex`, so a default environment is
+ * checked for both. The check `name` is the adapter name so each gets its own row.
+ */
+async function checkAdapterBinaries(): Promise<Check[]> {
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
+  } catch (error) {
+    return [
+      {
+        name: "adapters",
+        status: "warn",
+        detail: `config unreadable: ${(error as Error).message}`,
+      },
+    ];
+  }
+  const enabled = Object.entries(config.adapters).filter(([, a]) => a.enabled);
+  if (enabled.length === 0) {
+    return [{ name: "adapters", status: "warn", detail: "no adapters enabled in config" }];
+  }
+  return enabled.map(([name, adapter]) => {
+    if (!Bun.which(adapter.binary)) {
+      return {
+        name,
+        status: "warn",
+        detail: `${adapter.binary} not installed — the ${name} adapter is unavailable`,
+      };
+    }
+    return { name, status: "pass", detail: `${adapter.binary} on PATH` };
+  });
 }
 
 async function checkGhAuth(): Promise<Check> {
@@ -369,12 +406,13 @@ function checkDatabase(config: MiddleConfig | null): Check {
 
 /**
  * `mm doctor` — full operator health check. Validates the toolchain every
- * dispatch shells out to (`bun`, `tmux` ≥ 3.5, `claude`, `git`, `gh` + auth),
- * that config parses, the dispatcher is reachable, the state-issue parser still
- * round-trips against its v1 schema, and reports SQLite row counts + recent
- * retention status — plus the repo's skills/docs-convention drift warnings.
- * Exits 0 when no check fails; 1 if anything is missing or broken. Warnings
- * (degraded but functional) do not fail the run.
+ * dispatch shells out to (`bun`, `tmux` ≥ 3.5, each configured adapter's binary
+ * — e.g. `claude`, `codex` — `git`, `gh`, and `gh` auth), that config parses,
+ * the dispatcher is reachable, the state-issue parser still round-trips against
+ * its v1 schema, and reports SQLite row counts + recent retention status — plus
+ * the repo's skills/docs-convention drift warnings. Exits 0 when no check fails;
+ * 1 if anything is missing or broken. Warnings (degraded but functional — a
+ * missing adapter binary among others present) do not fail the run.
  */
 export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number> {
   const { check: configCheck, config } = loadDoctorConfig();
@@ -383,7 +421,7 @@ export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number
     await checkBinary("bun", ["bun", "--version"]),
     await checkBunPath(),
     await checkTmux(),
-    await checkBinary("claude", ["claude", "--version"]),
+    ...(await checkAdapterBinaries()),
     await checkBinary("git", ["git", "--version"]),
     await checkBinary("gh", ["gh", "--version"]),
     await checkGhAuth(),

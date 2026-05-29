@@ -8,11 +8,11 @@
 // drive it over the HTTP control plane. `mm stop` sends it SIGTERM.
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { claudeAdapter } from "@middle/adapter-claude";
-import type { AgentAdapter, MiddleConfig } from "@middle/core";
+import type { MiddleConfig } from "@middle/core";
 import { loadConfig } from "@middle/core";
+import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import type { Database } from "bun:sqlite";
-import { Engine } from "bunqueue/workflow";
+import { getAdapter, isKnownAdapter } from "./adapters.ts";
 import { autoDispatch } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
@@ -28,13 +28,17 @@ import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from
 import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
+import { ghReconcilerGateway, gitOps, reconcileOpenPRs } from "./reconcilers/pr-divergence.ts";
+import { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
 import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
 import { startRetentionCron } from "./retention-cron.ts";
 import { runRetentionPass } from "./retention.ts";
+import { startAuditCron } from "./audit-cron.ts";
+import { startStalenessCron } from "./staleness-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateIssueGateway } from "./state-issue.ts";
-import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
+import { capturePane, killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import { startWatchdog } from "./watchdog-cron.ts";
 import { createWorktree, destroyWorktree, pruneWorktreeAt } from "./worktree.ts";
 import { buildRecommenderContext, createRecommenderWorkflow } from "./workflows/recommender.ts";
@@ -87,12 +91,6 @@ const AUTO_DISPATCH_DEBOUNCE_MS = 250;
 /** Epic-cache refresh cadence (constant, like POLLER/WATCHDOG; config-ification deferred). */
 const EPICS_REFRESH_INTERVAL_MS = 60_000;
 
-/** Adapter registry — only `claude` is implemented. */
-function getAdapter(name: string): AgentAdapter {
-  if (name !== "claude") throw new Error(`unknown adapter: ${name}`);
-  return claudeAdapter;
-}
-
 /** The dispatcher's own version, reported by `GET /health`. */
 function readVersion(): string {
   try {
@@ -105,6 +103,22 @@ function readVersion(): string {
 
 export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
+
+  // The single source of truth for "is this adapter dispatchable right now,
+  // and if not, why?" Used by `dispatchEpicManual` (the dashboard's direct
+  // hostExtras path) and the hook server's `/control/dispatch` route via
+  // `ControlPlane.adapterRejection`, so both surfaces gate AND format the
+  // diagnostic identically — the user trying to dispatch on a disabled adapter
+  // sees the real reason, never a misleading "unknown" message. `isKnownAdapter`
+  // alone gates only on "implemented"; the CLI does its own gating, but a
+  // direct route POST or a dashboard call lands here without the CLI's check.
+  const adapterRejectionReason = (name: string): string | null => {
+    if (!isKnownAdapter(name)) return `unknown adapter: ${name}`;
+    if (!(config.adapters[name]?.enabled ?? false)) {
+      return `adapter ${name} is disabled in config`;
+    }
+    return null;
+  };
 
   mkdirSync(dirname(config.global.dbPath), { recursive: true });
   const db = openAndMigrate(config.global.dbPath);
@@ -122,9 +136,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const hub = new EventHub();
 
   // The one long-lived engine. Parked executions live here so the poller can
-  // resume them; it is in-memory (durable persistence across restart is deferred,
-  // #116) — do NOT add a no-op engine.recover() against the in-memory store.
-  const engine = new Engine({ embedded: true });
+  // resume them. `createDurableEngine` gives it a persistent execution store
+  // (a SQLite db alongside `db.sqlite3` under the middle data dir) so a parked
+  // `waiting` execution survives a daemon restart and is re-armed by
+  // `recoverEngine` on boot (#116) — while keeping the step queue in-memory (see
+  // that factory + this package's CLAUDE.md for why the queue must NOT persist).
+  // Its parent dir is the `mkdirSync` above.
+  const queuePath = join(dirname(config.global.dbPath), "queue.sqlite3");
+  const engine = createDurableEngine(queuePath);
 
   // Declared up front: `scheduleAutoDispatch` (hoisted below) reads it, and a
   // slot-freeing broadcast can fire that path the moment the engine observers
@@ -352,8 +371,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (repoPath === undefined) {
       return { status: 400, body: JSON.stringify({ error: `unknown repo: ${normalizedRepo}` }) };
     }
-    if (adapter !== "claude") {
-      return { status: 400, body: JSON.stringify({ error: `unknown adapter: ${adapter}` }) };
+    const reject = adapterRejectionReason(adapter);
+    if (reject !== null) {
+      return { status: 400, body: JSON.stringify({ error: reject }) };
     }
     const input = { repo: normalizedRepo, repoPath, epicNumber, adapter };
     if (!slotAvailable(input)) {
@@ -483,7 +503,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       const control: ControlPlane = {
         hub,
         version,
-        knownAdapter: (name) => name === "claude",
+        // The control-route guard mirrors `dispatchEpicManual` — only configured,
+        // enabled, implemented adapters are dispatchable from `/control/dispatch`,
+        // and the message distinguishes "unknown" from "disabled" identically.
+        adapterRejection: adapterRejectionReason,
         // A route dispatch is a manual `mm dispatch` — recorded `source: 'manual'`.
         startDispatch: (input) => startDispatchImpl(input, "manual"),
         // Manual dispatch respects slot limits (the loop does its own accounting).
@@ -577,7 +600,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
           throw new Error(`recommender: repo ${repo} is not registered/configured`);
         }
         return {
-          schemaPath: join(repoPath, "schemas", "state-issue.v1.md"),
+          // Resolved from the middle install, not repoPath — see issue #107.
+          schemaPath: STATE_ISSUE_SCHEMA_PATH,
           config: {
             defaultAdapter: cfg.global.defaultAdapter,
             autoDispatch: cfg.recommender?.autoDispatch ?? false,
@@ -590,28 +614,149 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     }),
   );
 
-  // Watchdog cron: every 30s, correct transcript drift then reconcile every
-  // launching/running workflow (launch-timeout, tmux liveness, idle detection,
-  // sentinel re-arm). The reconcile logic is adapter-agnostic via getAdapter.
+  // Durable recovery (#116): the workflow store survived this restart. Drop
+  // mid-drive (`running`/`compensating`) executions — re-driving them would
+  // double-launch a session that the restart left alive; their rows are the
+  // watchdog's domain — then re-arm parked `waiting` executions so the poller can
+  // resume them. Runs AFTER the registers (recover needs the definitions) and
+  // BEFORE the poller (so it never signals an exec recover hasn't re-armed).
+  const recovery = await recoverEngine(engine);
+  if (recovery.cleared > 0 || recovery.recovered.total > 0) {
+    console.log(
+      `[recover] dropped ${recovery.cleared} mid-drive exec(s); re-armed ${recovery.recovered.waiting} parked / ${recovery.recovered.total} total`,
+    );
+  }
+  // Reconcile orphaned signals: a parked `waiting-human` row whose execution the
+  // store no longer has (a park from before persistence shipped, or a wiped queue
+  // db) can never resume — finalize it and surface it so the poller stops firing
+  // at a dead execution and the work isn't silently stuck.
+  const orphans = await reconcileOrphanedSignals({
+    db,
+    hasExecution: (id) => engine.getExecution(id) !== null,
+    surface: ({ workflowId, repo, epicNumber, signalName }) => {
+      console.error(
+        `[recover] orphaned parked signal '${signalName}' for ${repo}#${epicNumber ?? "?"} (workflow ${workflowId}) — no recoverable execution; finalized failed`,
+      );
+      if (epicNumber === null) return;
+      return ghGitHub
+        .postComment(
+          repo,
+          epicNumber,
+          `⚠️ middle could not recover this Epic's parked workflow after a daemon restart (no durable execution for \`${workflowId}\`). The run was finalized as \`failed\`; re-dispatch the Epic to continue.`,
+        )
+        .catch((error: unknown) => {
+          console.error(
+            `[recover] orphan Epic comment for ${repo}#${epicNumber} failed: ${(error as Error).message}`,
+          );
+        });
+    },
+  });
+  if (orphans.length > 0) {
+    console.error(`[recover] reconciled ${orphans.length} orphaned parked signal(s)`);
+  }
+
+  // Watchdog cron: every 30s, correct transcript drift, rescue an agent stuck on
+  // a Notification (#128), then reconcile every launching/running workflow
+  // (launch-timeout, tmux liveness, idle detection, sentinel re-arm). The
+  // reconcile logic is adapter-agnostic via getAdapter. capturePane/sendText/
+  // sendEnter back the notification failsafe's capture + nudge.
   const stopWatchdog = await startWatchdog({
     db,
-    tmux: { status, killSession },
+    tmux: { status, killSession, capturePane, sendText, sendEnter },
     getAdapter,
   });
 
-  // GitHub poller: every 60s, for each parked workflow with an armed wait, fire
-  // its resume signal when the unblocking event appears (a human reply, or a PR
-  // review verdict). `fireSignal` delivers it to this engine — the one that now
-  // hosts the parked executions, so review-resume actually fires.
-  const stopPoller = await startPoller({
-    db,
-    github: ghPollGateway,
-    fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
-    // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
-    // and best-effort tear down its worktree (repo checkout from the registry).
-    removeWorktree: (repo, worktreePath) =>
-      worktreePath ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath) : Promise.resolve(),
-  });
+  // Open-PR divergence reconciler (Epic #168). Sweep every known managed repo
+  // for open PRs that drifted from main; rebase first, -X ours merge fallback
+  // second, demote-to-work as the escalation. Composed across the existing
+  // `ghGitHub` (comment ops) and the reconciler-specific `ghReconcilerGateway`
+  // (head ref, mergeability, draft conversion, sub-issue listing, reopen).
+  // Re-enqueue routes through the recommender so ranking still applies.
+  const reconcilerGithub = { ...ghGitHub, ...ghReconcilerGateway };
+  async function reconcileOpenPRsForRepo(repo: string): Promise<void> {
+    const repoPath = repoPaths.get(repo);
+    if (repoPath === undefined) return;
+    try {
+      const result = await reconcileOpenPRs(
+        {
+          db,
+          github: reconcilerGithub,
+          git: gitOps,
+          resolveRepoPath: () => repoPath,
+          worktreeRoot: config.global.worktreeRoot,
+          enqueueEpic: async (r, epicNumber) => {
+            const result = await runRecommenderForRepo(repoPaths.get(r) ?? repoPath);
+            if (result.status >= 400) {
+              console.error(
+                `[pr-divergence] re-enqueue recommender for ${r} #${epicNumber} failed (${result.status}): ${result.body}`,
+              );
+            }
+            scheduleAutoDispatch(r);
+          },
+          getRateLimit: () => ghPollGateway.getRateLimit(),
+        },
+        repo,
+      );
+      if (result.reconciled > 0 || result.skippedForBudget) {
+        console.log(
+          `[pr-divergence] ${repo}: reconciled=${result.reconciled} passed=${result.passed} skippedForBudget=${result.skippedForBudget}`,
+        );
+      }
+    } catch (error) {
+      console.error(`[pr-divergence] ${repo} failed: ${(error as Error).message}`);
+    }
+  }
+
+  // GitHub poller: every POLLER_INTERVAL_MS (the pinned constant in
+  // poller-cron.ts; the dispatcher's CLAUDE.md cadence contract holds it
+  // and this doc in sync), for each parked workflow with an armed wait,
+  // fire its resume signal when the unblocking event appears (a human reply,
+  // or a PR review verdict). `fireSignal` delivers it to this engine — the
+  // one that now hosts the parked executions, so review-resume actually fires.
+  // Each tick also runs the checkbox-revert trigger (#101) over running
+  // workflows whose Epic PR head SHA advanced, and the open-PR divergence
+  // reconciler (Epic #168) once per managed repo; a MERGED-transition
+  // observed inside `reconcileMergedParks` additionally triggers an immediate
+  // sibling sweep so siblings aren't left stale for up to a full interval.
+  const stopPoller = await startPoller(
+    {
+      db,
+      github: ghPollGateway,
+      fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
+      // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
+      // and best-effort tear down its worktree (repo checkout from the registry).
+      removeWorktree: (repo, worktreePath) =>
+        worktreePath
+          ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath)
+          : Promise.resolve(),
+    },
+    {
+      // Checkbox-revert trigger (#101): each tick, over running workflows whose
+      // Epic PR head SHA advanced, run the declared gates and revert a failing
+      // Status checkbox. Uses the write-capable `gh` gateway (body edits + the
+      // revert comment) and the free rate-limit read shared with the poller.
+      checkboxRevert: {
+        db,
+        github: ghGitHub,
+        getRateLimit: () => ghPollGateway.getRateLimit(),
+      },
+      // Open-PR divergence reconciler (Epic #168) — wired to the per-tick sweep
+      // and the immediate-on-MERGED hook so siblings of a just-landed Epic PR
+      // are reconciled at the moment of merge rather than up to a tick later.
+      // Per-pass dedup lives inside `reconcileMergedParks` (the natural boundary;
+      // a caller-side timer would race against the loop's await points). Here we
+      // just forward to the per-repo sweep — at most one fire per repo per pass
+      // is already guaranteed by the upstream contract.
+      reconcilers: {
+        perTickSweep: async () => {
+          for (const repo of repoPaths.keys()) {
+            await reconcileOpenPRsForRepo(repo);
+          }
+        },
+        onMergedTransition: (repo) => reconcileOpenPRsForRepo(repo),
+      },
+    },
+  );
 
   // Recommender cron (#135): every minute, run the recommender for each managed
   // repo whose `[recommender] interval_minutes` has elapsed — the periodic source
@@ -642,6 +787,21 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     },
   };
   const stopRecommenderCron = await startRecommenderCron(recommenderCronDeps);
+
+  // Standing backlog audit (Epic #143): an hourly sweep that flags open feature
+  // issues whose acceptance criteria fail the integration rubric `needs-design`.
+  const stopAuditCron = await startAuditCron({ db, github: ghGitHub });
+
+  // Anti-staleness reconciliation (Epic #143): an hourly sweep that closes
+  // landed-but-open issues (with an evidence comment) and files proposal-first
+  // tasks for spec lines describing a now-merged phase as future work. Each repo's
+  // spec path comes from its own `[staleness] spec_path` (#164), layered on the
+  // same global config the daemon booted with.
+  const stopStalenessCron = await startStalenessCron({
+    db,
+    github: ghGitHub,
+    globalConfigPath: process.env.MIDDLE_CONFIG,
+  });
 
   // Startup kick: don't idle until the first cron tick / next interval. Run one
   // recommender due-check pass NOW — any overdue managed repo fires immediately
@@ -717,6 +877,16 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       await stopRetentionCron();
     } catch (error) {
       console.error(`shutdown: stopRetentionCron failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopAuditCron();
+    } catch (error) {
+      console.error(`shutdown: stopAuditCron failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopStalenessCron();
+    } catch (error) {
+      console.error(`shutdown: stopStalenessCron failed — ${(error as Error).message}`);
     }
     try {
       hookServer.stop();

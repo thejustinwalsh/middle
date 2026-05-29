@@ -142,6 +142,54 @@ describe("reconcileMergedParks", () => {
     expect(getWorkflow(db, id)?.state).toBe("waiting-human"); // untouched — budget-gated
   });
 
+  test("fires onMergedTransition at most once per repo per pass (Epic #168 wiring)", async () => {
+    seedParked(70);
+    seedParked(71);
+    seedParked(72);
+    const { deps } = makeDeps({
+      70: { number: 1, state: "MERGED" },
+      71: { number: 2, state: "CLOSED" }, // not MERGED → does NOT trigger the hook
+      72: { number: 3, state: "MERGED" },
+    });
+
+    const triggered: string[] = [];
+    await reconcileMergedParks({
+      ...deps,
+      onMergedTransition: async (repo) => {
+        triggered.push(repo);
+      },
+    });
+
+    // Two MERGED rows on the same repo → hook fires once (dedup inside
+    // `reconcileMergedParks` — a per-pass Set guards against the burst that
+    // a caller-side timer would race against the await points and miss).
+    expect(triggered).toEqual([REPO]);
+  });
+
+  test("a thrown onMergedTransition is isolated — the merged-parks pass still finishes", async () => {
+    const idA = seedParked(75);
+    const idB = seedParked(76);
+    const { deps } = makeDeps({
+      75: { number: 4, state: "MERGED" },
+      76: { number: 5, state: "MERGED" },
+    });
+    const triggered: string[] = [];
+    expect(
+      await reconcileMergedParks({
+        ...deps,
+        onMergedTransition: async () => {
+          triggered.push("called");
+          throw new Error("downstream sweep boom");
+        },
+      }),
+    ).toBe(2);
+    // Per-pass dedup: same repo, two MERGED rows → hook fires once but the
+    // throw is still isolated and both rows finalize.
+    expect(triggered.length).toBe(1);
+    expect(getWorkflow(db, idA)?.state).toBe("completed");
+    expect(getWorkflow(db, idB)?.state).toBe("completed");
+  });
+
   test("honors the per-pass burst cap", async () => {
     seedParked(60);
     seedParked(61);

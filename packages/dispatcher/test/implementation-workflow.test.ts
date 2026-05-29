@@ -6,7 +6,9 @@ import { join } from "node:path";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
 import type { IssueComment, PlanCommentReader } from "../src/gates/plan-comment.ts";
 import { Engine } from "bunqueue/workflow";
+import { shutdownManager } from "bunqueue/client";
 import { openAndMigrate } from "../src/db.ts";
+import { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "../src/recovery.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import { getRateLimitState, setRateLimited } from "../src/rate-limits.ts";
 import {
@@ -314,6 +316,39 @@ describe("implementation workflow — terminal stops fall through the waitFor", 
     expect(state.status).toBe("RATE_LIMITED");
     expect(state.resetAt).toBe(Date.parse(resetAt));
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+    expectNoSessionLeak(tmux);
+  });
+});
+
+describe("implementation workflow — prepare-worktree survives a step retry (#108)", () => {
+  test("a transient createWorktree failure retries to success — the re-INSERT is a no-op, not a masking UNIQUE", async () => {
+    // prepare-worktree runs createWorkflowRecord (INSERT) then createWorktree,
+    // under bunqueue's default retry: 3. Make createWorktree throw once so the
+    // step retries from the top, re-running the INSERT for the same execution id.
+    let calls = 0;
+    const failingWorktree = {
+      async createWorktree(opts: Parameters<typeof createWorktree>[0]) {
+        calls += 1;
+        if (calls === 1) throw new Error("transient git failure");
+        return createWorktree(opts);
+      },
+      destroyWorktree,
+    };
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      worktree: failingWorktree,
+      getAdapter: () => makeAdapterStub({ kind: "bare-stop" }),
+    });
+    const id = await start(deps);
+
+    // With ON CONFLICT(id) DO NOTHING the retry's createWorkflowRecord no-ops,
+    // the second createWorktree succeeds, and the run reaches completed. A plain
+    // INSERT would throw `UNIQUE constraint failed: workflows.id` on the retry,
+    // masking the transient error and failing the run.
+    expect(await awaitSettled(id)).toBe("completed");
+    expect(calls).toBe(2); // it actually retried — the retry path was exercised
+    expect(getWorkflow(db, id)?.worktreePath).not.toBeNull(); // attempt 2 ran fully
     expectNoSessionLeak(tmux);
   });
 });
@@ -1048,5 +1083,178 @@ describe("implementation workflow — verify-on-stop gate", () => {
     const deps = makeDeps({ getAdapter: () => makeAdapterStub({ kind: "done" }) });
     const id = await start(deps);
     await awaitParked(id); // unaffected when the seam is absent
+  });
+});
+
+/**
+ * Durable recovery across a daemon restart (#116). Unlike the other suites (which
+ * use the module's in-memory `engine`), these build their own Engines on a
+ * persistent `dataPath` and simulate a restart with `engine.close(true)` +
+ * `shutdownManager()` (resetting bunqueue's process-singleton queue manager, so the
+ * second Engine on the same path models a real separate-process boot). middle's own
+ * `db` persists across the restart (it survives a daemon restart in production too).
+ */
+describe("implementation workflow — durable recovery across daemon restart (#116)", () => {
+  // Durable engines this describe opens. Closing them is a per-test safety net: the bodies
+  // close on the happy path, but a mid-test assertion failure must not leak a durable engine
+  // + its SQLite handle, nor leave bunqueue's singleton claimed for the next test.
+  const openedDurable: Engine[] = [];
+
+  /** Track a durable engine so teardown closes it even if an assertion throws first. */
+  function durable(path: string): Engine {
+    const e = createDurableEngine(path);
+    openedDurable.push(e);
+    return e;
+  }
+
+  afterEach(async () => {
+    for (const e of openedDurable) {
+      try {
+        await e.close(true);
+      } catch {
+        /* already closed on the happy path */
+      }
+    }
+    openedDurable.length = 0;
+    shutdownManager(); // reset the singleton the durable engines claimed
+    // Hand the file-level afterEach a fresh, valid in-memory engine to close.
+    engine = new Engine({ embedded: true });
+  });
+
+  /** Wait until `id` is parked on the `waitFor` (`waiting`) on the given engine. */
+  async function awaitParkedOn(e: Engine, id: string, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (e.getExecution(id)?.state === "waiting") {
+        expect(getWorkflow(db, id)?.state).toBe("waiting-human");
+        return;
+      }
+      await Bun.sleep(15);
+    }
+    throw new Error(`workflow ${id} did not park within ${timeoutMs}ms`);
+  }
+
+  /** Wait until `id`'s `workflows` row reaches a terminal-ish state. */
+  async function awaitSettledOn(e: Engine, id: string, timeoutMs = 5000): Promise<string> {
+    const terminal = new Set(["completed", "failed", "rate-limited", "compensated", "cancelled"]);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const s = getWorkflow(db, id)?.state;
+      if (s && terminal.has(s)) return s;
+      await Bun.sleep(15);
+    }
+    void e;
+    throw new Error(`workflow ${id} did not settle (was '${getWorkflow(db, id)?.state}')`);
+  }
+
+  test("a workflow parked on .waitFor(RESUME_EVENT) survives a restart; a review verdict resumes it", async () => {
+    // Reset the singleton so the persistent-dataPath Engine owns the store (the
+    // module `engine`, in-memory, claimed it first in beforeEach).
+    await engine.close(true);
+    shutdownManager();
+    const queuePath = join(scratch, "queue.sqlite3");
+
+    const tmux = makeTmuxStub();
+    const prompts: string[] = [];
+    const adapter = makeAdapterStub({ kind: "done" }, prompts);
+    const continuationIds: string[] = [];
+    let currentEngine!: Engine;
+    const deps = makeDeps({
+      tmux: tmux.ops,
+      getAdapter: () => adapter,
+      enqueueContinuation: async (input) => {
+        const handle = await currentEngine.start("implementation", input);
+        continuationIds.push(handle.id);
+      },
+    });
+
+    // ── Engine 1: dispatch, drive to a `done` review-park, then "crash". ──
+    const e1 = durable(queuePath);
+    currentEngine = e1;
+    e1.register(createImplementationWorkflow(deps));
+    const { id: id0 } = await e1.start("implementation", INPUT);
+    await awaitParkedOn(e1, id0);
+    expect(getWaitForSignal(db, id0)).toEqual({
+      signalName: signalNameFor(EPIC, "review-changes"),
+      payloadJson: JSON.stringify({ reason: "review-changes" }),
+    });
+    expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
+    await e1.close(true);
+    shutdownManager(); // simulate a separate-process daemon restart
+
+    // ── Engine 2: fresh boot on the same store; recover, then resume. ──
+    const e2 = durable(queuePath);
+    currentEngine = e2;
+    e2.register(createImplementationWorkflow(deps));
+    // The durable workflow store survived: the fresh engine sees the parked exec
+    // even before recover (and the durable `waitfor_signals` row is intact).
+    expect(e2.getExecution(id0)?.state).toBe("waiting");
+    expect(getWaitForSignal(db, id0)).not.toBeNull();
+    const recovery = await recoverEngine(e2);
+    expect(recovery.recovered.waiting).toBe(1);
+    expect(recovery.cleared).toBe(0);
+    // The parked execution was not re-driven by the restart: only the single
+    // initial drive ran (a persistent step queue would have replayed it).
+    expect(prompts).toEqual(["initial"]);
+
+    // A review verdict fires the resume on the recovered engine and the workflow
+    // continues: CHANGES_REQUESTED hands off to a fresh continuation that re-drives.
+    await e2.signal(id0, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettledOn(e2, id0)).toBe("completed");
+    expect(getWaitForSignal(db, id0)).toBeNull();
+
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParkedOn(e2, id1);
+    expect(prompts).toEqual(["initial", "resume"]); // continuation drove post-restart
+    // The continuation inherits the parked worktree (same recorded path), mirroring the
+    // in-process resume test. (That the checkout itself is reused, not recreated, is held
+    // by the single-worktree + teardown-once assertions below.)
+    expect(getWorkflow(db, id1)?.worktreePath).toBe(getWorkflow(db, id0)?.worktreePath);
+    expect(readPromptBrief(id1)).toContain("address review — round 1 of 5");
+
+    // Approve the continuation to end the loop cleanly; worktree torn down once.
+    await e2.signal(id1, RESUME_EVENT, APPROVED);
+    expect(await awaitSettledOn(e2, id1)).toBe("completed");
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+    expectNoSessionLeak(tmux);
+
+    await e2.close(true); // teardown re-closes idempotently if an assertion above threw
+  });
+
+  test("an orphaned parked signal (store lost the execution) is reconciled, not left for the poller", async () => {
+    await engine.close(true);
+    shutdownManager();
+    const queuePath = join(scratch, "queue.sqlite3");
+
+    const tmux = makeTmuxStub();
+    const adapter = makeAdapterStub({ kind: "done" }, []);
+    const deps = makeDeps({ tmux: tmux.ops, getAdapter: () => adapter });
+
+    // Park a workflow, then "lose" the bunqueue store (a wiped queue db / a park
+    // from before persistence shipped) by removing the dataPath before the second
+    // boot — the middle `workflows` + `waitfor_signals` rows survive, the exec does not.
+    const e1 = durable(queuePath);
+    e1.register(createImplementationWorkflow(deps));
+    const { id } = await e1.start("implementation", INPUT);
+    await awaitParkedOn(e1, id);
+    await e1.close(true);
+    shutdownManager();
+    rmSync(queuePath, { force: true });
+    rmSync(`${queuePath}-wal`, { force: true });
+    rmSync(`${queuePath}-shm`, { force: true });
+
+    const e2 = durable(queuePath);
+    e2.register(createImplementationWorkflow(deps));
+    expect(e2.getExecution(id)).toBeNull(); // the store no longer has it
+    await recoverEngine(e2);
+    const orphans = await reconcileOrphanedSignals({
+      db,
+      hasExecution: (wfId) => e2.getExecution(wfId) !== null,
+    });
+    expect(orphans.map((o) => o.workflowId)).toEqual([id]);
+    expect(getWorkflow(db, id)?.state).toBe("failed");
+    expect(getWaitForSignal(db, id)).toBeNull();
+
+    await e2.close(true); // teardown re-closes idempotently if an assertion above threw
   });
 });

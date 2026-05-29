@@ -275,6 +275,117 @@ describe("runDispatch — control client", () => {
     }
   });
 
+  test("--adapter overrides the agent label and the default, and is sent to the daemon", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
+    const configPath = writeConfig(server.port);
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        adapter: "codex",
+        fetchLabels: async () => ["agent:claude"], // ignored — explicit --adapter wins
+      });
+      expect(code).toBe(0);
+      expect((dispatchBodies[0] as { adapter: string }).adapter).toBe("codex");
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
+  test("an agent:<name> label on the Epic selects that adapter", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
+    const configPath = writeConfig(server.port);
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        fetchLabels: async () => ["epic", "agent:codex"],
+      });
+      expect(code).toBe(0);
+      expect((dispatchBodies[0] as { adapter: string }).adapter).toBe("codex");
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
+  test("no agent label falls back to the default adapter", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
+    const configPath = writeConfig(server.port);
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        fetchLabels: async () => ["epic", "phase:10"],
+      });
+      expect(code).toBe(0);
+      expect((dispatchBodies[0] as { adapter: string }).adapter).toBe("claude");
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
+  test("a disabled adapter is rejected (exit 1), even via --adapter, before any dispatch", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
+    // Disable codex in config; --adapter codex must not dispatch.
+    const configPath = join(dir, "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        "[global]",
+        `dispatcher_port = ${server.port}`,
+        `db_path = "${join(dir, "db.sqlite3")}"`,
+        `worktree_root = "${join(dir, "worktrees")}"`,
+        `log_dir = "${join(dir, "logs")}"`,
+        "",
+        "[adapters.codex]",
+        "enabled = false",
+        "",
+      ].join("\n"),
+    );
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        adapter: "codex",
+      });
+      expect(code).toBe(1);
+      expect(dispatchBodies).toEqual([]); // never reached the daemon
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
+  test("an unconfigured --adapter is rejected (exit 1) before any dispatch", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["completed"] });
+    const configPath = writeConfig(server.port);
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "6", {
+        configPath,
+        startDaemon: () => 0,
+        adapter: "ghost",
+      });
+      expect(code).toBe(1);
+      expect(dispatchBodies).toEqual([]); // never reached the daemon
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
   test("friendly failure (exit 1) when the daemon can't be reached or started", async () => {
     const repoPath = makeRepo();
     // A port with nothing listening.

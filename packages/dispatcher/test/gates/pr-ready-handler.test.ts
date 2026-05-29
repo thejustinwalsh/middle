@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { makePrReadyGateHandler, type PrReadyGateDeps } from "../../src/gates/pr-ready-handler.ts";
 
-const EVIDENCED = "## Acceptance criteria\n- [ ] done (https://example.com/x)\n";
+const EVIDENCED =
+  "## Acceptance criteria\n- [ ] done (https://example.com/x)\n- [ ] `mm start` serves it; a smoke test boots the daemon and GETs `/` (packages/cli/test/daemon-entry.test.ts)\n";
 const UNEVIDENCED = "## Acceptance criteria\n- [ ] not done yet, no evidence\n";
 
 function deps(over: Partial<PrReadyGateDeps>): PrReadyGateDeps {

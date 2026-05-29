@@ -4,6 +4,7 @@ import type { AgentAdapter, MiddleConfig } from "@middle/core";
 import { resolveDocsTarget } from "@middle/docs";
 import { Engine } from "bunqueue/workflow";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
+import { makeGhPersistDocs, type PersistDocs } from "./docs-persist.ts";
 import { openAndMigrate } from "./db.ts";
 import { waitForSettle } from "./engine-settle.ts";
 import { HookServer } from "./hook-server.ts";
@@ -24,6 +25,12 @@ export type DocumentationRunOverrides = {
   tmux?: TmuxOps;
   worktree?: WorktreeOps;
   sessionGate?: SessionGate;
+  /**
+   * The commit/push/PR persist seam. Production omits it and the runner wires the
+   * `gh`-backed `makeGhPersistDocs`; a test injects one composed with a stub push
+   * to exercise the real commit path without touching a live remote.
+   */
+  persistDocs?: PersistDocs;
 };
 
 export type DispatchDocumentationOptions = {
@@ -83,11 +90,17 @@ export async function resolveDocumentationOptions(
   getAdapter: (name: string) => AgentAdapter,
 ): Promise<ResolveDocumentationResult> {
   const adapterName = config.docs?.adapter ?? config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    return {
-      ok: false,
-      error: `only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
-    };
+  try {
+    getAdapter(adapterName);
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
+  // Dispatchable = implemented (above) AND enabled in config — mirror the
+  // daemon's manual-dispatch + recommender-validator gates so a
+  // `[docs] adapter = "x"` pointing at a disabled adapter can't sneak through
+  // the daemon's documentation route below the CLI's enabled-check.
+  if (!(config.adapters[adapterName]?.enabled ?? false)) {
+    return { ok: false, error: `adapter ${adapterName} is disabled in config` };
   }
 
   let target: DocsTargetSummary;
@@ -127,11 +140,13 @@ export async function resolveDocumentationOptions(
  * Run one documentation pass end to end: stand up a hook receiver and engine,
  * spawn the docs agent in its own dedicated slot, wait for the workflow to
  * settle, then tear everything down. Mirrors `dispatchRecommender`'s stack-based
- * cleanup. Read-only/dry-run first — the `persistDocs` write seam is left
- * UNWIRED, so a clean run audits the docs surface but persists nothing.
+ * cleanup. The `persistDocs` write seam is wired to the `gh`-backed
+ * `makeGhPersistDocs`; `config.write` gates it (an audit run persists nothing) and
+ * a clean worktree is a no-op (no empty commit/PR).
  *
  * Test seams (`overrides`) let a test drive it against stubs (no tmux/gh); the
- * sessionGate override skips the real hook server.
+ * sessionGate override skips the real hook server, and a `persistDocs` override
+ * exercises the real commit path with a stubbed push.
  */
 export async function dispatchDocumentation(
   opts: DispatchDocumentationOptions,
@@ -191,7 +206,10 @@ export async function dispatchDocumentation(
         dispatcherUrl,
         target: opts.target,
         config: opts.runConfig,
-        // Read-only/dry-run first: persistDocs intentionally UNWIRED.
+        // Write seam wired: commit the authored docs + push + open a draft PR.
+        // `config.write` gates whether it runs (an audit run never persists);
+        // a clean worktree is a no-op inside the seam. Tests inject a stub push.
+        persistDocs: ov.persistDocs ?? makeGhPersistDocs(),
       }),
     );
 

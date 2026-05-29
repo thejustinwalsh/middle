@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 import type { AgentAdapter, MiddleConfig } from "@middle/core";
+import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import { Engine } from "bunqueue/workflow";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
@@ -113,17 +114,25 @@ export async function resolveRecommenderOptions(
     return { ok: false, error: `no state issue configured for this repo (run \`mm init\` first)` };
   }
   const adapterName = config.recommender?.adapter ?? config.global.defaultAdapter;
-  if (adapterName !== "claude") {
-    return {
-      ok: false,
-      error: `only the 'claude' adapter is available in Phase 1 (config asks for "${adapterName}")`,
-    };
+  try {
+    getAdapter(adapterName);
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
   }
-  const schemaPath = join(repoPath, "schemas", "state-issue.v1.md");
+  // Dispatchable = implemented (above) AND enabled in config — mirror the
+  // daemon's manual-dispatch gate so a `[recommender] adapter = "x"` pointing
+  // at a disabled adapter can't sneak through the `/trigger/recommender`
+  // entry point (the CLI gates earlier, the dashboard hits this directly).
+  if (!(config.adapters[adapterName]?.enabled ?? false)) {
+    return { ok: false, error: `adapter ${adapterName} is disabled in config` };
+  }
+  // Resolved from the middle installation, NOT from repoPath — the schema is the
+  // single source of truth and is not stamped into target repos (issue #107).
+  const schemaPath = STATE_ISSUE_SCHEMA_PATH;
   if (!existsSync(schemaPath)) {
     return {
       ok: false,
-      error: `state-issue schema not found at ${schemaPath} (Phase 7 runs against middle's own repo)`,
+      error: `state-issue schema missing from the middle installation at ${schemaPath} — this is a packaging bug, not a repo problem`,
     };
   }
   const repoSlug = await deriveRepoSlug(repoPath);

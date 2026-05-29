@@ -39,8 +39,14 @@ export type ControlPlane = {
   hub: EventHub;
   /** Reported by `/health` so a client can confirm compatibility. */
   version: string;
-  /** Whether `name` is a dispatchable adapter (body validation). */
-  knownAdapter: (name: string) => boolean;
+  /**
+   * Body-validation for the adapter name: returns a 400 error message when
+   * `name` is not dispatchable (unknown OR disabled), or `null` when it is.
+   * Daemon wiring distinguishes the two cases in the message so a user trying
+   * to dispatch on a disabled adapter sees the real reason instead of a
+   * misleading "unknown adapter" message.
+   */
+  adapterRejection: (name: string) => string | null;
   /**
    * Atomically start a dispatch on the daemon's long-lived engine and resolve
    * the workflow id — or resolve `null` if the Epic already has an active
@@ -398,10 +404,12 @@ export class HookServer implements SessionGate {
     if (typeof epicNumber !== "number" || !Number.isInteger(epicNumber) || epicNumber < 1) {
       return this.#badRequest("epicNumber must be an integer >= 1");
     }
-    if (typeof adapter !== "string" || !control.knownAdapter(adapter)) {
-      return this.#badRequest(
-        `unknown adapter: ${typeof adapter === "string" ? adapter : "(missing)"}`,
-      );
+    if (typeof adapter !== "string") {
+      return this.#badRequest("unknown adapter: (missing)");
+    }
+    const reject = control.adapterRejection(adapter);
+    if (reject !== null) {
+      return this.#badRequest(reject);
     }
 
     const dispatchInput = { repo: normalizedRepo, repoPath, epicNumber, adapter };

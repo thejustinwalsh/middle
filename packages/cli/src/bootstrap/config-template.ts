@@ -1,25 +1,35 @@
 import { BOOTSTRAP_VERSION, STATE_LABEL, type RepoInfo } from "./types.ts";
 
-export type RepoConfigValues = {
-  info: RepoInfo;
+/**
+ * Volatile values {@link renderLocalConfig} writes into the gitignored
+ * `<repo>/.middle/config.toml` cache (issue #103).
+ *
+ * - `stateIssueNumber` — the GitHub issue number tracking this repo's dispatch
+ *   state (a positive integer; GitHub remains its source of truth, per #102).
+ * - `installedAt` — an ISO-8601 timestamp (`YYYY-MM-DDTHH:MM:SSZ`) of when
+ *   `mm init` stamped the install.
+ */
+export type LocalConfigValues = {
   stateIssueNumber: number;
   installedAt: string;
 };
 
 /**
- * Render `<repo>/.middle/config.toml` from the build spec's "Per-repo config"
- * block. The `[repo]` identity and `[state_issue] number` / `[bootstrap]
- * installed_at` are filled per-target; the `[limits]` and `[recommender]`
- * defaults match the spec verbatim (auto_dispatch defaults OFF — opt-in).
+ * Render `<repo>/.middle/policy.toml` — the **committed**, shareable repo policy
+ * (issue #103). Holds `[repo]` identity, `[limits]`, `[recommender]`, the `[docs]`
+ * harvester block, and a commented `[staleness]` spec-path override (#164), all
+ * matching the build spec's "Per-repo config" defaults verbatim (auto_dispatch and
+ * docs `write` default OFF — opt-in). A team edits this file in version control to
+ * agree on e.g. `complexity_ceiling`.
  *
  * The keys here are the keys `@middle/core`'s `loadConfig` reads back, so this
- * template is the inverse of that mapper. The `[docs]` block configures the docs
- * harvester (write defaults OFF — read-only audit until opted in); omitting
- * `tool`/`path` leaves the resolver to detect the framework.
+ * template is the inverse of that mapper. Volatile/per-machine fields live in the
+ * gitignored local cache instead — see {@link renderLocalConfig}.
  */
-export function renderRepoConfig(v: RepoConfigValues): string {
-  const { info } = v;
-  return `[repo]
+export function renderRepoPolicy(info: RepoInfo): string {
+  return `# middle repo policy — COMMITTED and shared across contributors (issue #103).
+# Volatile/per-machine fields live in the gitignored .middle/config.toml cache.
+[repo]
 owner = "${info.owner}"
 name = "${info.name}"
 default_branch = "${info.defaultBranch}"
@@ -42,6 +52,24 @@ interval_minutes = 1440
 adapter = "claude"
 write = false
 
+[staleness]
+# Repo-relative path to this repo's build spec, read by the anti-staleness drift
+# check (#164). Omit to use middle's default (planning/middle-management-build-spec.md);
+# a repo with no spec at the path still gets the landed-issue reconcile, just no drift check.
+# spec_path = "planning/middle-management-build-spec.md"
+`;
+}
+
+/**
+ * Render `<repo>/.middle/config.toml` — the **gitignored**, per-machine local
+ * operational cache (issue #103). Holds only volatile fields: the `[state_issue]`
+ * number (GitHub remains its source of truth, per #102) and `[bootstrap]`
+ * install metadata. `loadConfig` merges this on top of the committed policy, so
+ * a value set here overrides the shared policy for this machine only.
+ */
+export function renderLocalConfig(v: LocalConfigValues): string {
+  return `# middle local cache — GITIGNORED, per-machine (issue #103).
+# Shared policy lives in the committed .middle/policy.toml.
 [state_issue]
 number = ${v.stateIssueNumber}
 label = "${STATE_LABEL}"

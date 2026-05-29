@@ -11,14 +11,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isParseError, parseStateIssue, validate } from "@middle/state-issue";
+import { loadConfig } from "@middle/core";
 import { initRepo } from "../src/bootstrap/init.ts";
 import { uninitRepo } from "../src/bootstrap/uninit.ts";
-import { BOOTSTRAP_VERSION, type BootstrapDeps } from "../src/bootstrap/types.ts";
+import { BOOTSTRAP_VERSION, type BootstrapDeps, type RepoInfo } from "../src/bootstrap/types.ts";
 
 type Calls = {
   ensureLabel: number;
   created: Array<{ title: string; body: string }>;
-  closed: Array<{ issue: number; comment: string }>;
+  closed: Array<{ issue: number; comment: string; info: RepoInfo }>;
 };
 
 function makeFakeDeps(): { deps: BootstrapDeps; calls: Calls } {
@@ -36,8 +37,8 @@ function makeFakeDeps(): { deps: BootstrapDeps; calls: Calls } {
         calls.created.push({ title, body });
         return 142;
       },
-      closeStateIssue: async (_info, issue, comment) => {
-        calls.closed.push({ issue, comment });
+      closeStateIssue: async (info, issue, comment) => {
+        calls.closed.push({ issue, comment, info });
       },
       findStateIssues: async () => [],
     },
@@ -81,17 +82,28 @@ describe("mm init — fresh install", () => {
     expect(settings.hooks.Stop[0].hooks[0].command).toContain("agent.stopped");
     expect(readFileSync(join(repo, ".codex/config.toml"), "utf8")).toContain("[hooks]");
 
-    // config with the captured issue number
-    const config = readFileSync(join(repo, ".middle/config.toml"), "utf8");
-    expect(config).toContain('owner = "acme"');
-    expect(config).toContain("number = 142");
-    expect(config).toContain("auto_dispatch = false");
+    // committed policy holds the shared repo policy (issue #103)
+    const policy = readFileSync(join(repo, ".middle/policy.toml"), "utf8");
+    expect(policy).toContain('owner = "acme"');
+    expect(policy).toContain("auto_dispatch = false");
     // the docs harvester block, read-only by default
-    expect(config).toContain("[docs]");
-    expect(config).toContain("write = false");
+    expect(policy).toContain("[docs]");
+    expect(policy).toContain("write = false");
+    // … and never the volatile fields
+    expect(policy).not.toContain("number =");
+    expect(policy).not.toContain("installed_at");
 
-    // gitignore
-    expect(readFileSync(join(repo, ".gitignore"), "utf8")).toContain(".middle/");
+    // local cache holds only the volatile fields, incl. the captured issue number
+    const config = readFileSync(join(repo, ".middle/config.toml"), "utf8");
+    expect(config).toContain("number = 142");
+    expect(config).toContain("installed_at");
+    expect(config).not.toContain("[repo]");
+    expect(config).not.toContain("[limits]");
+
+    // gitignore uses the glob + exception form so policy.toml stays committed
+    const gitignore = readFileSync(join(repo, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".middle/*");
+    expect(gitignore).toContain("!.middle/policy.toml");
 
     // github mutations
     expect(calls.ensureLabel).toBe(1);
@@ -121,6 +133,58 @@ describe("mm init — idempotent re-init", () => {
     expect(second.stateIssue).toBe(142);
     expect(calls.created).toHaveLength(1); // no second issue created
     expect(readFileSync(join(repo, ".middle/config.toml"), "utf8")).toBe(configBefore);
+  });
+
+  test("re-init does not clobber a team's committed policy edits (AC #103)", async () => {
+    const { deps } = makeFakeDeps();
+    await initRepo(repo, deps, { dryRun: false });
+    // a contributor edits the committed policy in version control
+    const edited = readFileSync(join(repo, ".middle/policy.toml"), "utf8").replace(
+      "complexity_ceiling = 3",
+      "complexity_ceiling = 5",
+    );
+    writeFileSync(join(repo, ".middle/policy.toml"), edited);
+
+    await initRepo(repo, deps, { dryRun: false });
+    // policy.toml is left exactly as the team committed it
+    expect(readFileSync(join(repo, ".middle/policy.toml"), "utf8")).toBe(edited);
+    expect(readFileSync(join(repo, ".middle/policy.toml"), "utf8")).toContain(
+      "complexity_ceiling = 5",
+    );
+  });
+
+  test("a fresh clone (committed policy, no local cache) reconciles the issue and keeps policy", async () => {
+    // Simulate a teammate's checkout: policy.toml is committed/present, but the
+    // gitignored config.toml never made it across.
+    const { deps, calls } = makeFakeDeps();
+    deps.github.findStateIssues = async () => [77];
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    const committed = "[limits]\ncomplexity_ceiling = 5\n";
+    writeFileSync(join(repo, ".middle/policy.toml"), committed);
+
+    const result = await initRepo(repo, deps, { dryRun: false });
+    expect(result.mode).toBe("fresh"); // no local cache → fresh
+    expect(result.stateIssue).toBe(77); // reused, not duplicated
+    expect(calls.created).toHaveLength(0);
+    // committed policy untouched; local cache minted with the reused number
+    expect(readFileSync(join(repo, ".middle/policy.toml"), "utf8")).toBe(committed);
+    expect(readFileSync(join(repo, ".middle/config.toml"), "utf8")).toContain("number = 77");
+  });
+
+  test("loadConfig reads init's two files via sibling derivation and merges them", async () => {
+    // End-to-end seam: the path loadConfig derives for policy.toml must match
+    // where initRepo actually writes it (the sibling of the config.toml path).
+    const { deps } = makeFakeDeps();
+    await initRepo(repo, deps, { dryRun: false });
+
+    const config = loadConfig({ repoPath: join(repo, ".middle", "config.toml") });
+    // from policy.toml (committed)
+    expect(config.repo!.owner).toBe("acme");
+    expect(config.limits!.complexityCeiling).toBe(3);
+    expect(config.recommender!.autoDispatch).toBe(false);
+    // from config.toml (local cache)
+    expect(config.stateIssue!.number).toBe(142);
+    expect(config.bootstrap!.version).toBe(BOOTSTRAP_VERSION);
   });
 });
 
@@ -246,6 +310,48 @@ describe("mm uninit", () => {
     expect(result.stateIssue).toBe(142);
     expect(calls.closed).toHaveLength(1);
     expect(calls.closed[0]!.issue).toBe(142);
+  });
+
+  test("closes the state issue offline by reading [repo] from committed policy (#103)", async () => {
+    // Post-split, [repo] lives in policy.toml and the number in config.toml. If
+    // the remote can't be resolved (offline / origin removed), uninit must still
+    // close the issue using the locally-committed identity — never orphan it.
+    const { deps, calls } = makeFakeDeps();
+    deps.resolveRepoInfo = async () => {
+      throw new Error("no remote");
+    };
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    writeFileSync(
+      join(repo, ".middle/policy.toml"),
+      '[repo]\nowner = "acme"\nname = "widget"\ndefault_branch = "main"\n',
+    );
+    writeFileSync(join(repo, ".middle/config.toml"), "[state_issue]\nnumber = 142\n");
+
+    const result = await uninitRepo(repo, deps, { dryRun: false });
+    expect(result.stateIssue).toBe(142);
+    expect(calls.closed).toHaveLength(1);
+    expect(calls.closed[0]!.issue).toBe(142);
+  });
+
+  test("falls back to default_branch 'main' when committed policy has a non-string value (#103)", async () => {
+    // Malformed policy: default_branch is a non-string (here a number). owner/name
+    // are still valid strings, so [repo] resolves — but the bad default_branch
+    // must never leak a non-string into RepoInfo.defaultBranch.
+    const { deps, calls } = makeFakeDeps();
+    deps.resolveRepoInfo = async () => {
+      throw new Error("no remote");
+    };
+    mkdirSync(join(repo, ".middle"), { recursive: true });
+    writeFileSync(
+      join(repo, ".middle/policy.toml"),
+      '[repo]\nowner = "acme"\nname = "widget"\ndefault_branch = 123\n',
+    );
+    writeFileSync(join(repo, ".middle/config.toml"), "[state_issue]\nnumber = 142\n");
+
+    const result = await uninitRepo(repo, deps, { dryRun: false });
+    expect(result.stateIssue).toBe(142);
+    expect(calls.closed).toHaveLength(1);
+    expect(calls.closed[0]!.info).toEqual({ owner: "acme", name: "widget", defaultBranch: "main" });
   });
 
   test("dry run removes nothing", async () => {

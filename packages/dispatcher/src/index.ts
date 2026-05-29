@@ -28,6 +28,9 @@
  *   — the reconciliation crons
  * - `startRetentionCron` / `runRetentionPass` / `collectRetentionStatus` — the
  *   daily SQLite retention cron + the status `mm doctor` reads
+ * - `createDurableEngine` / `recoverEngine` / `reconcileOrphanedSignals` — the
+ *   durable workflow engine (persistent store, transient queue) and its boot
+ *   recovery: re-arm parked `waiting` executions, reconcile orphaned signals (#116)
  * - `openDb` / `openAndMigrate` / `MIGRATIONS_DIR` — the dispatcher database
  * - `WorkflowRecord` / `WorkflowState` — workflow persistence types
  *
@@ -48,6 +51,7 @@
  * - `poller*.ts` / `watchdog*.ts` — the GitHub-poll + liveness crons
  * - `retention.ts` / `retention-cron.ts` — the daily events-prune +
  *   workflow-archival pass and its cron wrapper
+ * - `recovery.ts` — the durable engine factory + boot recovery/reconciliation
  * - `db.ts`, `db/` — SQLite open/migrate + migrations
  * - `tmux.ts`, `worktree.ts` — session + worktree lifecycle
  * - `state-issue.ts` — the dispatcher's edits to the state issue
@@ -89,6 +93,12 @@ export {
   runRetentionPass,
   WORKFLOWS_MAX_AGE_MS,
 } from "./retention.ts";
+export { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
+export type {
+  EngineRecoveryResult,
+  OrphanedSignal,
+  ReconcileOrphanedSignalsDeps,
+} from "./recovery.ts";
 export { MIGRATIONS_DIR, openAndMigrate, openDb } from "./db.ts";
 export { HookServer } from "./hook-server.ts";
 export type { ControlDispatchInput, ControlPlane, SessionGate } from "./hook-server.ts";

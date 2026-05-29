@@ -14,26 +14,43 @@ import {
 
 type ParsedConfig = { stateIssue: number; info: RepoInfo | null };
 
-function readConfig(repo: string): ParsedConfig {
-  const path = join(repo, ".middle", "config.toml");
-  if (!existsSync(path)) return { stateIssue: 0, info: null };
+/** Parse a TOML file into a table, tolerating absence and malformed content. */
+function tryParseToml(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
   try {
-    const raw = parseToml(readFileSync(path, "utf8")) as Record<string, unknown>;
-    const stateIssue = (raw.state_issue ?? {}) as Record<string, unknown>;
-    const repoTbl = (raw.repo ?? {}) as Record<string, unknown>;
-    const number = typeof stateIssue.number === "number" ? stateIssue.number : 0;
-    const info =
-      typeof repoTbl.owner === "string" && typeof repoTbl.name === "string"
-        ? {
-            owner: repoTbl.owner,
-            name: repoTbl.name,
-            defaultBranch: (repoTbl.default_branch as string) ?? "main",
-          }
-        : null;
-    return { stateIssue: number, info };
+    const raw = parseToml(readFileSync(path, "utf8"));
+    return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
   } catch {
-    return { stateIssue: 0, info: null };
+    return {};
   }
+}
+
+function readRepoInfo(table: unknown): RepoInfo | null {
+  const t = (table ?? {}) as Record<string, unknown>;
+  if (typeof t.owner !== "string" || typeof t.name !== "string") return null;
+  // Guard each field: malformed policy (a number, a table, etc.) must never
+  // leak a non-string into RepoInfo. owner/name being non-string disqualifies
+  // the block entirely; a bad default_branch just falls back to "main".
+  const defaultBranch = typeof t.default_branch === "string" ? t.default_branch : "main";
+  return { owner: t.owner, name: t.name, defaultBranch };
+}
+
+/**
+ * Read the state-issue number and repo identity from the per-repo files. Post-#103
+ * the `[repo]` block lives in the committed `policy.toml` while the `[state_issue]`
+ * number lives in the gitignored `config.toml` cache — but tolerate a legacy
+ * single-file install that still carries either in `config.toml`. Reading the
+ * identity locally (not just from the remote) is what lets `mm uninit` close the
+ * state issue offline / after `origin` is gone, the guarantee the split must keep.
+ */
+function readConfig(repo: string): ParsedConfig {
+  const cache = tryParseToml(join(repo, ".middle", "config.toml"));
+  const policy = tryParseToml(join(repo, ".middle", "policy.toml"));
+  const stateTbl = (cache.state_issue ?? policy.state_issue ?? {}) as Record<string, unknown>;
+  const number = typeof stateTbl.number === "number" ? stateTbl.number : 0;
+  // [repo] now lives in policy.toml; fall back to the cache for legacy installs.
+  const info = readRepoInfo(policy.repo) ?? readRepoInfo(cache.repo);
+  return { stateIssue: number, info };
 }
 
 /**
