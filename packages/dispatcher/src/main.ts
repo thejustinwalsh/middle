@@ -13,7 +13,7 @@ import { loadConfig } from "@middle/core";
 import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import type { Database } from "bun:sqlite";
 import { getAdapter, isKnownAdapter } from "./adapters.ts";
-import { autoDispatch } from "./auto-dispatch.ts";
+import { autoDispatch, createParseFailureSurfacer } from "./auto-dispatch.ts";
 import { buildImplementationDeps } from "./build-deps.ts";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
 import { openAndMigrate } from "./db.ts";
@@ -312,6 +312,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     return limited;
   }
 
+  // A malformed state-issue body makes the read-only auto-dispatch loop throw
+  // `… does not parse …`; surface it on the state issue (once per distinct
+  // message) instead of dying in stderr and silently stalling the loop (#180).
+  const parseFailureSurfacer = createParseFailureSurfacer(ghSurfaceProblem);
+
   /** Run one auto-dispatch pass for a repo, building deps from its merged config. */
   async function runAutoDispatch(repo: string): Promise<void> {
     const repoPath = repoPaths.get(repo);
@@ -322,17 +327,31 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (stateIssueNumber === undefined || stateIssueNumber === 0) return;
     const limits = resolveSlotLimits(repoConfig);
     const adapters = Object.keys(repoConfig.adapters);
-    const result = await autoDispatch({
-      repo,
-      // Enabled = the per-repo toggle is on AND the repo isn't paused (#51).
-      isAutoDispatchEnabled: () =>
-        (repoConfig.recommender?.autoDispatch ?? false) && !isPaused(db, repo),
-      readState: () => readState(ghStateIssueGateway, repo, stateIssueNumber),
-      rateLimitedAdapters: () => rateLimitedAdapters(adapters),
-      getSlotState: () => getSlotState(db, repo, limits),
-      enqueue: ({ repo: r, epicNumber, adapter }) =>
-        startDispatchImpl({ repo: r, repoPath, epicNumber, adapter }, "auto"),
-    });
+    let result;
+    try {
+      result = await autoDispatch({
+        repo,
+        // Enabled = the per-repo toggle is on AND the repo isn't paused (#51).
+        isAutoDispatchEnabled: () =>
+          (repoConfig.recommender?.autoDispatch ?? false) && !isPaused(db, repo),
+        readState: () => readState(ghStateIssueGateway, repo, stateIssueNumber),
+        rateLimitedAdapters: () => rateLimitedAdapters(adapters),
+        getSlotState: () => getSlotState(db, repo, limits),
+        enqueue: ({ repo: r, epicNumber, adapter }) =>
+          startDispatchImpl({ repo: r, repoPath, epicNumber, adapter }, "auto"),
+      });
+    } catch (error) {
+      // Announce a parse failure on the state issue (deduped); other errors fall
+      // through to the scheduler's stderr log. Best-effort: a failed comment must
+      // not mask the original error.
+      await parseFailureSurfacer
+        .surface(repo, stateIssueNumber, error as Error)
+        .catch((e: unknown) =>
+          console.error(`[auto-dispatch] ${repo} surfaceProblem failed: ${(e as Error).message}`),
+        );
+      throw error;
+    }
+    parseFailureSurfacer.reset(repo); // healthy read — re-arm surfacing for next time
     if (result.enqueued.length > 0) {
       const list = result.enqueued.map((e) => `#${e.epicNumber}(${e.adapter})`).join(", ");
       console.log(`[auto-dispatch] ${repo}: enqueued ${list} — ${result.reason}`);

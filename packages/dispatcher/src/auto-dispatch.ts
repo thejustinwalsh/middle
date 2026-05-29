@@ -58,6 +58,50 @@ function parseEpicNumber(epic: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * Surfaces a state-issue **parse failure** that halts auto-dispatch onto the
+ * state issue itself, deduped per repo. The read-only auto-dispatch loop throws
+ * `… does not parse …` when the recommender (or a stray edit) leaves a malformed
+ * body — historically that died in stderr only, silently stalling the auto-loop
+ * (#180). This announces it once per distinct message (a debounce burst is one
+ * comment), and {@link ParseFailureSurfacer.reset}s after a healthy read so a
+ * recurrence re-announces.
+ */
+export type ParseFailureSurfacer = {
+  /**
+   * If `error` is a "does not parse" failure, surface it on the state issue —
+   * unless the identical message was already surfaced for this repo since the
+   * last {@link ParseFailureSurfacer.reset}. Returns whether it surfaced.
+   * Non-parse errors are ignored (returns false) so transient `gh`/network
+   * errors never spam comments.
+   */
+  surface(repo: string, stateIssue: number, error: Error): Promise<boolean>;
+  /** Forget a repo's last-surfaced message after a healthy read, so the next
+   *  failure (even an identical one) surfaces again. */
+  reset(repo: string): void;
+};
+
+/** Build a {@link ParseFailureSurfacer} over a `surfaceProblem` sink (prod: a
+ *  `gh` comment). The dedup memory is the closure's `Map`, daemon-lifetime. */
+export function createParseFailureSurfacer(
+  surfaceProblem: (opts: { repo: string; stateIssue: number; problem: string }) => Promise<void>,
+): ParseFailureSurfacer {
+  const lastSurfaced = new Map<string, string>();
+  return {
+    async surface(repo, stateIssue, error) {
+      if (!error.message.includes("does not parse")) return false;
+      const problem = `⚠️ auto-dispatch halted: state issue #${stateIssue} does not parse, so the ranked dispatch plan can't be read and no Epics will dispatch until this is fixed.\n\n\`${error.message}\``;
+      if (lastSurfaced.get(repo) === problem) return false;
+      lastSurfaced.set(repo, problem);
+      await surfaceProblem({ repo, stateIssue, problem });
+      return true;
+    },
+    reset(repo) {
+      lastSurfaced.delete(repo);
+    },
+  };
+}
+
 /** Run one auto-dispatch pass for a repo. See {@link AutoDispatchDeps}. */
 export async function autoDispatch(deps: AutoDispatchDeps): Promise<AutoDispatchResult> {
   if (!(await deps.isAutoDispatchEnabled())) return { enqueued: [], reason: "disabled" };

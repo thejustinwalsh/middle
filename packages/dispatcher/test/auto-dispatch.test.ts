@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ParsedState, ReadyRow } from "@middle/state-issue";
-import { autoDispatch, type AutoDispatchDeps } from "../src/auto-dispatch.ts";
+import {
+  autoDispatch,
+  createParseFailureSurfacer,
+  type AutoDispatchDeps,
+} from "../src/auto-dispatch.ts";
 import type { SlotState } from "../src/slots.ts";
 
 // The auto-dispatch loop (#50): walk `readyToDispatch`, skip rate-limited
@@ -229,5 +233,74 @@ describe("autoDispatch", () => {
     const result = await autoDispatch(deps);
     expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 401, adapter: "claude" }]);
     expect(result.reason).toBe("drained");
+  });
+});
+
+describe("createParseFailureSurfacer (#180)", () => {
+  function spy() {
+    const calls: Array<{ repo: string; stateIssue: number; problem: string }> = [];
+    const surfaceProblem = async (o: { repo: string; stateIssue: number; problem: string }) => {
+      calls.push(o);
+    };
+    return { calls, surfacer: createParseFailureSurfacer(surfaceProblem) };
+  }
+
+  test("surfaces a parse failure on the state issue, with the underlying message", async () => {
+    const { calls, surfacer } = spy();
+    const did = await surfacer.surface(
+      "o/r",
+      84,
+      new Error('state issue #84 does not parse: malformed "In-flight" item: "..."'),
+    );
+    expect(did).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.stateIssue).toBe(84);
+    expect(calls[0]!.problem).toContain("auto-dispatch halted");
+    expect(calls[0]!.problem).toContain('malformed "In-flight"');
+  });
+
+  test("dedupes an identical message across a burst — one comment, not N", async () => {
+    const { calls, surfacer } = spy();
+    const err = new Error("state issue #84 does not parse: boom");
+    expect(await surfacer.surface("o/r", 84, err)).toBe(true);
+    expect(await surfacer.surface("o/r", 84, err)).toBe(false);
+    expect(await surfacer.surface("o/r", 84, err)).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("reset() re-arms surfacing after a healthy read", async () => {
+    const { calls, surfacer } = spy();
+    const err = new Error("state issue #84 does not parse: boom");
+    expect(await surfacer.surface("o/r", 84, err)).toBe(true);
+    surfacer.reset("o/r");
+    expect(await surfacer.surface("o/r", 84, err)).toBe(true); // recurrence re-announces
+    expect(calls).toHaveLength(2);
+  });
+
+  test("a different parse message surfaces even without a reset", async () => {
+    const { calls, surfacer } = spy();
+    expect(await surfacer.surface("o/r", 84, new Error("state issue #84 does not parse: a"))).toBe(
+      true,
+    );
+    expect(await surfacer.surface("o/r", 84, new Error("state issue #84 does not parse: b"))).toBe(
+      true,
+    );
+    expect(calls).toHaveLength(2);
+  });
+
+  test("ignores non-parse errors so transient gh/network failures never spam", async () => {
+    const { calls, surfacer } = spy();
+    expect(await surfacer.surface("o/r", 84, new Error("gh issue view #84 failed: 503"))).toBe(
+      false,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  test("dedup is per-repo — two repos with the same message each surface once", async () => {
+    const { calls, surfacer } = spy();
+    const err = new Error("state issue #1 does not parse: boom");
+    expect(await surfacer.surface("o/r", 1, err)).toBe(true);
+    expect(await surfacer.surface("x/y", 1, err)).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 });
