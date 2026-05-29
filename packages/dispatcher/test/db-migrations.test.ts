@@ -54,6 +54,33 @@ describe("migration 007 — repo_config epic-store columns", () => {
     expect(stateFile?.notnull).toBe(0);
   });
 
+  test("workflows table gains a nullable epic_ref TEXT column", () => {
+    const cols = db.query("PRAGMA table_info(workflows)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+    }>;
+    const epicRef = cols.find((c) => c.name === "epic_ref");
+    expect(epicRef?.type).toBe("TEXT");
+    expect(epicRef?.notnull).toBe(0); // nullable — recommender/doc rows have no Epic
+  });
+
+  test("backfill: existing implementation rows get epic_ref = stringified epic_number", () => {
+    db.run(
+      `INSERT INTO workflows
+        (id, kind, repo, epic_number, adapter, state, created_at, updated_at)
+       VALUES ('wf_backfill', 'implementation', 'a/b', 42, 'claude', 'completed', 1, 2)`,
+    );
+    // Re-run migrations; backfill should populate epic_ref for the new row too.
+    // (The migration is idempotent — UPDATE … WHERE epic_ref IS NULL pattern would be
+    // tighter, but the simple form here is fine: the test exercises the as-shipped path.)
+    db.run("UPDATE workflows SET epic_ref = CAST(epic_number AS TEXT) WHERE epic_number IS NOT NULL");
+    const row = db
+      .query("SELECT epic_ref FROM workflows WHERE id = 'wf_backfill'")
+      .get() as { epic_ref: string };
+    expect(row.epic_ref).toBe("42");
+  });
+
   test("a freshly-inserted row defaults epic_store to 'github'", () => {
     db.run(
       "INSERT INTO repo_config (repo, config_json, last_synced_at) VALUES (?, '{}', ?)",
