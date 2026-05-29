@@ -306,20 +306,33 @@ export function finalizeParkedWorkflow(
 }
 
 /**
- * Promote a still-`pending` workflow to `failed`, returning whether it
- * transitioned. The daemon calls this off bunqueue's terminal `workflow:failed`
- * signal (issue #179): when the **first** step (`prepare-worktree`) fails after
- * its retries are exhausted, the saga has no completed step to compensate, so no
- * compensation runs to mark the row terminal and it strands at `pending` — which
- * 409-blocks every later dispatch of that Epic. The `AND state = 'pending'`
- * guard makes this exact: a *later* step's failure leaves the row past `pending`
- * (the launch step already wrote `launching`) and compensation marks it
- * `compensated`, so this no-ops and never races that terminal write. Fires the
- * update observer (the SSE broadcast) only on a real transition.
+ * Promote a still-`pending` **implementation** workflow to `failed`, returning
+ * whether it transitioned. The daemon calls this off bunqueue's terminal
+ * `workflow:failed` signal (issue #179): when the first step (`prepare-worktree`)
+ * fails after its retries are exhausted, the saga has no completed step to
+ * compensate, so nothing marks the row terminal and it strands at `pending` —
+ * which 409-blocks every later dispatch of that Epic (`hasNonTerminalEpicWorkflow`
+ * is itself `kind = 'implementation'`-scoped).
+ *
+ * Two guards make this exact and race-free:
+ * - `AND state = 'pending'`: the implementation chain writes `launching` as the
+ *   first action of the step *after* `prepare-worktree`, so the only step that
+ *   can fail while the row is `pending` is `prepare-worktree` itself. A later
+ *   step's failure leaves the row past `pending` and compensation marks it
+ *   `compensated`, so this no-ops there.
+ * - `AND kind = 'implementation'`: recommender/documentation workflows (sharing
+ *   the daemon engine, hence this handler) legitimately sit at `pending` through
+ *   their `prepare-*-worktree` and `build-prompt` steps. A terminal `build-prompt`
+ *   failure there *does* run compensation (`compensated`); without this guard the
+ *   flip would race it — flipping to `failed`, emitting a spurious `failed` SSE
+ *   frame, and firing a premature slot-freeing auto-dispatch before compensation.
+ *
+ * Fires the update observer (the SSE broadcast) only on a real transition.
  */
 export function promotePendingToFailed(db: Database, id: string): boolean {
   const res = db.run(
-    "UPDATE workflows SET state = 'failed', updated_at = ? WHERE id = ? AND state = 'pending'",
+    `UPDATE workflows SET state = 'failed', updated_at = ?
+       WHERE id = ? AND state = 'pending' AND kind = 'implementation'`,
     [Date.now(), id],
   );
   const changed = (res.changes ?? 0) > 0;

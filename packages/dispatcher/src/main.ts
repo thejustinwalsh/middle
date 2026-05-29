@@ -188,12 +188,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   engine.onAny((event) => {
     if (event.type.startsWith("workflow:") && "state" in event) {
       const state = (event as { state: string }).state;
-      // A terminal bunqueue failure of the first step (prepare-worktree) leaves
-      // the middle row stranded at `pending` — the saga has no completed step to
-      // compensate, so nothing marks it terminal, and a non-terminal row
-      // 409-blocks the Epic's next dispatch. Promote that orphan to `failed`
-      // (no-op for any row past `pending`) before broadcasting, so the wire frame
-      // and the freed-reservation/auto-dispatch trigger see the terminal row (#179).
+      // A terminal bunqueue failure of an implementation Epic's first step
+      // (prepare-worktree) leaves the middle row stranded at `pending` — the saga
+      // has no completed step to compensate, so nothing marks it terminal, and a
+      // non-terminal row 409-blocks the Epic's next dispatch. Promote that orphan
+      // to `failed` before broadcasting, so the wire frame and the
+      // freed-reservation/auto-dispatch trigger see the terminal row. The helper
+      // is guarded to implementation + still-`pending` rows so it never races the
+      // compensation path (recommender/docs sit at `pending` later) (#179).
       if (state === "failed") promotePendingToFailed(db, event.executionId);
       broadcastWorkflow(event.executionId, state);
     }
