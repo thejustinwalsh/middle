@@ -4,11 +4,7 @@ import { type GateRunReport, runGates } from "./gates/gate-runner.ts";
 import { makePrReadyGateHandler, type PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { PlanCommentReader } from "./gates/plan-comment.ts";
 import { loadVerifyConfig, verifyConfigPath } from "./gates/verify-config.ts";
-import {
-  ghGitHub,
-  type EpicGateway,
-  resolveAgentLogin as ghResolveAgentLogin,
-} from "./github.ts";
+import { ghGitHub, type EpicGateway, resolveAgentLogin as ghResolveAgentLogin } from "./github.ts";
 import type { SessionGate } from "./hook-server.ts";
 import { AGENT_COMMENT_MARKER } from "./poller.ts";
 import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";

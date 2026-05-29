@@ -20,11 +20,7 @@ export type EpicRow = {
 };
 
 /** Refresh a repo's Epic cache from GitHub. One paginated list call; repo-scoped. */
-export async function refreshEpics(
-  db: Database,
-  repo: string,
-  github: EpicGateway,
-): Promise<void> {
+export async function refreshEpics(db: Database, repo: string, github: EpicGateway): Promise<void> {
   const epics = await github.listOpenEpics(repo);
   const now = Date.now();
   const upsert = db.query(

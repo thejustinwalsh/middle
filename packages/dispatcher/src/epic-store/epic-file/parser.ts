@@ -100,14 +100,17 @@ function parseArray(raw: string): string[] {
 function sectionBody(lines: string[], heading: string): string {
   const start = lines.findIndex((l) => l.trim() === `## ${heading}`);
   if (start === -1) return "";
-  let end = lines.findIndex((l, i) => i > start && /^## /.test(l));
+  let end = lines.findIndex((l, i) => i > start && l.startsWith("## "));
   if (end === -1) {
     // Sub-issues is the last `## ` section before the conversation marker —
     // stop at CONVERSATION_OPEN so the conversation block isn't swallowed.
     end = lines.findIndex((l, i) => i > start && l.trim() === CONVERSATION_OPEN);
     if (end === -1) end = lines.length;
   }
-  return lines.slice(start + 1, end).join("\n").trim();
+  return lines
+    .slice(start + 1, end)
+    .join("\n")
+    .trim();
 }
 
 function parseAcceptance(body: string): AcceptanceItem[] {
@@ -179,7 +182,10 @@ function parseConversation(lines: string[]): ConversationEntry[] {
         kind: "dispatch-event",
         ts: dm[1]!,
         eventKind: dm[2]!,
-        body: inner.slice(i + 1, close).join("\n").trim(),
+        body: inner
+          .slice(i + 1, close)
+          .join("\n")
+          .trim(),
       });
       i = close + 1;
       continue;
@@ -196,9 +202,7 @@ function parseConversation(lines: string[]): ConversationEntry[] {
         .trim();
       let answer: { body: string } | undefined;
       if (answerStart !== -1) {
-        const answerClose = block.findIndex(
-          (l, k) => k > answerStart && l.trim() === ANSWER_CLOSE,
-        );
+        const answerClose = block.findIndex((l, k) => k > answerStart && l.trim() === ANSWER_CLOSE);
         if (answerClose === -1) throw new Error("answer block not closed");
         const answerBody = block
           .slice(answerStart + 1, answerClose)
