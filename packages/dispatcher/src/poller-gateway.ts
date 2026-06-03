@@ -61,7 +61,16 @@ export function deriveCiStatus(rollup: CheckRollupEntry[] | null | undefined): C
  */
 
 async function gh(argv: string[]): Promise<string> {
-  const proc = Bun.spawn(["gh", ...argv], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  // Pass `env` explicitly so argv[0] (`gh`) resolves against the *current*
+  // `process.env.PATH` rather than Bun's process-start PATH snapshot. Identical
+  // to the default inherited environment in production; it's what lets a test
+  // shim `gh` on PATH to exercise the failure-isolation branches below.
+  const proc = Bun.spawn(["gh", ...argv], {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+    env: process.env,
+  });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -104,12 +113,20 @@ async function fetchPrSnapshot(repo: string, prNumber: number): Promise<PrSnapsh
     statusCheckRollup: CheckRollupEntry[] | null;
   };
 
-  const reviewsOut = await gh([
-    "api",
-    "--paginate",
-    "--slurp",
-    `repos/${repo}/pulls/${prNumber}/reviews`,
-  ]);
+  let reviewsOut: string;
+  try {
+    reviewsOut = await gh([
+      "api",
+      "--paginate",
+      "--slurp",
+      `repos/${repo}/pulls/${prNumber}/reviews`,
+    ]);
+  } catch {
+    // Same isolation contract as the `pr view` fetch above: a transient reviews
+    // failure (rate limit, network) degrades to "no PR" rather than throwing and
+    // aborting the whole poll pass for every other parked workflow.
+    return null;
+  }
   const reviewRows = (
     JSON.parse(reviewsOut) as Array<
       Array<{
