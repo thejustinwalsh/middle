@@ -4,7 +4,10 @@ import { type GateRunReport, runGates } from "./gates/gate-runner.ts";
 import { makePrReadyGateHandler, type PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { PlanCommentReader } from "./gates/plan-comment.ts";
 import { loadVerifyConfig, verifyConfigPath } from "./gates/verify-config.ts";
+import { join } from "node:path";
 import { ghGitHub, type EpicGateway, resolveAgentLogin as ghResolveAgentLogin } from "./github.ts";
+import { appendQuestion, makeRoutingEpicGateway } from "./epic-store/index.ts";
+import { readEpicStoreConfig } from "./repo-config.ts";
 import type { SessionGate } from "./hook-server.ts";
 import { AGENT_COMMENT_MARKER } from "./poller.ts";
 import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
@@ -137,7 +140,17 @@ export type BuildImplementationDepsArgs = {
 export async function buildImplementationDeps(
   args: BuildImplementationDepsArgs,
 ): Promise<{ deps: ImplementationDeps; prReadyGate: PrReadyGateHandler }> {
-  const github = args.github ?? ghGitHub;
+  // The daemon registers one workflow with one deps, but Epic-store mode is
+  // per-repo — so the default gateway is a router that delegates each call to the
+  // repo's file or gh backend (keyed on the method's `repo` arg). An injected
+  // `args.github` (tests) overrides it. github-mode repos route to `ghGitHub`, so
+  // behavior is identical when no repo opts into file mode.
+  const routingGh = makeRoutingEpicGateway({
+    db: args.db,
+    resolveRepoPath: args.resolveRepoPath,
+    ghEpic: ghGitHub,
+  });
+  const github = args.github ?? routingGh;
   const resolveLogin = args.resolveAgentLogin ?? ghResolveAgentLogin;
 
   // The PR-ready gate resolves a session to its Epic via the workflow row, then
@@ -170,7 +183,7 @@ export async function buildImplementationDeps(
     worktreeRoot: args.worktreeRoot,
     dispatcherUrl,
     enqueueContinuation: args.enqueueContinuation,
-    planCommentReader: args.planCommentReader ?? ghGitHub,
+    planCommentReader: args.planCommentReader ?? routingGh,
     agentLogin,
     // Positive done-signal (#80): a bare-stop only completes if the Epic
     // already has a ready, non-draft PR.
@@ -183,7 +196,18 @@ export async function buildImplementationDeps(
     postQuestion:
       args.postQuestion ??
       (async ({ repo, epicRef, question, context, kind }) => {
-        await github.postComment(repo, epicRef, formatPauseComment({ question, context, kind }));
+        // file mode: append a `<!-- middle:question -->` block to the Epic file
+        // (the agent-side of #178's class). github mode: comment on the Epic.
+        const cfg = readEpicStoreConfig(args.db, repo);
+        if (cfg.mode === "file") {
+          appendQuestion(join(args.resolveRepoPath(repo), cfg.epicsDir), epicRef, {
+            question,
+            context,
+            kind,
+          });
+        } else {
+          await github.postComment(repo, epicRef, formatPauseComment({ question, context, kind }));
+        }
       }),
     resolveComplexityCeiling: args.resolveComplexityCeiling,
     // Default: the Epic is approved iff it carries the `approved` label (#53).
