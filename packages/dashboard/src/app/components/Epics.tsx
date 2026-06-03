@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 import type { EpicCard } from "../../wire.ts";
+import { EpicRef } from "./EpicRef.tsx";
 
 function ProgressBar({ closed, total }: { closed: number; total: number }) {
   const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
@@ -36,7 +37,11 @@ function DispatchControl({
   // (it isn't a configured/dispatchable adapter, so the server would reject it anyway).
   const slot = card.dispatch.freeSlots.find((s) => s.adapter === adapter);
   const noSlot = slot ? !slot.available : true;
-  const disabled = card.dispatch.inFlight || noSlot;
+  // A file-mode Epic (null number) has no numeric handle for the dashboard's
+  // numeric dispatch route; force-dispatch it from the CLI (`mm dispatch <slug>`).
+  // It's still browsable here — only the in-dashboard dispatch button is gated.
+  const isFileEpic = card.number === null;
+  const disabled = card.dispatch.inFlight || noSlot || isFileEpic;
   return (
     <div className="epic-dispatch">
       <select
@@ -54,10 +59,20 @@ function DispatchControl({
       </select>
       <button
         type="button"
-        aria-label={`Dispatch Epic #${card.number}`}
+        aria-label={`Dispatch Epic ${card.ref}`}
         disabled={disabled}
-        title={card.dispatch.inFlight ? "already in flight" : noSlot ? "no free slot" : ""}
-        onClick={() => onDispatch(card.repo, card.number, adapter)}
+        title={
+          isFileEpic
+            ? "file-mode Epic — dispatch from the CLI: mm dispatch " + card.ref
+            : card.dispatch.inFlight
+              ? "already in flight"
+              : noSlot
+                ? "no free slot"
+                : ""
+        }
+        onClick={() => {
+          if (card.number !== null) onDispatch(card.repo, card.number, adapter);
+        }}
       >
         dispatch
       </button>
@@ -84,10 +99,10 @@ export function Epics({
       ) : (
         <ul>
           {epics.map((card) => (
-            <li key={`${card.repo}#${card.number}`} className="epic-card" data-epic={card.number}>
+            <li key={`${card.repo}#${card.ref}`} className="epic-card" data-epic={card.ref}>
               <div className="epic-head">
                 <span className="epic-title">
-                  #{card.number} {card.title}
+                  <EpicRef epicNumber={card.number} epicRef={card.ref} /> {card.title}
                 </span>
                 {card.runner ? (
                   <button

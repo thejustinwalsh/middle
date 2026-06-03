@@ -467,7 +467,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       };
     }
     scheduleAutoDispatch(normalizedRepo);
-    void refreshEpics(db, normalizedRepo, ghGitHub).catch((error: unknown) => {
+    void refreshEpics(db, normalizedRepo, routingEpicGateway).catch((error: unknown) => {
       console.error(
         `[epics] post-dispatch refresh ${normalizedRepo} failed: ${(error as Error).message}`,
       );
@@ -482,7 +482,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       return { status: 404, body: JSON.stringify({ error: `unknown repo: ${normalizedRepo}` }) };
     }
     try {
-      await refreshEpics(db, normalizedRepo, ghGitHub);
+      await refreshEpics(db, normalizedRepo, routingEpicGateway);
       return { status: 200, body: JSON.stringify({ ok: true }) };
     } catch (error) {
       return { status: 502, body: JSON.stringify({ error: (error as Error).message }) };
@@ -953,7 +953,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // independently completes-or-logs without corrupting the cache.
   function refreshAllEpics(): void {
     for (const repo of repoPaths.keys()) {
-      void refreshEpics(db, repo, ghGitHub).catch((e: unknown) =>
+      void refreshEpics(db, repo, routingEpicGateway).catch((e: unknown) =>
         console.error(`[epics] refresh ${repo} failed: ${(e as Error).message}`),
       );
     }

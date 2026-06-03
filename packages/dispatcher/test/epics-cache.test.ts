@@ -98,6 +98,96 @@ describe("epics-cache", () => {
     expect(raw.state).toBe("open");
   });
 
+  test("caches a file-mode Epic (slug ref, null number) and surfaces it in readEpics (#200)", async () => {
+    await refreshEpics(
+      db,
+      "o/r",
+      fakeGitHub([
+        {
+          ref: "rollout-epic-store",
+          number: null,
+          title: "Roll out the store",
+          state: "open",
+          labels: ["epic"],
+          subTotal: 5,
+          subClosed: 2,
+        },
+      ]),
+    );
+    const rows = readEpics(db, "o/r");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      ref: "rollout-epic-store",
+      number: null,
+      title: "Roll out the store",
+      subTotal: 5,
+      subClosed: 2,
+      labels: ["epic"],
+    });
+  });
+
+  test("mixed github + file Epics: github (by number desc) first, file (null number) after", async () => {
+    await refreshEpics(
+      db,
+      "o/r",
+      fakeGitHub([
+        {
+          ref: "10",
+          number: 10,
+          title: "ten",
+          state: "open",
+          labels: [],
+          subTotal: 1,
+          subClosed: 0,
+        },
+        {
+          ref: "rollout-epic-store",
+          number: null,
+          title: "file epic",
+          state: "open",
+          labels: [],
+          subTotal: 0,
+          subClosed: 0,
+        },
+        {
+          ref: "20",
+          number: 20,
+          title: "twenty",
+          state: "open",
+          labels: [],
+          subTotal: 1,
+          subClosed: 0,
+        },
+      ]),
+    );
+    // github Epics by number desc, then the file Epic (NULL number sorts last in DESC).
+    expect(readEpics(db, "o/r").map((r) => r.ref)).toEqual(["20", "10", "rollout-epic-store"]);
+  });
+
+  test("a file Epic that vanishes is marked closed by its slug ref", async () => {
+    await refreshEpics(
+      db,
+      "o/r",
+      fakeGitHub([
+        {
+          ref: "rollout-epic-store",
+          number: null,
+          title: "f",
+          state: "open",
+          labels: [],
+          subTotal: 0,
+          subClosed: 0,
+        },
+      ]),
+    );
+    await refreshEpics(db, "o/r", fakeGitHub([])); // gone from the open set
+    expect(readEpics(db, "o/r")).toEqual([]);
+    const raw = db
+      .query("SELECT state FROM epics WHERE repo='o/r' AND ref='rollout-epic-store'")
+      .get() as { state: string };
+    expect(raw.state).toBe("closed");
+  });
+
   test("refresh is repo-scoped — another repo's rows are untouched", async () => {
     await refreshEpics(
       db,

@@ -254,16 +254,18 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
       .get(session, session) as WorkflowRow | null;
   }
 
-  /** The non-terminal implementation workflow owning an Epic, if any. */
-  function workflowForEpic(repo: string, epicNumber: number): WorkflowRow | null {
+  /** The non-terminal implementation workflow owning an Epic, if any. Keyed on the
+   *  canonical `epic_ref` (migration 009) so it resolves both github numbers and
+   *  file-mode slugs. */
+  function workflowForEpic(repo: string, epicRef: string): WorkflowRow | null {
     const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
     return db
       .query(
         `SELECT ${WORKFLOW_COLUMNS} FROM workflows
-         WHERE repo = ? AND epic_number = ? AND kind = 'implementation' AND state NOT IN (${placeholders})
+         WHERE repo = ? AND epic_ref = ? AND kind = 'implementation' AND state NOT IN (${placeholders})
          ORDER BY created_at DESC LIMIT 1`,
       )
-      .get(repo, epicNumber, ...TERMINAL_STATES) as WorkflowRow | null;
+      .get(repo, epicRef, ...TERMINAL_STATES) as WorkflowRow | null;
   }
 
   /** Slot limits for `hasFreeSlot`, from the merged config. */
@@ -327,11 +329,20 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
         available: hasFreeSlot(state, adapter),
       }));
       return rows.map((row) => {
-        const wf = workflowForEpic(repo, row.number);
-        const need = parsed?.needsHumanInput.find((i) => i.issue === row.number) ?? null;
-        const blocked = parsed?.blocked.find((b) => b.issue === row.number) ?? null;
+        const wf = workflowForEpic(repo, row.ref);
+        // Decision/ready joins key on the GitHub number; a file-mode Epic (null
+        // number) carries its own decisions in the file state, not this state
+        // issue, so these naturally yield null for it (no match).
+        const need =
+          row.number === null
+            ? null
+            : (parsed?.needsHumanInput.find((i) => i.issue === row.number) ?? null);
+        const blocked =
+          row.number === null
+            ? null
+            : (parsed?.blocked.find((b) => b.issue === row.number) ?? null);
         const ready = parsed?.readyToDispatch.find(
-          (r) => Number(r.epic.replace(/^#/, "").split(/\s/)[0]) === row.number,
+          (r) => r.epic.replace(/^#/, "").split(/\s/)[0] === row.ref,
         );
         let decision: EpicCard["decision"] = null;
         if (need) {
@@ -349,6 +360,7 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
         }
         return {
           repo,
+          ref: row.ref,
           number: row.number,
           title: row.title,
           progress: { closed: row.subClosed, total: row.subTotal },

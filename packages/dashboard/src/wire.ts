@@ -158,7 +158,13 @@ export type AttachResult = {
 /** One Epic card in the Epic-centric browse view — cache + workflows + state-issue join. */
 export type EpicCard = {
   repo: string;
-  number: number;
+  /**
+   * Canonical Epic reference: the numeric string in github mode, the slug in file
+   * mode. The SPA renders it via `<EpicRef>` (a `#N` label or a `file://` link).
+   */
+  ref: string;
+  /** GitHub issue number, or null for a file-mode Epic (renders as a file:// slug link). */
+  number: number | null;
   title: string;
   /** Sub-issue progress from the cache. */
   progress: { closed: number; total: number };
