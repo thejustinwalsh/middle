@@ -147,6 +147,12 @@ const stubGithubPoll: PollGateway = {
   async findEpicPrLifecycle(): Promise<EpicPrLifecycle | null> {
     return null;
   },
+  async prSnapshot(): Promise<PrSnapshot | null> {
+    return null;
+  },
+  async prLifecycle(): Promise<EpicPrLifecycle | null> {
+    return null;
+  },
   async getRateLimit(): Promise<RateLimitStatus> {
     return { remaining: 5000, resetAt: 0 };
   },

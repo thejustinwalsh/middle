@@ -136,6 +136,13 @@ describe("makeRoutingPollGateway", () => {
         async findEpicPrLifecycle(): Promise<EpicPrLifecycle | null> {
           return { number: 5, state: "OPEN" };
         },
+        async prSnapshot(_repo, prNumber): Promise<PrSnapshot | null> {
+          ghCalls.push(`prSnapshot:${prNumber}`);
+          return { number: prNumber, reviewDecision: null, reviews: [], labels: [] };
+        },
+        async prLifecycle(_repo, prNumber): Promise<EpicPrLifecycle | null> {
+          return { number: prNumber, state: "OPEN" };
+        },
         async getRateLimit(): Promise<RateLimitStatus> {
           ghCalls.push("rate");
           return { remaining: 4999, resetAt: 0 };

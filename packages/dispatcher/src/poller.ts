@@ -92,6 +92,22 @@ export type PollGateway = {
    */
   findEpicPrLifecycle(repo: string, epicRef: string): Promise<EpicPrLifecycle | null>;
   /**
+   * Review snapshot for a **known** PR number — the resolve-then-fetch half of
+   * {@link findPrForEpic} factored out. The github finder resolves the Epic's PR
+   * by its `Closes #<n>` linkage and then calls this; a file-mode Epic (a slug
+   * with no `Closes #` linkage) instead resolves its PR from the Epic file's
+   * durable `meta.pr` stamp and calls this directly. `null` when no such open PR
+   * exists. The PR itself is GitHub-native in both Epic-store modes.
+   */
+  prSnapshot(repo: string, prNumber: number): Promise<PrSnapshot | null>;
+  /**
+   * Lifecycle (open/merged/closed) for a **known** PR number — the file-mode
+   * counterpart to {@link findEpicPrLifecycle}, which resolves a single PR from
+   * the Epic file's `meta.pr` rather than searching `Closes #<n>` across history.
+   * `null` when the PR number doesn't resolve.
+   */
+  prLifecycle(repo: string, prNumber: number): Promise<EpicPrLifecycle | null>;
+  /**
    * Current REST budget. Read from `gh api rate_limit`, whose own request does
    * not consume quota — so the poller can consult it every pass for free.
    */

@@ -170,6 +170,8 @@ export function makeRoutingPollGateway(deps: {
     listIssueComments: (repo, ref) => pollFor(repo).listIssueComments(repo, ref),
     findPrForEpic: (repo, epicRef) => pollFor(repo).findPrForEpic(repo, epicRef),
     findEpicPrLifecycle: (repo, epicRef) => pollFor(repo).findEpicPrLifecycle(repo, epicRef),
+    prSnapshot: (repo, prNumber) => pollFor(repo).prSnapshot(repo, prNumber),
+    prLifecycle: (repo, prNumber) => pollFor(repo).prLifecycle(repo, prNumber),
     getRateLimit: () => ghPoll.getRateLimit(),
   };
 }

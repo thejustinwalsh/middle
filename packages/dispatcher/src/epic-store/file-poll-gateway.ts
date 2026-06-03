@@ -6,11 +6,14 @@
  * author-login heuristic — that's what closes #178's class for file mode (the
  * poller's `classifyNewHumanReply` keys resume off `!authorIsBot`).
  *
- * The PR-poll methods are GitHub-native: `getRateLimit` delegates straight to gh.
- * `findPrForEpic`/`findEpicPrLifecycle` delegate for a numeric ref but return
- * `null` for a file-mode slug — GitHub's PR-finders resolve by `Closes #<number>`,
- * which a file Epic (slug, no GitHub issue) can't carry. File-mode review-resume
- * rides Phase 2's watcher work (see `planning/issues/190/decisions.md`).
+ * The PR-poll methods are GitHub-native: `getRateLimit`, `prSnapshot`, and
+ * `prLifecycle` delegate straight to gh (the PR exists on GitHub in both modes).
+ * For a **numeric** ref `findPrForEpic`/`findEpicPrLifecycle` delegate to gh's
+ * `Closes #<number>` finders; for a **file-mode slug** (no `Closes #` linkage)
+ * they resolve the Epic's PR from the Epic file's durable `meta.pr` stamp and
+ * fetch by number — that's what makes `review-changes`/`CHANGES_REQUESTED` (and
+ * the merged/closed reconcile) resume work in file mode, alongside the
+ * file-watcher's question-resume (#200; see `planning/issues/200/decisions.md`).
  */
 
 import type { EpicPrLifecycle, IssueComment, PollGateway, PrSnapshot } from "../poller.ts";
@@ -80,12 +83,19 @@ function conversationToPollComments(conversation: ConversationEntry[]): IssueCom
  * Build the file-backed `PollGateway` (plus the Phase-2 `pollFileSignals`) for one
  * repo's Epic directory. `listIssueComments` reads the Epic file's conversation when
  * a file exists for the ref (deriving `authorIsBot` structurally from marker kind),
- * else delegates to the injected `gh` backend. The PR-poll methods (`findPrForEpic`,
- * `findEpicPrLifecycle`) delegate only for a numeric ref and return `null` for a
- * file-mode slug (no `Closes #N` linkage); `getRateLimit` always delegates to `gh`.
+ * else delegates to the injected `gh` backend. The PR finders (`findPrForEpic`,
+ * `findEpicPrLifecycle`) delegate to gh for a numeric ref; for a file-mode slug they
+ * resolve the PR from the Epic file's `meta.pr` and fetch by number via gh's
+ * `prSnapshot`/`prLifecycle` (no stamped PR yet → `null`). `prSnapshot`/`prLifecycle`/
+ * `getRateLimit` always delegate to `gh` (PRs are GitHub-native in both modes).
  */
 export function makeFilePollGateway(deps: FilePollGatewayDeps): FilePollGateway {
   const { epicsDir, gh } = deps;
+  /** The PR number stamped on the Epic file's `meta.pr`, or null (no file / no stamp). */
+  function stampedPr(epicRef: string): number | null {
+    const epic = readEpicFile(epicsDir, epicRef);
+    return epic?.meta.pr ?? null;
+  }
   return {
     pollFileSignals: (sinceMs) => pollFileSignals(epicsDir, sinceMs),
     async listIssueComments(repo, ref): Promise<IssueComment[]> {
@@ -96,14 +106,21 @@ export function makeFilePollGateway(deps: FilePollGatewayDeps): FilePollGateway 
     },
 
     async findPrForEpic(repo, epicRef): Promise<PrSnapshot | null> {
-      // A file-mode slug has no `Closes #<number>` linkage gh can search.
-      return isNumericRef(epicRef) ? gh.findPrForEpic(repo, epicRef) : null;
+      // Numeric ref → gh's `Closes #<n>` finder. File-mode slug → resolve the PR
+      // from the Epic file's `meta.pr` stamp and fetch it by number.
+      if (isNumericRef(epicRef)) return gh.findPrForEpic(repo, epicRef);
+      const prNumber = stampedPr(epicRef);
+      return prNumber === null ? null : gh.prSnapshot(repo, prNumber);
     },
 
     async findEpicPrLifecycle(repo, epicRef): Promise<EpicPrLifecycle | null> {
-      return isNumericRef(epicRef) ? gh.findEpicPrLifecycle(repo, epicRef) : null;
+      if (isNumericRef(epicRef)) return gh.findEpicPrLifecycle(repo, epicRef);
+      const prNumber = stampedPr(epicRef);
+      return prNumber === null ? null : gh.prLifecycle(repo, prNumber);
     },
 
+    prSnapshot: (repo, prNumber) => gh.prSnapshot(repo, prNumber),
+    prLifecycle: (repo, prNumber) => gh.prLifecycle(repo, prNumber),
     getRateLimit: () => gh.getRateLimit(),
   };
 }
