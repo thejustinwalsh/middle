@@ -34,11 +34,19 @@ function baseEpic(conversation: EpicFile["conversation"]): EpicFile {
 /** A poll gh backend stub recording delegated calls. */
 function ghStub(): {
   gh: PollGateway;
-  calls: { findPrForEpic: string[]; findEpicPrLifecycle: string[]; rateLimit: number };
+  calls: {
+    findPrForEpic: string[];
+    findEpicPrLifecycle: string[];
+    prSnapshot: number[];
+    prLifecycle: number[];
+    rateLimit: number;
+  };
 } {
   const calls = {
     findPrForEpic: [] as string[],
     findEpicPrLifecycle: [] as string[],
+    prSnapshot: [] as number[],
+    prLifecycle: [] as number[],
     rateLimit: 0,
   };
   const gh: PollGateway = {
@@ -52,6 +60,14 @@ function ghStub(): {
     async findEpicPrLifecycle(_repo, epicRef): Promise<EpicPrLifecycle | null> {
       calls.findEpicPrLifecycle.push(epicRef);
       return { number: 5, state: "OPEN" };
+    },
+    async prSnapshot(_repo, prNumber): Promise<PrSnapshot | null> {
+      calls.prSnapshot.push(prNumber);
+      return { number: prNumber, reviewDecision: "CHANGES_REQUESTED", reviews: [], labels: [] };
+    },
+    async prLifecycle(_repo, prNumber): Promise<EpicPrLifecycle | null> {
+      calls.prLifecycle.push(prNumber);
+      return { number: prNumber, state: "MERGED" };
     },
     async getRateLimit(): Promise<RateLimitStatus> {
       calls.rateLimit += 1;
@@ -98,21 +114,63 @@ describe("filePollGateway", () => {
     expect(comments[0]!.body).toBe("gh");
   });
 
-  test("findPrForEpic delegates a numeric ref but returns null for a file-mode slug", async () => {
+  test("findPrForEpic resolves a slug via meta.pr; delegates a numeric ref to gh's finder", async () => {
     const { gh, calls } = ghStub();
-    const gw = makeFilePollGateway({ epicsDir: tmpEpicsDir(), gh });
-    expect(await gw.findPrForEpic("o/r", "rollout-epic-store")).toBeNull();
-    expect(calls.findPrForEpic).toEqual([]); // slug never reaches gh's `Closes #N` search
+    const dir = tmpEpicsDir();
+    seedEpic(dir, { ...baseEpic([]), meta: { slug: "rollout-epic-store", pr: 77 } });
+    const gw = makeFilePollGateway({ epicsDir: dir, gh });
+    // Slug → resolve `meta.pr` (77) → gh.prSnapshot by number (never the `Closes #N` finder).
+    expect(await gw.findPrForEpic("o/r", "rollout-epic-store")).toMatchObject({
+      number: 77,
+      reviewDecision: "CHANGES_REQUESTED",
+    });
+    expect(calls.prSnapshot).toEqual([77]);
+    expect(calls.findPrForEpic).toEqual([]);
+    // Numeric ref → gh's `Closes #N` finder.
     expect(await gw.findPrForEpic("o/r", "42")).toMatchObject({ number: 5 });
     expect(calls.findPrForEpic).toEqual(["42"]);
   });
 
-  test("findEpicPrLifecycle delegates a numeric ref but returns null for a slug", async () => {
+  test("findPrForEpic returns null for a slug whose Epic file has no stamped meta.pr", async () => {
     const { gh, calls } = ghStub();
-    const gw = makeFilePollGateway({ epicsDir: tmpEpicsDir(), gh });
-    expect(await gw.findEpicPrLifecycle("o/r", "rollout-epic-store")).toBeNull();
+    const dir = tmpEpicsDir();
+    seedEpic(dir, baseEpic([])); // no meta.pr
+    const gw = makeFilePollGateway({ epicsDir: dir, gh });
+    expect(await gw.findPrForEpic("o/r", "rollout-epic-store")).toBeNull();
+    expect(calls.prSnapshot).toEqual([]); // no PR to fetch
+    expect(calls.findPrForEpic).toEqual([]); // and never the slug-rejecting finder
+  });
+
+  test("findEpicPrLifecycle resolves a slug via meta.pr; delegates a numeric ref to gh", async () => {
+    const { gh, calls } = ghStub();
+    const dir = tmpEpicsDir();
+    seedEpic(dir, { ...baseEpic([]), meta: { slug: "rollout-epic-store", pr: 77 } });
+    const gw = makeFilePollGateway({ epicsDir: dir, gh });
+    expect(await gw.findEpicPrLifecycle("o/r", "rollout-epic-store")).toMatchObject({
+      number: 77,
+      state: "MERGED",
+    });
+    expect(calls.prLifecycle).toEqual([77]);
     expect(await gw.findEpicPrLifecycle("o/r", "42")).toMatchObject({ number: 5, state: "OPEN" });
     expect(calls.findEpicPrLifecycle).toEqual(["42"]);
+  });
+
+  test("findEpicPrLifecycle returns null for a slug with no stamped meta.pr", async () => {
+    const { gh, calls } = ghStub();
+    const dir = tmpEpicsDir();
+    seedEpic(dir, baseEpic([]));
+    const gw = makeFilePollGateway({ epicsDir: dir, gh });
+    expect(await gw.findEpicPrLifecycle("o/r", "rollout-epic-store")).toBeNull();
+    expect(calls.prLifecycle).toEqual([]);
+  });
+
+  test("prSnapshot / prLifecycle delegate straight to gh by PR number", async () => {
+    const { gh, calls } = ghStub();
+    const gw = makeFilePollGateway({ epicsDir: tmpEpicsDir(), gh });
+    expect(await gw.prSnapshot("o/r", 9)).toMatchObject({ number: 9 });
+    expect(await gw.prLifecycle("o/r", 9)).toMatchObject({ number: 9, state: "MERGED" });
+    expect(calls.prSnapshot).toEqual([9]);
+    expect(calls.prLifecycle).toEqual([9]);
   });
 
   test("getRateLimit delegates straight to gh", async () => {

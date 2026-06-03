@@ -76,6 +76,83 @@ function isBotLogin(login: string, type: string | undefined): boolean {
   return type === "Bot" || login.endsWith("[bot]");
 }
 
+/**
+ * Build a {@link PrSnapshot} for a known PR number (review decision, individual
+ * reviews, labels, CI). Shared by the Epic finder (which resolves the number via
+ * `Closes #<n>`) and the by-number gateway method (file mode, which resolves it
+ * from `meta.pr`). Returns `null` if the PR can't be viewed (e.g. it doesn't
+ * exist), so a stale `meta.pr` degrades to "no PR" rather than throwing the pass.
+ */
+async function fetchPrSnapshot(repo: string, prNumber: number): Promise<PrSnapshot | null> {
+  let viewOut: string;
+  try {
+    viewOut = await gh([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "reviewDecision,labels,statusCheckRollup",
+    ]);
+  } catch {
+    return null;
+  }
+  const view = JSON.parse(viewOut) as {
+    reviewDecision: string | null;
+    labels: Array<{ name: string }>;
+    statusCheckRollup: CheckRollupEntry[] | null;
+  };
+
+  const reviewsOut = await gh([
+    "api",
+    "--paginate",
+    "--slurp",
+    `repos/${repo}/pulls/${prNumber}/reviews`,
+  ]);
+  const reviewRows = (
+    JSON.parse(reviewsOut) as Array<
+      Array<{
+        id: number;
+        state: string;
+        body: string;
+        submitted_at: string | null;
+        user: { login: string } | null;
+      }>
+    >
+  ).flat();
+  const reviews: PrReview[] = reviewRows.map((r) => ({
+    id: r.id,
+    state: r.state,
+    body: r.body ?? "",
+    submittedAt: r.submitted_at ? Date.parse(r.submitted_at) : 0,
+    authorLogin: r.user?.login ?? "",
+  }));
+
+  return {
+    number: prNumber,
+    reviewDecision: view.reviewDecision ?? null,
+    reviews,
+    labels: view.labels.map((l) => l.name),
+    ci: deriveCiStatus(view.statusCheckRollup),
+  };
+}
+
+/** Lifecycle (state) for a known PR number. Returns `null` if the PR can't be
+ *  viewed (stale `meta.pr` → "no PR" rather than a thrown pass). */
+async function fetchPrLifecycle(repo: string, prNumber: number): Promise<EpicPrLifecycle | null> {
+  let out: string;
+  try {
+    out = await gh(["pr", "view", String(prNumber), "--repo", repo, "--json", "state"]);
+  } catch {
+    return null;
+  }
+  const { state } = JSON.parse(out) as { state: string };
+  const norm: "OPEN" | "MERGED" | "CLOSED" =
+    state === "OPEN" ? "OPEN" : state === "MERGED" ? "MERGED" : "CLOSED";
+  return { number: prNumber, state: norm };
+}
+
 export const ghPollGateway: PollGateway = {
   async listIssueComments(repo: string, ref: string): Promise<IssueComment[]> {
     const issueNumber = refToIssueNumber(ref);
@@ -128,54 +205,15 @@ export const ghPollGateway: PollGateway = {
     const prs = JSON.parse(listOut) as Array<{ number: number; body: string | null }>;
     const prNumber = prs.find((pr) => closesRe.test(pr.body ?? ""))?.number;
     if (prNumber === undefined) return null;
+    return fetchPrSnapshot(repo, prNumber);
+  },
 
-    const viewOut = await gh([
-      "pr",
-      "view",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--json",
-      "reviewDecision,labels,statusCheckRollup",
-    ]);
-    const view = JSON.parse(viewOut) as {
-      reviewDecision: string | null;
-      labels: Array<{ name: string }>;
-      statusCheckRollup: CheckRollupEntry[] | null;
-    };
+  prSnapshot(repo: string, prNumber: number): Promise<PrSnapshot | null> {
+    return fetchPrSnapshot(repo, prNumber);
+  },
 
-    const reviewsOut = await gh([
-      "api",
-      "--paginate",
-      "--slurp",
-      `repos/${repo}/pulls/${prNumber}/reviews`,
-    ]);
-    const reviewRows = (
-      JSON.parse(reviewsOut) as Array<
-        Array<{
-          id: number;
-          state: string;
-          body: string;
-          submitted_at: string | null;
-          user: { login: string } | null;
-        }>
-      >
-    ).flat();
-    const reviews: PrReview[] = reviewRows.map((r) => ({
-      id: r.id,
-      state: r.state,
-      body: r.body ?? "",
-      submittedAt: r.submitted_at ? Date.parse(r.submitted_at) : 0,
-      authorLogin: r.user?.login ?? "",
-    }));
-
-    return {
-      number: prNumber,
-      reviewDecision: view.reviewDecision ?? null,
-      reviews,
-      labels: view.labels.map((l) => l.name),
-      ci: deriveCiStatus(view.statusCheckRollup),
-    };
+  prLifecycle(repo: string, prNumber: number): Promise<EpicPrLifecycle | null> {
+    return fetchPrLifecycle(repo, prNumber);
   },
 
   async findEpicPrLifecycle(repo: string, epicRef: string): Promise<EpicPrLifecycle | null> {
