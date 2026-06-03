@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Database } from "bun:sqlite";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
 import { Workflow } from "bunqueue/workflow";
@@ -219,6 +219,13 @@ export type ImplementationDeps = {
    */
   enqueueContinuation: (input: ImplementationInput) => Promise<void>;
   /**
+   * The repo's Epic-store mode — selects which `references/<mode>-mode-commands.md`
+   * the dispatch brief mirrors into the worktree (the agent reads only the
+   * incantations that apply to its run). Injected so the workflow stays db-free;
+   * the dispatcher wires it to `readEpicStoreConfig`. Defaults to `"github"`.
+   */
+  resolveEpicStoreMode?: (repo: string) => "github" | "file" | Promise<"github" | "file">;
+  /**
    * The review-round ceiling: after this many `CHANGES_REQUESTED` passes without
    * an `APPROVED`, the workflow parks in `waiting-human` and stops auto-resuming
    * (a never-satisfied loop must not run forever). Defaults to 5.
@@ -298,6 +305,27 @@ function ensurePromptFile(
   if (existsSync(promptPath)) return;
   mkdirSync(middleDir, { recursive: true });
   writeFileSync(promptPath, defaultDispatchBrief(epicRef, complexityCeiling, approved));
+}
+
+/** The skill whose mode-specific command reference the dispatch brief mirrors. */
+const MODE_COMMANDS_SKILL = "implementing-github-issues";
+
+/**
+ * Mirror the run's mode-specific commands reference into the worktree so the
+ * agent's implementer skill reads only the incantations that apply to its Epic
+ * store. Copies `<worktree>/.claude/skills/<skill>/references/<mode>-mode-commands.md`
+ * (installed by `mm init`) to `<worktree>/.middle/skills/<skill>/references/` — the
+ * mode-resolved single file the dispatch brief points the agent at. Best-effort: a
+ * worktree whose installed skill predates the per-mode references (no source file)
+ * is a no-op, never a dispatch failure.
+ */
+function mirrorModeCommands(worktreePath: string, mode: "github" | "file"): void {
+  const rel = join("skills", MODE_COMMANDS_SKILL, "references", `${mode}-mode-commands.md`);
+  const src = join(worktreePath, ".claude", rel);
+  if (!existsSync(src)) return;
+  const dest = join(worktreePath, ".middle", rel);
+  mkdirSync(dirname(dest), { recursive: true });
+  copyFileSync(src, dest);
 }
 
 /**
@@ -793,6 +821,18 @@ export function createImplementationWorkflow(
           );
         }
         ensurePromptFile(handle.path, ctx.input.epicRef, complexityCeiling, approved);
+      }
+
+      // Mirror the run's mode-specific commands reference into the worktree so the
+      // implementer skill reads only the incantations for this Epic's store. Always
+      // run (not gated on the prompt.md write above) and failure-safe.
+      try {
+        const mode = deps.resolveEpicStoreMode
+          ? await deps.resolveEpicStoreMode(ctx.input.repo)
+          : "github";
+        mirrorModeCommands(handle.path, mode);
+      } catch (error) {
+        console.error(`${tag} mode-commands mirror skipped: ${(error as Error).message}`);
       }
 
       console.error(`${tag} installing hooks in ${handle.path}`);
