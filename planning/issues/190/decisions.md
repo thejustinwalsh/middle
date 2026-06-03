@@ -191,3 +191,19 @@ both. The mode is injected (DI) so the workflow stays db-free, matching
 `resolveComplexityCeiling`/`isEpicApproved`.
 **Evidence:** sub-issue #195 integration criterion; `bootstrap/skills-sync.ts`
 (canonical↔mirror byte-identity).
+
+## #196 live-repo smoke (criterion 5) needs an operator; the parity test is the integration evidence
+**File(s):** `packages/dispatcher/test/epic-store/parity.test.ts`
+**Date:** 2026-06-03
+
+**Decision:** The automated `parity.test.ts` (`describe.each(["github","file"])`,
+happy-path + park→resume, real workflow end-to-end through both gateway backends) is
+the load-bearing integration evidence for the Epic's "no workflow code changes"
+promise. Sub-issue #196's criterion 5 — `mm init --epic-store=file` a throwaway
+GitHub repo, dispatch a real agent, observe a real draft PR — is a **manual operator
+smoke** that a headless dispatch cannot perform (no authority to create throwaway
+repos, no real agent spawn, no interactive `gh`). It's left for the human reviewer to
+run; the automated parity test covers the same code paths deterministically.
+**Why:** honest integration accounting — claim the automated evidence delivered,
+flag the live-repo smoke as operator-only rather than silently checking it off.
+**Evidence:** parity.test.ts (4 cases green); the dispatch is headless (no live agent).
