@@ -35,15 +35,16 @@ export type AutoDispatchDeps = {
   /**
    * Enqueue one implementation workflow. Returns the workflow id, or `null` if
    * the enqueue was refused (e.g. the Epic already has an active workflow — the
-   * collision guard). A refused enqueue must NOT consume a local slot.
+   * collision guard). A refused enqueue must NOT consume a local slot. `epicRef`
+   * is the dispatch unit: a numeric Epic number (github mode) or a file-mode slug.
    */
-  enqueue: (input: { repo: string; epicNumber: number; adapter: string }) => Promise<string | null>;
+  enqueue: (input: { repo: string; epicRef: string; adapter: string }) => Promise<string | null>;
 };
 
 /** What an auto-dispatch pass enqueued, and why it stopped. */
 export type AutoDispatchResult = {
-  /** The Epics enqueued this pass, in dispatch order. */
-  enqueued: { epicNumber: number; adapter: string }[];
+  /** The Epics enqueued this pass, in dispatch order (`epicRef`: number or slug). */
+  enqueued: { epicRef: string; adapter: string }[];
   /**
    * - `disabled` — the repo's auto-dispatch is off (or paused); nothing was read.
    * - `slots-exhausted` — the loop stopped because the repo or global total filled.
@@ -65,10 +66,15 @@ export function didReadState(result: AutoDispatchResult): boolean {
   return result.reason !== "disabled";
 }
 
-/** Extract the leading `#<n>` Epic number from a Ready row's `epic` cell, or null. */
-function parseEpicNumber(epic: string): number | null {
-  const match = /^#(\d+)\b/.exec(epic.trim());
-  return match ? Number(match[1]) : null;
+/**
+ * Extract the leading `#<ref>` Epic reference from a Ready row's `epic` cell, or
+ * null. `<ref>` is `[\w-]+`: a numeric Epic number in github mode (`#42`) or a
+ * file-mode Epic slug (`#rollout-epic-store`). The dispatch path is ref-agnostic
+ * — `startDispatchImpl` already takes an `epicRef` string (#200).
+ */
+function parseEpicRef(epic: string): string | null {
+  const match = /^#([\w-]+)\b/.exec(epic.trim());
+  return match ? match[1]! : null;
 }
 
 /**
@@ -127,8 +133,8 @@ export async function autoDispatch(deps: AutoDispatchDeps): Promise<AutoDispatch
   const enqueued: AutoDispatchResult["enqueued"] = [];
 
   for (const row of state.readyToDispatch) {
-    const epicNumber = parseEpicNumber(row.epic);
-    if (epicNumber === null) continue; // a malformed / empty-state cell — never dispatch it
+    const epicRef = parseEpicRef(row.epic);
+    if (epicRef === null) continue; // a malformed / empty-state cell — never dispatch it
     // Repo or global full → no further row (for any adapter) can dispatch; stop.
     if (slots.global.available <= 0 || slots.repo.available <= 0) {
       return { enqueued, reason: "slots-exhausted" };
@@ -137,9 +143,9 @@ export async function autoDispatch(deps: AutoDispatchDeps): Promise<AutoDispatch
     if (rateLimited.has(row.adapter)) continue;
     if (!hasFreeSlot(slots, row.adapter)) continue; // adapter cap exhausted (repo/global checked)
 
-    const workflowId = await deps.enqueue({ repo: deps.repo, epicNumber, adapter: row.adapter });
+    const workflowId = await deps.enqueue({ repo: deps.repo, epicRef, adapter: row.adapter });
     if (workflowId === null) continue; // refused (collision) → don't charge a local slot
-    enqueued.push({ epicNumber, adapter: row.adapter });
+    enqueued.push({ epicRef, adapter: row.adapter });
     slots = reserveSlot(slots, row.adapter); // local decrement so the next row sees fresh headroom
   }
 

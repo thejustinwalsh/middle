@@ -615,6 +615,12 @@ export function countActiveImplementationSlots(db: Database, repo?: string): Slo
 /** A live implementation workflow, as the recommender's `in_flight` reports it. */
 export type ActiveImplementationWorkflow = {
   epicNumber: number | null;
+  /**
+   * The canonical Epic reference (migration 009): `String(epicNumber)` in github
+   * mode, or a file-mode Epic slug. Sourced for the recommender's in-flight ref so
+   * a file-mode row carries its slug (#200); null only for a pre-009 / non-issue row.
+   */
+  epicRef: string | null;
   adapter: string;
   sessionName: string | null;
   state: WorkflowState;
@@ -641,12 +647,13 @@ export function listActiveImplementationWorkflows(
   const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
   const rows = db
     .query(
-      `SELECT epic_number, adapter, session_name, state, last_heartbeat FROM workflows
+      `SELECT epic_number, epic_ref, adapter, session_name, state, last_heartbeat FROM workflows
         WHERE kind = 'implementation' AND state NOT IN (${placeholders})${repoClause}
         ORDER BY created_at ASC, rowid ASC`,
     )
     .all(...params) as {
     epic_number: number | null;
+    epic_ref: string | null;
     adapter: string;
     session_name: string | null;
     state: string;
@@ -654,6 +661,7 @@ export function listActiveImplementationWorkflows(
   }[];
   return rows.map((r) => ({
     epicNumber: r.epic_number,
+    epicRef: r.epic_ref,
     adapter: r.adapter,
     sessionName: r.session_name,
     state: r.state as WorkflowState,

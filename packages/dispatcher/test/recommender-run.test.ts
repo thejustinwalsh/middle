@@ -248,6 +248,48 @@ describe("resolveRecommenderOptions — adapter enabled-gate", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("adapter codex is disabled in config");
   });
+
+  test("file mode resolves without a state issue — sentinel 0 + epicStore carried (#200)", async () => {
+    // A file-mode repo has no `[state_issue] number`; the ranked plan lives in
+    // `state_file`. resolveRecommenderOptions must NOT reject it (github mode does
+    // require a number), and must carry the epicStore through so the prompt frames
+    // the run for the file store.
+    const config = configWithAdapters();
+    delete config.stateIssue; // file mode: no state issue configured
+    config.epicStore = { mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" };
+    config.recommender = {
+      enabled: true,
+      adapter: "claude",
+      intervalMinutes: 15,
+      autoDispatch: false,
+    };
+
+    const result = await resolveRecommenderOptions(repoPath, config, () => stubAdapter());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.options.stateIssue).toBe(0);
+      expect(result.options.epicStore).toEqual({
+        mode: "file",
+        epicsDir: "planning/epics",
+        stateFile: ".middle/state.md",
+      });
+    }
+  });
+
+  test("github mode still requires a configured state issue number", async () => {
+    const config = configWithAdapters();
+    delete config.stateIssue; // no number, and NOT file mode
+    config.recommender = {
+      enabled: true,
+      adapter: "claude",
+      intervalMinutes: 15,
+      autoDispatch: false,
+    };
+
+    const result = await resolveRecommenderOptions(repoPath, config, () => stubAdapter());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("no state issue configured");
+  });
 });
 
 describe("resolveRecommenderOptions — schema resolution (issue #107)", () => {

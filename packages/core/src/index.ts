@@ -39,6 +39,7 @@ export type {
   LimitsSettings,
   RecommenderSettings,
   StateIssueSettings,
+  EpicStoreSettings,
   BootstrapSettings,
   DocsSettings,
   StalenessSettings,

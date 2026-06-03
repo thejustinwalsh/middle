@@ -59,7 +59,7 @@ export const fullState: ParsedState = {
   ],
   inFlight: [
     {
-      issue: 54,
+      issue: "54",
       adapter: "claude",
       progress: "sub-issue 2/5",
       lastHeartbeat: "30s ago",

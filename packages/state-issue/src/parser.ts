@@ -189,7 +189,11 @@ function parseBlocked(content: string[]): BlockedItem[] {
   });
 }
 
-const IN_FLIGHT_RE = /^- \*\*#(\d+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
+// The `#` ref is `[\w-]+` (not `\d+`): a numeric Epic number in github mode OR a
+// file-mode Epic slug (kebab-case file stem). Captured as a string and kept raw
+// so the dispatcher-owned section round-trips a slug unchanged (#200).
+const IN_FLIGHT_RE =
+  /^- \*\*#([\w-]+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
 
 function parseInFlight(content: string[]): InFlightItem[] {
   // Accepts the canonical "- _no agents in flight_", a generic placeholder, or an
@@ -199,7 +203,7 @@ function parseInFlight(content: string[]): InFlightItem[] {
     const m = IN_FLIGHT_RE.exec(line);
     if (!m) fail(`malformed "In-flight" item: "${line}"`);
     return {
-      issue: Number(m[1]),
+      issue: m[1]!,
       adapter: m[2]!,
       progress: m[3]!,
       lastHeartbeat: m[4]!,

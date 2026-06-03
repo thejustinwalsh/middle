@@ -41,7 +41,11 @@ import {
   readEpicStoreConfig,
   registerManagedRepo,
 } from "./repo-config.ts";
-import { makeRoutingEpicGateway, makeRoutingPollGateway } from "./epic-store/index.ts";
+import {
+  makeRoutingEpicGateway,
+  makeRoutingPollGateway,
+  makeRoutingStateGateway,
+} from "./epic-store/index.ts";
 import { runFileWatcherTick } from "./epic-store/watcher.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateGateway } from "./state-issue.ts";
@@ -251,6 +255,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     ghEpic: ghGitHub,
     ghPoll: ghPollGateway,
   });
+  // The state gateway is routed too: a file-mode repo's ranked plan lives in its
+  // `state_file`, not a GitHub state issue — so auto-dispatch's `readState` and the
+  // recommender's read/write must hit the file backend for those repos (#200).
+  const routingStateGateway = makeRoutingStateGateway({ db, resolveRepoPath, ghEpic: ghGitHub });
 
   // ── Auto-dispatch (build spec → "Auto-dispatch loop") ──────────────────────
   // The collision-guarded enqueue: the single source of truth for the 409 guard
@@ -349,8 +357,13 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (repoPath === undefined) return; // unknown checkout — can't locate the repo
     const repoConfig = loadRepoConfig(repo);
     if (!repoConfig) return;
-    const stateIssueNumber = repoConfig.stateIssue?.number;
-    if (stateIssueNumber === undefined || stateIssueNumber === 0) return;
+    // github mode dispatches from a state **issue** (a configured number is
+    // required); file mode reads the repo's `state_file` via the routing state
+    // gateway, which ignores the issue number — so a file-mode repo runs without
+    // a `stateIssue.number` (#200). The sentinel `0` is the file-mode "no issue".
+    const epicStore = readEpicStoreConfig(db, repo);
+    const stateIssueNumber = repoConfig.stateIssue?.number ?? 0;
+    if (epicStore.mode !== "file" && stateIssueNumber === 0) return;
     const limits = resolveSlotLimits(repoConfig);
     const adapters = Object.keys(repoConfig.adapters);
     let result;
@@ -360,21 +373,24 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         // Enabled = the per-repo toggle is on AND the repo isn't paused (#51).
         isAutoDispatchEnabled: () =>
           (repoConfig.recommender?.autoDispatch ?? false) && !isPaused(db, repo),
-        readState: () => readState(ghStateIssueGateway, repo, stateIssueNumber),
+        readState: () => readState(routingStateGateway, repo, stateIssueNumber),
         rateLimitedAdapters: () => rateLimitedAdapters(adapters),
         getSlotState: () => getSlotState(db, repo, limits),
-        enqueue: ({ repo: r, epicNumber, adapter }) =>
-          startDispatchImpl({ repo: r, repoPath, epicRef: String(epicNumber), adapter }, "auto"),
+        enqueue: ({ repo: r, epicRef, adapter }) =>
+          startDispatchImpl({ repo: r, repoPath, epicRef, adapter }, "auto"),
       });
     } catch (error) {
       // Announce a parse failure on the state issue (deduped); other errors fall
       // through to the scheduler's stderr log. Best-effort: a failed comment must
-      // not mask the original error.
-      await parseFailureSurfacer
-        .surface(repo, stateIssueNumber, error as Error)
-        .catch((e: unknown) =>
-          console.error(`[auto-dispatch] ${repo} surfaceProblem failed: ${(e as Error).message}`),
-        );
+      // not mask the original error. File mode has no state issue to comment on
+      // (sentinel 0), so the surfacer is github-only — it falls through to stderr.
+      if (stateIssueNumber > 0) {
+        await parseFailureSurfacer
+          .surface(repo, stateIssueNumber, error as Error)
+          .catch((e: unknown) =>
+            console.error(`[auto-dispatch] ${repo} surfaceProblem failed: ${(e as Error).message}`),
+          );
+      }
       throw error;
     }
     // Re-arm surfacing only after a pass that actually read the state — a
@@ -382,7 +398,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     // unfixed parse failure without an intervening healthy read (#180).
     if (didReadState(result)) parseFailureSurfacer.reset(repo);
     if (result.enqueued.length > 0) {
-      const list = result.enqueued.map((e) => `#${e.epicNumber}(${e.adapter})`).join(", ");
+      const list = result.enqueued.map((e) => `#${e.epicRef}(${e.adapter})`).join(", ");
       console.log(`[auto-dispatch] ${repo}: enqueued ${list} — ${result.reason}`);
     }
   }
@@ -510,6 +526,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         repo: resolved.options.repoSlug,
         stateIssue: resolved.options.stateIssue,
         adapter: resolved.options.adapterName,
+        epicStore: resolved.options.epicStore,
       });
     } catch (error) {
       return { status: 500, body: `recommender enqueue failed: ${(error as Error).message}` };
@@ -647,7 +664,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       },
       worktreeRoot: config.global.worktreeRoot,
       dispatcherUrl: deps.dispatcherUrl,
-      stateIssue: ghStateIssueGateway,
+      // Routed: a file-mode repo's recommender reads/writes its `state_file`, a
+      // github repo its state issue — keyed per repo on the call's `repo` arg (#200).
+      stateIssue: routingStateGateway,
       surfaceProblem: ghSurfaceProblem,
       triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
       gatherContext: (repo) => {

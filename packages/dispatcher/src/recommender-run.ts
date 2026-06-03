@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import type { AgentAdapter, MiddleConfig } from "@middle/core";
+import type { AgentAdapter, EpicStoreSettings, MiddleConfig } from "@middle/core";
 import { STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import { Engine } from "bunqueue/workflow";
 import { installBunqueueRaceSwallower } from "./bunqueue-race.ts";
@@ -45,8 +45,19 @@ export type DispatchRecommenderOptions = {
   repoPath: string;
   /** `owner/name` — recorded on the workflow row and used by the gateways. */
   repoSlug: string;
-  /** The state issue number to rewrite. */
+  /**
+   * The state issue number to rewrite, or `0` in file mode (the ranked state
+   * lives in `epicStore.stateFile`, not a GitHub issue — the routed state gateway
+   * ignores this number for a file-mode repo). See {@link epicStore}.
+   */
   stateIssue: number;
+  /**
+   * The repo's Epic-store mode, so the run + prompt can frame a file-mode repo
+   * correctly (rank Epic files under `epicsDir`, rewrite `stateFile`) instead of
+   * pointing the agent at a `#<n>` state issue that doesn't exist (#200). Absent
+   * → github mode.
+   */
+  epicStore?: EpicStoreSettings;
   /** Adapter to run the recommender with. */
   adapterName: string;
   getAdapter: (name: string) => AgentAdapter;
@@ -109,7 +120,11 @@ export async function resolveRecommenderOptions(
   config: MiddleConfig,
   getAdapter: (name: string) => AgentAdapter,
 ): Promise<ResolveRecommenderResult> {
-  const stateIssue = config.stateIssue?.number;
+  // File mode has no state issue — the ranked plan lives in `state_file`; the
+  // routed state gateway reads/writes it and ignores the sentinel `0`. Github mode
+  // still requires a configured issue number.
+  const fileMode = config.epicStore?.mode === "file";
+  const stateIssue = fileMode ? 0 : config.stateIssue?.number;
   if (stateIssue === undefined) {
     return { ok: false, error: `no state issue configured for this repo (run \`mm init\` first)` };
   }
@@ -142,6 +157,7 @@ export async function resolveRecommenderOptions(
       repoPath,
       repoSlug,
       stateIssue,
+      epicStore: config.epicStore,
       adapterName,
       getAdapter,
       dbPath: config.global.dbPath,

@@ -43,8 +43,12 @@ Bulleted list. `- **#<n>** waiting on #<blocker> · <context>`
 
 ### 4. ## In-flight  [DISPATCHER-OWNED]
 
-`- **#<n>** · <adapter> · <progress> · last heartbeat <rel> · [tmux: <session>]`
-Progress: `sub-issue <m>/<n>` (which phase of the Epic the agent is on) or `running`
+`- **#<ref>** · <adapter> · <progress> · last heartbeat <rel> · [tmux: <session>]`
+`<ref>` is the dispatched Epic: a numeric Epic/issue number in github mode, or a
+file-mode Epic **slug** (kebab-case, e.g. `rollout-epic-store`) for a repo whose
+Epic store is file-backed — a file Epic has no GitHub issue number, so its
+in-flight row carries the slug. Progress: `sub-issue <m>/<n>` (which phase of the
+Epic the agent is on) or `running`
 Empty: `- _no agents in flight_`
 
 ### 5. ## Excluded

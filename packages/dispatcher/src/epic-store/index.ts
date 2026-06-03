@@ -177,6 +177,39 @@ export function makeRoutingPollGateway(deps: {
 }
 
 /**
+ * A daemon-global `StateGateway` that routes each call to the right per-repo
+ * backend — the recommender/auto-dispatch counterpart to {@link makeRoutingEpicGateway}.
+ * In github mode the state lives in the repo's state **issue** (the `issueNumber`
+ * arg selects it); in file mode it lives in the repo's `state_file` and the file
+ * gateway ignores `issueNumber`. Without this router the recommender and the
+ * auto-dispatch `readState` always read the GitHub state issue, so a file-mode
+ * repo's ranked plan (in its `state_file`) is never read or rewritten (#200).
+ */
+export function makeRoutingStateGateway(deps: {
+  db: Database;
+  resolveRepoPath: (repo: string) => string;
+  ghState?: StateGateway;
+  ghEpic?: EpicGateway;
+  ghPoll?: PollGateway;
+}): StateGateway {
+  const ghEpic = deps.ghEpic ?? ghGitHub;
+  const ghPoll = deps.ghPoll ?? ghPollGateway;
+  // trioForRepo wires github's state gateway from `buildGitHubGateways`'s default;
+  // override it so callers can inject a stub gh state backend in tests.
+  const ghState = deps.ghState ?? ghStateIssueGateway;
+  const stateFor = (repo: string): StateGateway => {
+    const cfg = readEpicStoreConfig(deps.db, repo);
+    if (cfg.mode !== "file") return ghState;
+    return trioForRepo(deps.db, repo, deps.resolveRepoPath, { epic: ghEpic, poll: ghPoll })
+      .stateGateway;
+  };
+  return {
+    readBody: (repo, issueNumber) => stateFor(repo).readBody(repo, issueNumber),
+    writeBody: (repo, issueNumber, body) => stateFor(repo).writeBody(repo, issueNumber, body),
+  };
+}
+
+/**
  * Append a `<!-- middle:question -->` block to an Epic file's conversation — the
  * file-mode `postQuestion` endpoint (the agent-side of #178's class, structurally
  * distinct from any human-written `<!-- middle:answer -->`). The renderer is the
