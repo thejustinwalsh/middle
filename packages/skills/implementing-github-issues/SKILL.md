@@ -679,7 +679,7 @@ You cannot "comment on the Epic and wait" — headless, there is nothing to wait
 
 **Mandatory before raising a complexity pause: write the candidate list.** In `blocked.json`'s `context`, list every fork **by name** with a one-sentence concrete approach for each — file paths and verbs, not vibes:
 
-```
+```text
 Fork A: stringify the slug into the existing numeric `epicNumber` and parse-back at the `gh` boundary. Risk: synthesized number can collide with a real issue's number across repos.
 Fork B: introduce `epicRef: string` end-to-end (workflows, recommender, poller, ~30 callsites). Risk: large mechanical refactor.
 Fork C: keep `epicNumber: number` and gate file-mode behind a parallel `EpicRef`-typed seam that wraps the existing one. Risk: two long-lived parallel surfaces.
