@@ -40,7 +40,7 @@ const original: ParsedState = {
   blocked: [{ issue: 48, blocker: "#42", context: "needs the recommender first" }],
   inFlight: [
     {
-      issue: 64,
+      issue: "64",
       adapter: "claude",
       progress: "sub-issue 2/5",
       lastHeartbeat: "42s ago",

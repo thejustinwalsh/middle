@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import type { AgentAdapter, RepoConfig } from "@middle/core";
+import type { AgentAdapter, EpicStoreSettings, RepoConfig } from "@middle/core";
 import { isParseError, parseStateIssue, renderStateIssue, validate } from "@middle/state-issue";
 import type { InFlightItem, RateLimits, SlotUsage } from "@middle/state-issue";
 import { Workflow } from "bunqueue/workflow";
@@ -24,10 +24,17 @@ import type { TmuxOps, WorktreeOps } from "./implementation.ts";
 export type RecommenderInput = {
   /** `owner/name` — the repo whose state issue is rewritten. */
   repo: string;
-  /** The state issue number to rewrite. */
+  /** The state issue number to rewrite, or `0` in file mode (state lives in a file). */
   stateIssue: number;
   /** Adapter to run the recommender agent with. */
   adapter: string;
+  /**
+   * The repo's Epic-store mode. When `mode === "file"` the prompt frames the run
+   * for the file-backed store (rank Epic files under `epicsDir`, rewrite
+   * `stateFile`) instead of pointing the agent at the `#<n>` state issue (#200).
+   * Absent → github mode.
+   */
+  epicStore?: EpicStoreSettings;
 };
 
 /** The `config` block injected into the recommender prompt (skill "Phase 1"). */
@@ -40,8 +47,12 @@ export type RecommenderRunConfig = {
 
 /** One currently-running agent, as the recommender's `in_flight` array reports it. */
 export type InFlightSummary = {
-  /** The Epic/issue number, or null for a non-issue workflow. */
-  issue: number | null;
+  /**
+   * The Epic reference — a numeric Epic/issue number (github mode) or a file-mode
+   * Epic slug — or null for a non-issue workflow. Sourced from the workflow's
+   * canonical `epicRef` so a file-mode in-flight row carries its slug (#200).
+   */
+  issue: string | null;
   adapter: string;
   /** "sub-issue m/n" or "running". */
   progress: string;
@@ -179,9 +190,24 @@ export function assembleRecommenderPrompt(parts: {
   priorBody: string;
   context: RecommenderContext;
   config: RecommenderRunConfig;
+  /** File mode reframes the run for the file-backed store (#200); absent → github. */
+  epicStore?: EpicStoreSettings;
 }): string {
-  const { repo, stateIssue, schemaPath, priorBody, context, config } = parts;
+  const { repo, stateIssue, schemaPath, priorBody, context, config, epicStore } = parts;
   const json = (value: unknown): string => JSON.stringify(value, null, 2);
+  const fileMode = epicStore?.mode === "file";
+  // In file mode the ranked state lives in `state_file`, not a `#<n>` issue, and
+  // the dispatch units are Epic files under `epics_dir` — frame the run that way
+  // so the agent follows the skill's file-mode commands, not a phantom #0 issue.
+  const targetLine = fileMode
+    ? `- \`epic_store\`: file (epics_dir: \`${epicStore?.epicsDir ?? "planning/epics"}\`, state_file: \`${epicStore?.stateFile ?? ".middle/state.md"}\`)`
+    : `- \`state_issue\`: ${stateIssue}`;
+  const priorBodySource = fileMode
+    ? `The current contents of the \`state_file\` (\`${epicStore?.stateFile ?? ".middle/state.md"}\`), between the markers below.`
+    : `The current contents of state issue #${stateIssue}, between the markers below.`;
+  const storeNote = fileMode
+    ? "\nThis repo uses the **file-backed** Epic store. Follow the skill's file-mode\ncommands: rank the Epic files under `epics_dir` (not GitHub issues) and rewrite\nthe `state_file` (not a state issue). Epic references in the body are file\nslugs (e.g. `#rollout-epic-store`), not `#<number>`.\n"
+    : "";
   // Render slots in the skill's documented "Phase 1" shape: per-adapter entries
   // at the top level keyed by adapter, `total` a sibling with snake_case globals.
   const slotsForPrompt = {
@@ -195,12 +221,12 @@ export function assembleRecommenderPrompt(parts: {
   };
   return `# Recommender run — dispatcher context
 
-You are the dispatch recommender. Rewrite the state issue body following the
+You are the dispatch recommender. Rewrite the state body following the
 \`recommending-github-issues\` skill. The dispatcher provides everything below;
 read all of it before any \`gh\` calls.
-
+${storeNote}
 - \`repo\`: ${repo}
-- \`state_issue\`: ${stateIssue}
+${targetLine}
 - \`schema_path\`: ${schemaPath}
 
 ## config
@@ -228,7 +254,7 @@ ${json(slotsForPrompt)}
 \`\`\`
 
 ## prior_body
-The current contents of state issue #${stateIssue}, between the markers below.
+${priorBodySource}
 
 The In-flight, Rate limits, and Slot usage sections are DISPATCHER-OWNED — the
 dispatcher overwrites all three with authoritative values (heartbeats included)
@@ -298,7 +324,9 @@ export function buildRecommenderContext(opts: {
       github: opts.githubStatus ?? "UNKNOWN",
     },
     inFlight: listActiveImplementationWorkflows(opts.db, opts.repo).map((w) => ({
-      issue: w.epicNumber,
+      // The canonical Epic ref (string) — numeric in github mode, a slug in file
+      // mode — so a file-mode in-flight row renders its slug, not a dropped null.
+      issue: w.epicRef,
       adapter: w.adapter,
       progress: w.state === "running" ? "running" : w.state,
       session: w.sessionName,
@@ -334,8 +362,8 @@ export function heartbeatRel(ts: number | null, now: number): string {
  * dispatcher-owned sections after the agent runs (#180). The dispatcher, not the
  * recommender agent, is the single source of truth for these:
  * - In-flight: each summary becomes a 5-field {@link InFlightItem}, with the
- *   heartbeat the agent never had. Entries with no issue number are dropped — the
- *   section's `#<n>` shape can't represent a non-issue workflow.
+ *   heartbeat the agent never had. Entries with no Epic ref are dropped — the
+ *   section's `#<ref>` shape can't represent a non-issue workflow.
  * - Rate limits: passed through (already the dispatcher's shape).
  * - Slot usage: the per-adapter/total/global view flattened to {@link SlotUsage}.
  */
@@ -344,7 +372,7 @@ export function dispatcherSectionsFromContext(
   now: number,
 ): Required<DispatcherSections> {
   const inFlight: InFlightItem[] = ctx.inFlight
-    .filter((s): s is InFlightSummary & { issue: number } => s.issue !== null)
+    .filter((s): s is InFlightSummary & { issue: string } => s.issue !== null)
     .map((s) => ({
       issue: s.issue,
       adapter: s.adapter,
@@ -475,6 +503,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
       priorBody,
       context,
       config: settings.config,
+      epicStore: ctx.input.epicStore,
     });
     // The launch references `.middle/prompt.md`; write the assembled context there.
     const middleDir = join(handle.path, ".middle");
@@ -593,6 +622,9 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
   async function surface(ctx: StepContext<RecommenderInput>, problem: string): Promise<void> {
     console.error(`[recommender] ${problem}`);
     if (!deps.surfaceProblem) return;
+    // File mode (sentinel stateIssue 0) has no GitHub issue to comment on — the
+    // problem is already on stderr; a `gh` comment on #0 would only error (#200).
+    if (ctx.input.stateIssue === 0) return;
     try {
       await deps.surfaceProblem({
         repo: ctx.input.repo,

@@ -96,7 +96,7 @@ const SAMPLE_CONTEXT: RecommenderContext = {
   rateLimits: { claude: "AVAILABLE", codex: "RATE_LIMITED until 16:32Z", github: "4180/5000" },
   inFlight: [
     {
-      issue: 6,
+      issue: "6",
       adapter: "claude",
       progress: "sub-issue 2/5",
       session: "middle-x-6",
@@ -406,6 +406,30 @@ describe("recommender workflow — #44 build-prompt: every required input, verba
     expect(prompt).toContain("decision INPUT");
   });
 
+  test("file mode reframes the prompt for the file-backed store (#200)", () => {
+    const prompt = assembleRecommenderPrompt({
+      repo: REPO,
+      stateIssue: 0, // sentinel — no state issue in file mode
+      schemaPath: "/abs/schemas/state-issue.v1.md",
+      priorBody: PRIOR,
+      context: SAMPLE_CONTEXT,
+      config: { defaultAdapter: "claude", autoDispatch: false, prMode: "worktree" },
+      epicStore: { mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" },
+    });
+
+    // Points at the file store, not a phantom `#0` state issue.
+    expect(prompt).toContain("file-backed");
+    expect(prompt).toContain("epics_dir: `planning/epics`");
+    expect(prompt).toContain("state_file: `.middle/state.md`");
+    expect(prompt).toContain("`#rollout-epic-store`");
+    expect(prompt).not.toContain("state_issue`: 0");
+    expect(prompt).not.toContain("state issue #0");
+    // The state_file (not a state issue) is what the prior_body section describes.
+    expect(prompt).toContain("`state_file` (`.middle/state.md`)");
+    // Dispatcher-owned framing still applies in file mode.
+    expect(prompt).toContain("DISPATCHER-OWNED");
+  });
+
   test("writes the assembled prompt to .middle/prompt.md and launches it via the @-reference", async () => {
     const h = makeHarness({ bodies: [PRIOR, validBody()] });
     h.deps.schemaPath = "/somewhere/state-issue.v1.md";
@@ -537,16 +561,23 @@ describe("recommender workflow — #180 dispatcher is the sole In-flight writer"
       rateLimits: { claude: "AVAILABLE", codex: "UNKNOWN", github: "4180/5000" },
       inFlight: [
         {
-          issue: 6,
+          issue: "6",
           adapter: "claude",
           progress: "sub-issue 2/5",
           session: "middle-x-6",
           lastHeartbeat: now - 30_000,
         },
-        // A non-issue workflow — can't be rendered as #<n>, so it's dropped.
+        // A non-issue workflow — can't be rendered as #<ref>, so it's dropped.
         { issue: null, adapter: "claude", progress: "running", session: "x", lastHeartbeat: now },
-        // Not yet launched (null session) and no heartbeat → "pending"/"unknown".
-        { issue: 8, adapter: "codex", progress: "running", session: null, lastHeartbeat: null },
+        // A file-mode Epic in flight: the ref is a slug, not a number — it must
+        // render as #<slug>, proving file-mode in-flight rows survive (#200).
+        {
+          issue: "rollout-epic-store",
+          adapter: "codex",
+          progress: "running",
+          session: null,
+          lastHeartbeat: null,
+        },
       ],
       slots: {
         perAdapter: { claude: { used: 1, max: 2 }, codex: { used: 0, max: 1 } },
@@ -556,14 +587,14 @@ describe("recommender workflow — #180 dispatcher is the sole In-flight writer"
     const sections = dispatcherSectionsFromContext(ctx, now);
     expect(sections.inFlight).toEqual([
       {
-        issue: 6,
+        issue: "6",
         adapter: "claude",
         progress: "sub-issue 2/5",
         lastHeartbeat: "30s ago",
         tmuxSession: "middle-x-6",
       },
       {
-        issue: 8,
+        issue: "rollout-epic-store",
         adapter: "codex",
         progress: "running",
         lastHeartbeat: "unknown",
@@ -714,14 +745,14 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     expect(ctx.rateLimits.github).toBe("4180/5000");
     expect(ctx.inFlight).toEqual([
       {
-        issue: 6,
+        issue: "6",
         adapter: "claude",
         progress: "running",
         session: "middle-x-6",
         lastHeartbeat: 1_700_000_000_000,
       },
       {
-        issue: 7,
+        issue: "7",
         adapter: "claude",
         progress: "running",
         session: "middle-x-7",
@@ -778,7 +809,7 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     // Per-repo: only REPO's one agent counts toward used / in_flight.
     expect(ctx.slots.perAdapter.claude).toEqual({ used: 1, max: 2 });
     expect(ctx.slots.total.used).toBe(1);
-    expect(ctx.inFlight.map((w) => w.issue)).toEqual([6]);
+    expect(ctx.inFlight.map((w) => w.issue)).toEqual(["6"]);
     // Global: both repos' agents count toward global_used (shared db).
     expect(ctx.slots.total.globalUsed).toBe(2);
     expect(ctx.slots.total.globalMax).toBe(4);

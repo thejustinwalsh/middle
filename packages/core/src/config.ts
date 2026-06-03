@@ -100,6 +100,23 @@ export type BootstrapSettings = {
 };
 
 /**
+ * The `[epic_store]` section — selects where a repo's Epics + dispatch state live.
+ * Absent (or `mode = "github"`) means the default GitHub-backed store (Epics are
+ * issues, state is a state issue). `mode = "file"` is the file-backed store (#190):
+ * Epics are Markdown files under `epicsDir` and the ranked dispatch state is
+ * `stateFile`. Mirrors the DB `repo_config` columns (migration 008) — `mm init`
+ * writes both; the config-toml copy is what config-only callers (the recommender
+ * run resolution) read to learn a repo is file-mode without a DB handle (#200).
+ */
+export type EpicStoreSettings = {
+  mode: "github" | "file";
+  /** Repo-relative Epic directory (file mode). */
+  epicsDir?: string;
+  /** Repo-relative ranked-state file (file mode). */
+  stateFile?: string;
+};
+
+/**
  * The `[staleness]` section — per-repo overrides for the anti-staleness drift
  * check. `spec_path` is the repo-relative build-spec path the check reads; omit
  * it to keep the dispatcher's default convention. The whole section is optional,
@@ -125,6 +142,7 @@ export type MiddleConfig = {
   limits?: LimitsSettings;
   recommender?: RecommenderSettings;
   stateIssue?: StateIssueSettings;
+  epicStore?: EpicStoreSettings;
   bootstrap?: BootstrapSettings;
   docs?: DocsSettings;
   staleness?: StalenessSettings;
@@ -281,6 +299,19 @@ function mapBootstrap(raw: RawTable): BootstrapSettings | undefined {
   return { version: b.version as number, installedAt: b.installed_at as string };
 }
 
+function mapEpicStore(raw: RawTable): EpicStoreSettings | undefined {
+  if (!isPlainObject(raw.epic_store)) return undefined;
+  const e = raw.epic_store;
+  // Anything other than the explicit "file" string is the github default — a
+  // typo'd mode must never silently route a repo to the file store.
+  const mode = e.mode === "file" ? "file" : "github";
+  return {
+    mode,
+    epicsDir: e.epics_dir as string | undefined,
+    stateFile: e.state_file as string | undefined,
+  };
+}
+
 /**
  * Map the `[docs]` section. Unlike the strict per-repo mappers, the bot fields
  * default rather than trust presence — a tool/path-only override block (the
@@ -338,6 +369,7 @@ export function loadConfig(opts: LoadConfigOptions): MiddleConfig {
     limits: mapLimits(merged),
     recommender: mapRecommender(merged),
     stateIssue: mapStateIssue(merged),
+    epicStore: mapEpicStore(merged),
     bootstrap: mapBootstrap(merged),
     docs: mapDocs(merged),
     staleness: mapStaleness(merged),

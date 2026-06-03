@@ -36,7 +36,13 @@ export type BlockedItem = {
 
 /** An item under "In-flight" (dispatcher-owned section). */
 export type InFlightItem = {
-  issue: number;
+  /**
+   * The Epic reference rendered after `#` — a numeric Epic/issue number in
+   * github mode (`"200"`), or a file-mode Epic slug (`"rollout-epic-store"`).
+   * Kept as a string so a file-mode in-flight row, whose Epic has no GitHub
+   * issue number, round-trips through the dispatcher-owned section unchanged.
+   */
+  issue: string;
   adapter: string;
   /** "sub-issue <m>/<n>" or "running". */
   progress: string;

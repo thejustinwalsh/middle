@@ -26,7 +26,7 @@ describe("validate", () => {
       ...fullState,
       inFlight: [
         {
-          issue: 1,
+          issue: "1",
           adapter: "gemini",
           progress: "running",
           lastHeartbeat: "1m ago",

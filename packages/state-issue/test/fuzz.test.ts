@@ -107,7 +107,9 @@ function genBlocked(rng: Rng): BlockedItem {
 
 function genInFlight(rng: Rng): InFlightItem {
   return {
-    issue: rng.int(1, 9999),
+    // A numeric ref (github mode) or a kebab file-mode slug — both round-trip
+    // through the `#<ref>` shape (#200).
+    issue: rng.bool() ? String(rng.int(1, 9999)) : `epic-${rng.int(1, 9999)}-rollout`,
     adapter: rng.pick(ADAPTERS),
     progress: rng.bool() ? "running" : `sub-issue ${rng.int(1, 9)}/${rng.int(1, 12)}`,
     lastHeartbeat: `${rng.int(1, 59)}${rng.pick(["s", "m", "h"])} ago`,

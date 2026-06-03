@@ -14,10 +14,10 @@ import type { SlotState } from "../src/slots.ts";
 // decrement a local slot view as it enqueues. Disabled repos do nothing. The
 // deps are injected so the loop is exercised without the engine or `gh`.
 
-function readyRow(rank: number, epicNumber: number, adapter: string): ReadyRow {
+function readyRow(rank: number, epicRef: number | string, adapter: string): ReadyRow {
   return {
     rank,
-    epic: `#${epicNumber} some title`,
+    epic: `#${epicRef} some title`,
     adapter,
     subIssues: 2,
     reason: "criteria clear",
@@ -63,7 +63,7 @@ function slots(opts: {
   return { byAdapter, repo: dim(opts.repo), global: dim(opts.global) };
 }
 
-type EnqueueCall = { repo: string; epicNumber: number; adapter: string };
+type EnqueueCall = { repo: string; epicRef: string; adapter: string };
 
 function makeDeps(overrides: Partial<AutoDispatchDeps> & { _enqueued?: EnqueueCall[] } = {}): {
   deps: AutoDispatchDeps;
@@ -84,7 +84,7 @@ function makeDeps(overrides: Partial<AutoDispatchDeps> & { _enqueued?: EnqueueCa
       }),
     enqueue: async (input) => {
       enqueued.push(input);
-      return `wf-${input.epicNumber}`;
+      return `wf-${input.epicRef}`;
     },
     ...overrides,
   };
@@ -96,12 +96,12 @@ describe("autoDispatch", () => {
     const { deps, enqueued } = makeDeps();
     const result = await autoDispatch(deps);
     expect(enqueued).toEqual([
-      { repo: "o/r", epicNumber: 101, adapter: "claude" },
-      { repo: "o/r", epicNumber: 102, adapter: "codex" },
+      { repo: "o/r", epicRef: "101", adapter: "claude" },
+      { repo: "o/r", epicRef: "102", adapter: "codex" },
     ]);
     expect(result.enqueued).toEqual([
-      { epicNumber: 101, adapter: "claude" },
-      { epicNumber: 102, adapter: "codex" },
+      { epicRef: "101", adapter: "claude" },
+      { epicRef: "102", adapter: "codex" },
     ]);
     expect(result.reason).toBe("drained");
   });
@@ -119,7 +119,7 @@ describe("autoDispatch", () => {
     });
     const result = await autoDispatch(deps);
     // #101 (claude) skipped; #102 (codex) still dispatched.
-    expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 102, adapter: "codex" }]);
+    expect(enqueued).toEqual([{ repo: "o/r", epicRef: "102", adapter: "codex" }]);
     expect(result.reason).toBe("drained");
   });
 
@@ -134,7 +134,7 @@ describe("autoDispatch", () => {
         }),
     });
     const result = await autoDispatch(deps);
-    expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 102, adapter: "codex" }]);
+    expect(enqueued).toEqual([{ repo: "o/r", epicRef: "102", adapter: "codex" }]);
     expect(result.reason).toBe("drained");
   });
 
@@ -181,7 +181,7 @@ describe("autoDispatch", () => {
         }),
     });
     const result = await autoDispatch(deps);
-    expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 201, adapter: "claude" }]);
+    expect(enqueued).toEqual([{ repo: "o/r", epicRef: "201", adapter: "claude" }]);
     expect(result.reason).toBe("slots-exhausted");
   });
 
@@ -203,13 +203,32 @@ describe("autoDispatch", () => {
           return null; // collision
         }
         enqueued.push(input);
-        return `wf-${input.epicNumber}`;
+        return `wf-${input.epicRef}`;
       },
     });
     const result = await autoDispatch(deps);
-    expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 302, adapter: "claude" }]);
+    expect(enqueued).toEqual([{ repo: "o/r", epicRef: "302", adapter: "claude" }]);
     // Both rows were walked (the collision was a no-op, the second dispatched),
     // so the loop drained rather than breaking on exhaustion.
+    expect(result.reason).toBe("drained");
+  });
+
+  test("dispatches a file-mode Epic by its slug ref (#200)", async () => {
+    // A file-mode Ready cell is `#<slug> <title>` — the ref is a kebab slug, not
+    // a number. The loop must extract it and enqueue it verbatim (the dispatch
+    // path is ref-agnostic), never drop it as a "malformed" numeric cell.
+    const { deps, enqueued } = makeDeps({
+      readState: async () =>
+        stateWith([
+          readyRow(1, "rollout-epic-store", "claude"),
+          readyRow(2, 102, "codex"), // a numeric row still dispatches alongside
+        ]),
+    });
+    const result = await autoDispatch(deps);
+    expect(enqueued).toEqual([
+      { repo: "o/r", epicRef: "rollout-epic-store", adapter: "claude" },
+      { repo: "o/r", epicRef: "102", adapter: "codex" },
+    ]);
     expect(result.reason).toBe("drained");
   });
 
@@ -233,7 +252,7 @@ describe("autoDispatch", () => {
     };
     const { deps, enqueued } = makeDeps({ readState: async () => stateWith([big]) });
     const result = await autoDispatch(deps);
-    expect(enqueued).toEqual([{ repo: "o/r", epicNumber: 401, adapter: "claude" }]);
+    expect(enqueued).toEqual([{ repo: "o/r", epicRef: "401", adapter: "claude" }]);
     expect(result.reason).toBe("drained");
   });
 });
