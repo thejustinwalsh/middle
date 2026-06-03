@@ -202,6 +202,11 @@ describe("file-mode dispatch — Test B: real buildImplementationDeps selector",
   test("postQuestion routes to the Epic file for a file repo, and to gh for a github repo", async () => {
     const ghCalls: Array<{ repo: string; ref: string; body: string }> = [];
     const ghStub = {
+      // The github-mode poster lists comments first (idempotency, #205); no prior
+      // agent-comment → it posts.
+      async listIssueComments() {
+        return [];
+      },
       async postComment(repo: string, ref: string, body: string) {
         ghCalls.push({ repo, ref, body });
       },

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EpicGateway, PullRequest } from "../../src/github.ts";
@@ -11,6 +11,7 @@ import {
 import { readEpicFile } from "../../src/epic-store/epic-file-io.ts";
 import { renderEpicFile } from "../../src/epic-store/epic-file/renderer.ts";
 import type { EpicFile } from "../../src/epic-store/epic-file/types.ts";
+import { appendQuestion } from "../../src/epic-store/index.ts";
 
 function tmpEpicsDir(): string {
   return mkdtempSync(join(tmpdir(), "middle-epics-"));
@@ -252,5 +253,42 @@ describe("fileEpicGateway", () => {
       "x",
     );
     expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  });
+});
+
+describe("appendQuestion — idempotent on a repeated park (#205)", () => {
+  const SLUG = "rollout-epic-store";
+  const questions = (dir: string) =>
+    readEpicFile(dir, SLUG)!.conversation.filter((e) => e.kind === "question");
+
+  test("re-asking the identical open question is a no-op", () => {
+    const dir = tmpEpicsDir();
+    seedEpic(dir, epicFixture());
+    const opts = { question: "Which API base URL?", kind: "question" as const };
+
+    appendQuestion(dir, SLUG, opts);
+    appendQuestion(dir, SLUG, opts);
+    appendQuestion(dir, SLUG, opts);
+    expect(questions(dir)).toHaveLength(1);
+  });
+
+  test("a different question (or different kind/context) appends a new entry", () => {
+    const dir = tmpEpicsDir();
+    seedEpic(dir, epicFixture());
+
+    appendQuestion(dir, SLUG, { question: "Q1", kind: "question" });
+    appendQuestion(dir, SLUG, { question: "Q2", kind: "question" }); // different text
+    appendQuestion(dir, SLUG, { question: "Q2", kind: "complexity" }); // different kind
+    appendQuestion(dir, SLUG, { question: "Q2", context: "extra", kind: "complexity" }); // different body
+    expect(questions(dir)).toHaveLength(4);
+  });
+
+  test("round-trip purity survives the skip (renderer remains the sole marker writer)", () => {
+    const dir = tmpEpicsDir();
+    seedEpic(dir, epicFixture());
+    appendQuestion(dir, SLUG, { question: "Q", kind: "question" });
+    const after = readFileSync(join(dir, `${SLUG}.md`), "utf8");
+    appendQuestion(dir, SLUG, { question: "Q", kind: "question" }); // skipped
+    expect(readFileSync(join(dir, `${SLUG}.md`), "utf8")).toBe(after);
   });
 });

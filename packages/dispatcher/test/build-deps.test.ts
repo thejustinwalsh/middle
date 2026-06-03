@@ -3,9 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter } from "@middle/core";
-import { buildImplementationDeps, formatPauseComment } from "../src/build-deps.ts";
+import {
+  buildImplementationDeps,
+  formatPauseComment,
+  postQuestionComment,
+} from "../src/build-deps.ts";
 import { openAndMigrate } from "../src/db.ts";
 import { AGENT_COMMENT_MARKER } from "../src/poller.ts";
+import type { IssueComment } from "../src/gates/plan-comment.ts";
 import type { PrReadyGateHandler } from "../src/gates/pr-ready-handler.ts";
 import type { PullRequest } from "../src/github.ts";
 import type { SessionGate } from "../src/hook-server.ts";
@@ -17,6 +22,27 @@ import type { SessionGate } from "../src/hook-server.ts";
 
 let dir: string;
 let dbPath: string;
+
+/**
+ * A stateful in-memory comment store modeling an Epic's comment thread: each
+ * `postComment` appends, `listIssueComments` returns them chronologically. The
+ * `url` carries a synthetic `#issuecomment-<n>` so any id-based logic resolves.
+ */
+function commentStore() {
+  const comments: IssueComment[] = [];
+  let next = 1;
+  return {
+    comments,
+    listIssueComments: async () => comments.map((c) => ({ ...c })),
+    postComment: async (_repo: string, _ref: string, body: string) => {
+      comments.push({
+        authorLogin: "agent-bot",
+        body,
+        url: `https://x/#issuecomment-${next++}`,
+      });
+    },
+  };
+}
 
 const noopGate: SessionGate = {
   awaitSessionStart: async () => ({}),
@@ -65,6 +91,7 @@ describe("buildImplementationDeps", () => {
           getCommentAuthor: async () => null,
           postComment: async () => {},
           getIssueLabels: async () => [],
+          listIssueComments: async () => [],
         },
         bindServer: (gate) => {
           boundGate = gate;
@@ -116,6 +143,7 @@ describe("buildImplementationDeps", () => {
           getCommentAuthor: async () => null,
           postComment: async () => {},
           getIssueLabels: async () => [],
+          listIssueComments: async () => [],
         },
         bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
       });
@@ -133,7 +161,7 @@ describe("buildImplementationDeps", () => {
   });
 
   test("the default postQuestion posts a gh comment framed by pause kind", async () => {
-    const posted: Array<{ repo: string; issue: string; body: string }> = [];
+    const store = commentStore();
     const db = openAndMigrate(dbPath);
     try {
       const { deps } = await buildImplementationDeps({
@@ -146,10 +174,8 @@ describe("buildImplementationDeps", () => {
         github: {
           findEpicPr: async () => null,
           getCommentAuthor: async () => null,
-          postComment: async (repo, issue, body) => {
-            posted.push({ repo, issue, body });
-          },
           getIssueLabels: async () => [],
+          ...store,
         },
         bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
       });
@@ -160,15 +186,92 @@ describe("buildImplementationDeps", () => {
         context: "A/B/C/D",
         kind: "complexity",
       });
-      expect(posted).toHaveLength(1);
-      expect(posted[0]!.repo).toBe("o/r");
-      expect(posted[0]!.issue).toBe("7");
+      expect(store.comments).toHaveLength(1);
       // The complexity-pause framing the recommender keys off for its label.
-      expect(posted[0]!.body).toContain("complexity pause");
-      expect(posted[0]!.body).toContain("4 designs, no winner");
+      expect(store.comments[0]!.body).toContain("complexity pause");
+      expect(store.comments[0]!.body).toContain("4 designs, no winner");
     } finally {
       db.close();
     }
+  });
+
+  test("the default postQuestion is idempotent on a repeated identical question (#205)", async () => {
+    const store = commentStore();
+    const db = openAndMigrate(dbPath);
+    try {
+      const { deps } = await buildImplementationDeps({
+        db,
+        getAdapter: () => fakeAdapter(),
+        resolveRepoPath: () => "/p",
+        worktreeRoot: dir,
+        enqueueContinuation: async () => {},
+        resolveAgentLogin: async () => undefined,
+        github: {
+          findEpicPr: async () => null,
+          getCommentAuthor: async () => null,
+          getIssueLabels: async () => [],
+          ...store,
+        },
+        bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
+      });
+      const ask = (question: string) =>
+        deps.postQuestion!({ repo: "o/r", epicRef: "7", question, kind: "question" });
+
+      // Three ticks of the SAME question → one comment, not three (the #177 spam).
+      await ask("Which API base URL?");
+      await ask("Which API base URL?");
+      await ask("Which API base URL?");
+      expect(store.comments).toHaveLength(1);
+
+      // A DIFFERENT question is a new history entry — posts, never edits the prior.
+      await ask("Should I bump the lockfile?");
+      expect(store.comments).toHaveLength(2);
+      expect(store.comments[0]!.body).toContain("Which API base URL?");
+      expect(store.comments[1]!.body).toContain("Should I bump the lockfile?");
+
+      // Re-asking the older question after a different one posts again (a history,
+      // not a set) — only an identical-to-LATEST repeat is suppressed.
+      await ask("Which API base URL?");
+      expect(store.comments).toHaveLength(3);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("postQuestionComment (idempotent pause poster, #205)", () => {
+  const body = (q: string) => formatPauseComment({ question: q, kind: "question" });
+
+  test("skips when the latest agent-comment already has the identical body", async () => {
+    const store = commentStore();
+    expect(
+      await postQuestionComment({ github: store, repo: "o/r", epicRef: "7", body: body("Q") }),
+    ).toBe("posted");
+    expect(
+      await postQuestionComment({ github: store, repo: "o/r", epicRef: "7", body: body("Q") }),
+    ).toBe("skipped");
+    expect(store.comments).toHaveLength(1);
+  });
+
+  test("a different body posts a fresh comment (questions are a history)", async () => {
+    const store = commentStore();
+    await postQuestionComment({ github: store, repo: "o/r", epicRef: "7", body: body("Q1") });
+    expect(
+      await postQuestionComment({ github: store, repo: "o/r", epicRef: "7", body: body("Q2") }),
+    ).toBe("posted");
+    expect(store.comments).toHaveLength(2);
+  });
+
+  test("ignores non-agent comments — only the marker-prefixed latest counts", async () => {
+    const store = commentStore();
+    await postQuestionComment({ github: store, repo: "o/r", epicRef: "7", body: body("Q") });
+    // A human reply (no marker) lands after the question; re-asking the SAME
+    // question must still skip — the latest *agent* comment is the question.
+    store.comments.push({ authorLogin: "human", body: "any update?", url: "https://x/#c-9" });
+    expect(
+      await postQuestionComment({ github: store, repo: "o/r", epicRef: "7", body: body("Q") }),
+    ).toBe("skipped");
+    expect(store.comments.filter((c) => c.body.startsWith(AGENT_COMMENT_MARKER))).toHaveLength(1);
   });
 });
 
