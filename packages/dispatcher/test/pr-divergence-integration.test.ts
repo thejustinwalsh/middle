@@ -207,6 +207,39 @@ describe("tryRebaseOntoMain — fixture repo", () => {
     expect(existsSync(join(worktree, ".git", "rebase-apply"))).toBe(false);
   });
 
+  test("data-loss guard (#201): a rebase that drops ALL of the PR's commits → restore worktree, droppedAllCommits, branch not emptied", async () => {
+    // Reproduce the #182 failure: the feature's only commit becomes empty when
+    // rebased onto a main that already carries the identical change, so the
+    // rebase exits 0 with HEAD == origin/main (all ahead-commits dropped).
+    // Seed a shared file so both sides start from one commit.
+    await writeAndCommit(work, "shared.txt", "a\n", "main: seed shared");
+    await git(work, ["push", "origin", "main"]);
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+    await git(worktree, ["checkout", "-B", "middle-issue-32"]);
+
+    // Feature edits the shared line a→b and pushes (the PR's approved work now
+    // lives on the remote branch — what must NOT be lost).
+    await writeAndCommit(worktree, "shared.txt", "b\n", "feature: a->b");
+    const featureSha = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    await git(worktree, ["push", "-f", "origin", "middle-issue-32"]);
+
+    // Main makes the IDENTICAL edit a→b and pushes — rebasing feature onto this
+    // main drops the feature commit (it becomes empty).
+    await writeAndCommit(work, "shared.txt", "b\n", "main: a->b");
+    await git(work, ["push", "origin", "main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+    const result = await tryRebaseOntoMain(deps(), "o/r", 999);
+    expect(result).toEqual({ ok: false, conflictingPaths: [], droppedAllCommits: true });
+
+    // The worktree was restored to its pre-rebase HEAD (atomic — the branch is
+    // left exactly as it was, NOT reset to main).
+    expect((await git(worktree, ["rev-parse", "HEAD"])).stdout.trim()).toBe(featureSha);
+    // The remote branch still carries the PR's commit (never pushed/emptied).
+    expect((await git(remote, ["rev-parse", "middle-issue-32"])).stdout.trim()).toBe(featureSha);
+  });
+
   test("a non-managed head ref (not middle-issue-*) → ok:false with empty paths (skip signal)", async () => {
     const skipDeps = {
       ...deps(),
@@ -456,6 +489,45 @@ describe("applySuccess — fixture repo", () => {
     expect(remoteSha).toBe(localSha);
   });
 
+  test("keystone data-loss guard (#201): refuses to push when local HEAD is emptied but the remote branch has commits", async () => {
+    // Defense-in-depth: even if some upstream step leaves the local worktree at
+    // main while the remote branch still holds the PR's commits, applySuccess
+    // must NOT push (that push is the #182 data-loss). Build that exact state
+    // directly: feature commit on the remote branch, local HEAD reset to main.
+    await writeAndCommit(worktree, "feature.txt", "feature\n", "feature: add");
+    const featureSha = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    await git(worktree, ["push", "-f", "origin", "middle-issue-32"]);
+
+    // Main advances disjointly so origin/main moves ahead of the seed.
+    await writeAndCommit(work, "main-file.txt", "main\n", "main: add");
+    await git(work, ["push", "origin", "main"]);
+
+    // Simulate a botched rebase that left the local worktree at main (the
+    // pre-fix behaviour, without Layer B's restore).
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+    const comments = makeCommentSpy();
+    const baseDeps = deps();
+    const successDeps = {
+      ...baseDeps,
+      db,
+      github: { ...baseDeps.github, ...comments },
+      now: () => 9_000,
+    };
+
+    await expect(applySuccess(successDeps, "o/r", 999, "rebased", "abcdef1234567")).rejects.toThrow(
+      /refusing to push/,
+    );
+
+    // Nothing was pushed (remote branch still at the feature commit), nothing
+    // posted, no CLEAN row written.
+    expect((await git(remote, ["rev-parse", "middle-issue-32"])).stdout.trim()).toBe(featureSha);
+    expect(comments.posted).toEqual([]);
+    expect(getDivergenceState(db, "o/r", 999)).toBe(null);
+  });
+
   test("a non-managed head ref is a no-op (no push, no comment, no row)", async () => {
     const comments = makeCommentSpy();
     const baseDeps = deps();
@@ -693,6 +765,78 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     }
     expect(enqueues).toEqual([["o/r", 32]]);
     expect(getDivergenceState(db, "o/r", 102)?.state).toBe("DEMOTED");
+  });
+
+  test("data-loss regression (#201): rebase that would empty the branch → escalation fires; branch NOT reset to main, PR NOT closed", async () => {
+    // The #182 scenario end-to-end: main advanced with a change that makes the
+    // PR's only commit empty on rebase. The reconciler must NOT force-push the
+    // emptied branch (no data-loss) — it escalates via applyDemoteToWork
+    // instead (PR → draft, sub-issue reopened, dual-surface escalation, the
+    // Epic re-enqueued), and the remote branch keeps the PR's commit.
+    await writeAndCommit(work, "shared.txt", "a\n", "main: seed shared");
+    await git(work, ["push", "origin", "main"]);
+    await git(worktree, ["fetch", "origin", "main"]);
+    await git(worktree, ["reset", "--hard", "origin/main"]);
+    await git(worktree, ["checkout", "-B", "middle-issue-32"]);
+
+    await writeAndCommit(worktree, "shared.txt", "b\n", "feature: a->b");
+    const featureSha = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    await git(worktree, ["push", "-f", "origin", "middle-issue-32"]);
+
+    // Main makes the IDENTICAL edit so the feature commit drops on rebase.
+    await writeAndCommit(work, "shared.txt", "b\n", "main: a->b");
+    await git(work, ["push", "origin", "main"]);
+
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 182, headRefName: "middle-issue-32" }],
+      headRefs: { 182: "middle-issue-32" },
+      // The PR is strictly behind main now (its change already landed there).
+      mergeability: { 182: { mergeStateStatus: "BEHIND", mergeable: "MERGEABLE" } },
+      closedSubIssues: [{ number: 50, closedAt: 1_700_000_000_000 }],
+    });
+
+    const baseDeps = deps();
+    const enqueues: Array<[string, number]> = [];
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async (repo, epicNumber) => {
+          enqueues.push([repo, epicNumber]);
+        },
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+      },
+      "o/r",
+    );
+    expect(r.reconciled).toBe(1);
+
+    // Escalation fired — NOT a success push. PR flipped to draft (never closed —
+    // the gateway has no close path, and the reconciler never reaches for one),
+    // sub-issue reopened, dual-surface escalation, Epic re-enqueued, DEMOTED.
+    expect(fixture.calls.convertPrToDraft).toEqual([182]);
+    expect(fixture.calls.reopenIssue.length).toBe(1);
+    expect(fixture.calls.reopenIssue[0]?.issueNumber).toBe(50);
+    expect(new Set(fixture.calls.postComment.map((c) => c.issueNumber))).toEqual(
+      new Set([182, 32]),
+    );
+    // The escalation explains the dropped-commits cause (no "conflicting paths").
+    for (const c of fixture.calls.postComment) {
+      expect(c.body).toContain("dropped **all** of the PR's commits");
+      expect(c.body).toContain("<!-- middle-divergence-demoted: 32 -->");
+    }
+    expect(enqueues).toEqual([["o/r", 32]]);
+    expect(getDivergenceState(db, "o/r", 182)?.state).toBe("DEMOTED");
+
+    // The load-bearing assertion: the remote branch was NOT reset to main's tip
+    // — it still carries the PR's commit. (This is the exact invariant #182
+    // violated.)
+    const remoteBranchSha = (await git(remote, ["rev-parse", "middle-issue-32"])).stdout.trim();
+    const remoteMainSha = (await git(remote, ["rev-parse", "main"])).stdout.trim();
+    expect(remoteBranchSha).toBe(featureSha);
+    expect(remoteBranchSha).not.toBe(remoteMainSha);
   });
 
   test("rate-limit floor short-circuits the pass; no listing happens", async () => {
