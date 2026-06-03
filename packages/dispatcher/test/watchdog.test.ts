@@ -51,7 +51,7 @@ function seed(opts: SeedOpts): string {
     id,
     kind: "implementation",
     repo: "thejustinwalsh/middle",
-    epicNumber: 14,
+    epicRef: "14",
     adapter: "claude",
   });
   db.run(

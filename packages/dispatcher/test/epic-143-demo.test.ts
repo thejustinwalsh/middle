@@ -48,7 +48,7 @@ describe("Epic #143 — integration-verified requirements + freshness", () => {
 
   test("3. reconciliation surfaces a landed-but-open issue and a drifted spec line", async () => {
     const created: NewIssue[] = [];
-    const closed: number[] = [];
+    const closed: string[] = [];
     const open: IssueSummary[] = [
       { number: 50, title: "Build the widget UI", body: "", labels: ["enhancement", "phase:9"] },
     ];
@@ -70,7 +70,7 @@ describe("Epic #143 — integration-verified requirements + freshness", () => {
       specPath: "planning/middle-management-build-spec.md",
     });
 
-    expect(closed).toEqual([50]); // landed-but-open issue closed
+    expect(closed).toEqual(["50"]); // landed-but-open issue closed
     expect(result.drift.map((d) => d.phase)).toEqual([9]); // drifted spec line surfaced
     expect(created.map((i) => i.title)).toEqual([reconcileTaskTitle(9)]); // proposal-first reconcile task
   });

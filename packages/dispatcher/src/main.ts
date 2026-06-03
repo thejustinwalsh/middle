@@ -167,7 +167,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // released once the row exists — the first broadcast that resolves it, below —
   // after which `hasNonTerminalEpicWorkflow` (the DB) is the source of truth.
   const inFlightEpics = new Set<string>();
-  const epicKey = (repo: string, epicNumber: number): string => `${repo}#${epicNumber}`;
+  const epicKey = (repo: string, epicRef: string): string => `${repo}#${epicRef}`;
 
   const lastBroadcastState = new Map<string, string>();
   const broadcastWorkflow = (executionId: string, state: string): void => {
@@ -176,7 +176,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     const row = getWorkflow(db, executionId);
     // The workflow row now exists → drop any pre-row dispatch reservation; the
     // DB collision check covers this epic from here on.
-    if (row && row.epicNumber !== null) inFlightEpics.delete(epicKey(row.repo, row.epicNumber));
+    if (row && row.epicRef !== null) inFlightEpics.delete(epicKey(row.repo, row.epicRef));
     hub.broadcast({
       type: "workflow",
       data: { id: executionId, repo: row?.repo ?? "", epic: row?.epicNumber ?? null, state },
@@ -237,8 +237,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     input: ControlDispatchInput,
     source: "manual" | "auto",
   ): Promise<string | null> {
-    const key = epicKey(input.repo, input.epicNumber);
-    if (inFlightEpics.has(key) || hasNonTerminalEpicWorkflow(db, input.repo, input.epicNumber)) {
+    const key = epicKey(input.repo, input.epicRef);
+    if (inFlightEpics.has(key) || hasNonTerminalEpicWorkflow(db, input.repo, input.epicRef)) {
       return null;
     }
     inFlightEpics.add(key);
@@ -246,7 +246,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       rememberRepoPath(input.repo, input.repoPath);
       const handle = await engine.start("implementation", {
         repo: input.repo,
-        epicNumber: input.epicNumber,
+        epicRef: input.epicRef,
         adapter: input.adapter,
         source,
       });
@@ -338,7 +338,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         rateLimitedAdapters: () => rateLimitedAdapters(adapters),
         getSlotState: () => getSlotState(db, repo, limits),
         enqueue: ({ repo: r, epicNumber, adapter }) =>
-          startDispatchImpl({ repo: r, repoPath, epicNumber, adapter }, "auto"),
+          startDispatchImpl({ repo: r, repoPath, epicRef: String(epicNumber), adapter }, "auto"),
       });
     } catch (error) {
       // Announce a parse failure on the state issue (deduped); other errors fall
@@ -408,7 +408,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (reject !== null) {
       return { status: 400, body: JSON.stringify({ error: reject }) };
     }
-    const input = { repo: normalizedRepo, repoPath, epicNumber, adapter };
+    const input = { repo: normalizedRepo, repoPath, epicRef: String(epicNumber), adapter };
     if (!slotAvailable(input)) {
       return {
         status: 429,
@@ -666,20 +666,20 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const orphans = await reconcileOrphanedSignals({
     db,
     hasExecution: (id) => engine.getExecution(id) !== null,
-    surface: ({ workflowId, repo, epicNumber, signalName }) => {
+    surface: ({ workflowId, repo, epicRef, signalName }) => {
       console.error(
-        `[recover] orphaned parked signal '${signalName}' for ${repo}#${epicNumber ?? "?"} (workflow ${workflowId}) — no recoverable execution; finalized failed`,
+        `[recover] orphaned parked signal '${signalName}' for ${repo}#${epicRef ?? "?"} (workflow ${workflowId}) — no recoverable execution; finalized failed`,
       );
-      if (epicNumber === null) return;
+      if (epicRef === null) return;
       return ghGitHub
         .postComment(
           repo,
-          epicNumber,
+          epicRef,
           `⚠️ middle could not recover this Epic's parked workflow after a daemon restart (no durable execution for \`${workflowId}\`). The run was finalized as \`failed\`; re-dispatch the Epic to continue.`,
         )
         .catch((error: unknown) => {
           console.error(
-            `[recover] orphan Epic comment for ${repo}#${epicNumber} failed: ${(error as Error).message}`,
+            `[recover] orphan Epic comment for ${repo}#${epicRef} failed: ${(error as Error).message}`,
           );
         });
     },

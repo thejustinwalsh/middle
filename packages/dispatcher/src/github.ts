@@ -95,35 +95,58 @@ export function parseEpicsList(stdout: string): EpicListItem[] {
   return out;
 }
 
+/**
+ * The Epic-store gateway. The issue/Epic identifier flows as a string `ref` (the
+ * "string-keyed seam"): the stringified issue number in github mode, a file slug
+ * in file mode. The github implementation (`ghGitHub`) parses each `ref` back to
+ * an integer at its `gh`-CLI boundary (see {@link refToIssueNumber}); a file
+ * implementation reads the ref as a slug. PR numbers and comment ids stay
+ * numeric — PRs/reviews are GitHub-native in both modes.
+ */
 export interface EpicGateway {
   /** Comments on an issue or PR (PRs are issues for the comments endpoint). */
-  listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
-  /** The open PR for an Epic — the one whose body closes `#epicNumber`. */
-  findEpicPr(repo: string, epicNumber: number): Promise<PullRequest | null>;
+  listIssueComments(repo: string, ref: string): Promise<IssueComment[]>;
+  /** The open PR for an Epic — the one whose body closes the Epic referenced by `epicRef`. */
+  findEpicPr(repo: string, epicRef: string): Promise<PullRequest | null>;
   /** A single PR by number. */
   getPullRequest(repo: string, prNumber: number): Promise<PullRequest | null>;
   /** Overwrite a PR's body (used by the checkbox-revert reconciler). */
   editPullRequestBody(repo: string, prNumber: number, body: string): Promise<void>;
-  /** Post a comment on an issue or PR. */
-  postComment(repo: string, issueNumber: number, body: string): Promise<void>;
+  /** Post a comment on an issue or PR (`ref` is the issue/Epic ref; PR comments pass the PR number as the ref). */
+  postComment(repo: string, ref: string, body: string): Promise<void>;
   /** Edit an existing issue/PR comment in place (used to upsert gate evidence). */
   editComment(repo: string, commentId: number, body: string): Promise<void>;
   /** Resolve the author of a comment from its URL; null if unresolvable. */
   getCommentAuthor(repo: string, commentUrl: string): Promise<CommentAuthor | null>;
   /** The label names on an issue/Epic (e.g. to check for `approved`). */
-  getIssueLabels(repo: string, issueNumber: number): Promise<string[]>;
+  getIssueLabels(repo: string, ref: string): Promise<string[]>;
   /** Open Epics in a repo (issues with ≥1 sub-issue), each with sub-issue progress. */
   listOpenEpics(repo: string): Promise<EpicListItem[]>;
   /** Every open issue (not PRs) with body + labels — for the requirements/staleness audits. */
   listOpenIssues(repo: string): Promise<IssueSummary[]>;
   /** Add a label to an issue (no-op if already present). */
-  addLabel(repo: string, issueNumber: number, label: string): Promise<void>;
+  addLabel(repo: string, ref: string, label: string): Promise<void>;
   /** Recently-merged PRs and the issues each closes — for landed-but-open detection. */
   listMergedPrsClosingRefs(repo: string): Promise<MergedPrRef[]>;
   /** Close an issue with an evidence comment (the anti-staleness reconcile trail). */
-  closeIssue(repo: string, issueNumber: number, comment: string): Promise<void>;
+  closeIssue(repo: string, ref: string, comment: string): Promise<void>;
   /** File a new issue (the proposal-first reconcile task). Returns its number. */
   createIssue(repo: string, issue: NewIssue): Promise<number>;
+}
+
+/**
+ * Parse a string Epic/issue `ref` to the integer GitHub issue number `gh`
+ * requires. github mode's contract is numeric-string refs only; a slug (the
+ * file-mode reference) is rejected here with a clear error rather than silently
+ * coercing to `NaN` and producing a confusing `gh` failure downstream.
+ */
+export function refToIssueNumber(ref: string): number {
+  if (!/^\d+$/.test(ref.trim())) {
+    throw new Error(
+      `github mode requires a numeric issue/Epic reference, got "${ref}" (file-mode slugs are not valid here)`,
+    );
+  }
+  return Number(ref.trim());
 }
 
 async function run(
@@ -175,7 +198,8 @@ export async function resolveAgentLogin(): Promise<string | undefined> {
 }
 
 export const ghGitHub: EpicGateway = {
-  async listIssueComments(repo, issueNumber) {
+  async listIssueComments(repo, ref) {
+    const issueNumber = refToIssueNumber(ref);
     const result = await run([
       "gh",
       "issue",
@@ -198,7 +222,8 @@ export const ghGitHub: EpicGateway = {
       .map((line) => JSON.parse(line) as IssueComment);
   },
 
-  async findEpicPr(repo, epicNumber) {
+  async findEpicPr(repo, epicRef) {
+    const epicNumber = refToIssueNumber(epicRef);
     const result = await run([
       "gh",
       "pr",
@@ -236,7 +261,8 @@ export const ghGitHub: EpicGateway = {
     return prs.find((pr) => closes.test(pr.body)) ?? null;
   },
 
-  async getIssueLabels(repo, issueNumber) {
+  async getIssueLabels(repo, ref) {
+    const issueNumber = refToIssueNumber(ref);
     const result = await run([
       "gh",
       "issue",
@@ -311,7 +337,8 @@ export const ghGitHub: EpicGateway = {
     }));
   },
 
-  async addLabel(repo, issueNumber, label) {
+  async addLabel(repo, ref, label) {
+    const issueNumber = refToIssueNumber(ref);
     const result = await run([
       "gh",
       "issue",
@@ -356,7 +383,8 @@ export const ghGitHub: EpicGateway = {
     }));
   },
 
-  async closeIssue(repo, issueNumber, comment) {
+  async closeIssue(repo, ref, comment) {
+    const issueNumber = refToIssueNumber(ref);
     const result = await run([
       "gh",
       "issue",
@@ -450,7 +478,8 @@ export const ghGitHub: EpicGateway = {
     }
   },
 
-  async postComment(repo, issueNumber, body) {
+  async postComment(repo, ref, body) {
+    const issueNumber = refToIssueNumber(ref);
     const result = await run(
       ["gh", "issue", "comment", String(issueNumber), "--repo", repo, "--body-file", "-"],
       body,

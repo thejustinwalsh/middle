@@ -147,10 +147,10 @@ export async function buildImplementationDeps(
       const active = findActiveWorkflowBySession(args.db, sessionName);
       if (!active) return null;
       const workflow = getWorkflow(args.db, active.id);
-      if (!workflow || workflow.epicNumber === null) return null;
-      return { repo: workflow.repo, epicNumber: workflow.epicNumber };
+      if (!workflow || workflow.epicRef === null) return null;
+      return { repo: workflow.repo, epicRef: workflow.epicRef };
     },
-    findEpicPr: (repo, epicNumber) => github.findEpicPr(repo, epicNumber),
+    findEpicPr: (repo, epicRef) => github.findEpicPr(repo, epicRef),
     resolveCommentAuthor: (url) => github.getCommentAuthor(args.repoSlug ?? "", url),
   });
 
@@ -174,23 +174,23 @@ export async function buildImplementationDeps(
     agentLogin,
     // Positive done-signal (#80): a bare-stop only completes if the Epic
     // already has a ready, non-draft PR.
-    epicPrReadiness: async (repo, epicNumber) => {
-      const pr = await github.findEpicPr(repo, epicNumber);
+    epicPrReadiness: async (repo, epicRef) => {
+      const pr = await github.findEpicPr(repo, epicRef);
       return { exists: pr !== null, isDraft: pr?.isDraft ?? false };
     },
     // Default surface: comment the pause on the Epic (framed by kind) via `gh`,
     // so the recommender can classify a complexity pause under `complexity pause`.
     postQuestion:
       args.postQuestion ??
-      (async ({ repo, epicNumber, question, context, kind }) => {
-        await github.postComment(repo, epicNumber, formatPauseComment({ question, context, kind }));
+      (async ({ repo, epicRef, question, context, kind }) => {
+        await github.postComment(repo, epicRef, formatPauseComment({ question, context, kind }));
       }),
     resolveComplexityCeiling: args.resolveComplexityCeiling,
     // Default: the Epic is approved iff it carries the `approved` label (#53).
     isEpicApproved:
       args.isEpicApproved ??
-      (async (repo, epicNumber) =>
-        (await github.getIssueLabels(repo, epicNumber)).includes(APPROVED_LABEL)),
+      (async (repo, epicRef) =>
+        (await github.getIssueLabels(repo, epicRef)).includes(APPROVED_LABEL)),
     launchTimeoutMs: args.launchTimeoutMs,
     stopTimeoutMs: args.stopTimeoutMs,
     livenessPollMs: args.livenessPollMs,

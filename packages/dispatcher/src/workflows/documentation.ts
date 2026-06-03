@@ -204,7 +204,7 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
       id: ctx.executionId,
       kind: "documentation",
       repo: ctx.input.repo,
-      epicNumber: null,
+      epicRef: null,
       adapter: ctx.input.adapter,
     });
     const state = getRateLimitState(deps.db, ctx.input.adapter);
@@ -263,7 +263,7 @@ export function createDocumentationWorkflow(deps: DocumentationDeps): Workflow<D
         sessionName,
         sessionToken,
         // The docs bot has no Epic; reuse the field for the hook's session scope.
-        epicNumber: 0,
+        epicRef: "0",
       });
       const { argv, env } = adapter.buildLaunchCommand({
         worktree: handle.path,

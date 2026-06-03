@@ -28,7 +28,7 @@ function addWorkflow(
     id,
     kind,
     repo,
-    epicNumber: kind === "recommender" ? null : 1,
+    epicRef: kind === "recommender" ? null : "1",
     adapter,
   });
   updateWorkflow(db, id, { state: "running" });

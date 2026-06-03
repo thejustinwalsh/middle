@@ -169,8 +169,8 @@ describe("dashboard SSE channels", () => {
         epicRef: string | null;
         state: string;
       };
-      // github-mode row: epic set, epic_ref unset (createWorkflowRecord doesn't write it).
-      expect(data).toEqual({ id: "wf-1", repo, epic: 7, epicRef: null, state: "running" });
+      // github-mode row writes both columns: epic set and epic_ref the stringified number.
+      expect(data).toEqual({ id: "wf-1", repo, epic: 7, epicRef: "7", state: "running" });
     } finally {
       dispose();
     }

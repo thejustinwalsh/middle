@@ -431,7 +431,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
       id: ctx.executionId,
       kind: "recommender",
       repo: ctx.input.repo,
-      epicNumber: null,
+      epicRef: null,
       adapter: ctx.input.adapter,
     });
     const state = getRateLimitState(deps.db, ctx.input.adapter);
@@ -505,7 +505,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
         dispatcherUrl: deps.dispatcherUrl,
         sessionName,
         sessionToken,
-        epicNumber: ctx.input.stateIssue,
+        epicRef: String(ctx.input.stateIssue),
       });
       const { argv, env } = adapter.buildLaunchCommand({
         worktree: handle.path,

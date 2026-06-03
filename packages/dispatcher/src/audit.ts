@@ -42,7 +42,7 @@ export async function runBacklogAudit(deps: BacklogAuditDeps): Promise<{ flagged
     const finding = auditIssueBody(issue.body, { title: issue.title });
     if (finding.pass) continue;
     try {
-      await deps.github.addLabel(deps.repo, issue.number, NEEDS_DESIGN_LABEL);
+      await deps.github.addLabel(deps.repo, String(issue.number), NEEDS_DESIGN_LABEL);
       flagged.push(issue.number);
       console.error(
         `[backlog-audit] ${deps.repo}#${issue.number} fails the integration rubric → ${NEEDS_DESIGN_LABEL}`,

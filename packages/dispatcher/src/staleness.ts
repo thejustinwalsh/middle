@@ -119,7 +119,7 @@ export async function reconcileStaleness(deps: StalenessDeps): Promise<Staleness
       try {
         await deps.github.closeIssue(
           deps.repo,
-          issueNum,
+          String(issueNum),
           `Work landed in merged PR #${ref.number} — closed by middle's anti-staleness reconciliation. Reopen if this was premature.`,
         );
         closed.push(issueNum);

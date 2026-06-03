@@ -57,7 +57,7 @@ describe("buildPromptText", () => {
       codexAdapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: "initial",
-        epicNumber: 60,
+        epicRef: "60",
       }),
     ).toBe("/implementing-github-issues implement #60");
   });
@@ -66,7 +66,7 @@ describe("buildPromptText", () => {
     const text = codexAdapter.buildPromptText({
       promptFile: ".middle/resume.md",
       kind: "resume",
-      epicNumber: 60,
+      epicRef: "60",
     });
     expect(text).toContain("@.middle/resume.md");
     expect(text.toLowerCase()).toContain("resum");
@@ -76,7 +76,7 @@ describe("buildPromptText", () => {
     const text = codexAdapter.buildPromptText({
       promptFile: ".middle/answer.md",
       kind: "answer",
-      epicNumber: 60,
+      epicRef: "60",
     });
     expect(text).toContain("@.middle/answer.md");
     expect(text.toLowerCase()).toContain("answer");
@@ -97,21 +97,21 @@ describe("buildPromptText", () => {
   // Compile-time contract (enforced by `bun run typecheck`): same discriminated
   // union as Claude — a dispatched-issue kind cannot omit its Epic and the
   // repo-level kinds cannot carry one.
-  test("type contract: dispatched-issue kinds require an epicNumber; recommender forbids one", () => {
-    // @ts-expect-error — 'initial' must carry an epicNumber
+  test("type contract: dispatched-issue kinds require an epicRef; recommender forbids one", () => {
+    // @ts-expect-error — 'initial' must carry an epicRef
     codexAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial" });
-    // @ts-expect-error — 'resume' must carry an epicNumber
+    // @ts-expect-error — 'resume' must carry an epicRef
     codexAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "resume" });
-    // @ts-expect-error — 'answer' must carry an epicNumber
+    // @ts-expect-error — 'answer' must carry an epicRef
     codexAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "answer" });
-    // @ts-expect-error — 'recommender' runs against no Epic, so epicNumber is forbidden
+    // @ts-expect-error — 'recommender' runs against no Epic, so epicRef is forbidden
     codexAdapter.buildPromptText({
       promptFile: ".middle/prompt.md",
       kind: "recommender",
-      epicNumber: 1,
+      epicRef: "1",
     });
-    // @ts-expect-error — 'docs' runs against no Epic, so epicNumber is forbidden
-    codexAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "docs", epicNumber: 1 });
+    // @ts-expect-error — 'docs' runs against no Epic, so epicRef is forbidden
+    codexAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "docs", epicRef: "1" });
     expect(true).toBe(true);
   });
 });
@@ -390,7 +390,7 @@ describe("installHooks", () => {
       dispatcherUrl: "http://127.0.0.1:4120",
       sessionName: "middle-60",
       sessionToken: "tok",
-      epicNumber: 60,
+      epicRef: "60",
     });
   }
 

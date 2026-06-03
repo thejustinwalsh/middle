@@ -91,8 +91,8 @@ describe("dashboard JSON API", () => {
   });
 
   test("github-mode IN FLIGHT row carries epicRef alongside the numeric epic (#187)", async () => {
-    // createWorkflowRecord doesn't write epic_ref, so a github-mode row's epicRef
-    // is null over the wire; the UI keys its numeric render off `epic`, not epicRef.
+    // github mode writes both columns: the row's epicRef is the stringified issue
+    // number over the wire; the UI keys its numeric render off `epic`, not epicRef.
     seedWorkflow(db, {
       id: "w1",
       repo: "o/alpha",
@@ -105,7 +105,7 @@ describe("dashboard JSON API", () => {
     const detail = (await (
       await fetch(`${base}/api/repos/${encodeURIComponent("o/alpha")}`)
     ).json()) as RepoDetail;
-    expect(detail.inFlight[0]).toMatchObject({ session: "sess-7", epic: 7, epicRef: null });
+    expect(detail.inFlight[0]).toMatchObject({ session: "sess-7", epic: 7, epicRef: "7" });
   });
 
   test("file-mode IN FLIGHT row surfaces epic_ref as epicRef with a null epic (#187)", async () => {

@@ -17,7 +17,7 @@ export type IssueComment = {
 
 /** The GitHub read seam this gate depends on (satisfied by the gh-CLI gateway). */
 export interface PlanCommentReader {
-  listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
+  listIssueComments(repo: string, ref: string): Promise<IssueComment[]>;
 }
 
 export type GateResult = { ok: true } | { ok: false; reason: string };
@@ -36,14 +36,14 @@ function normalize(text: string): string {
 export async function verifyPlanComment(opts: {
   gh: PlanCommentReader;
   repo: string;
-  epicNumber: number;
+  epicRef: string;
   planBody: string;
   /** When set, only comments by this account count (the agent's gh identity). */
   agentLogin?: string;
 }): Promise<GateResult> {
   const miss: GateResult = {
     ok: false,
-    reason: `Plan-comment guard: no plan comment found on Epic #${opts.epicNumber}`,
+    reason: `Plan-comment guard: no plan comment found on Epic #${opts.epicRef}`,
   };
 
   const needle = normalize(opts.planBody);
@@ -51,7 +51,7 @@ export async function verifyPlanComment(opts: {
   // body trivially "contains" the empty string.
   if (needle === "") return miss;
 
-  const comments = await opts.gh.listIssueComments(opts.repo, opts.epicNumber);
+  const comments = await opts.gh.listIssueComments(opts.repo, opts.epicRef);
   for (const comment of comments) {
     if (opts.agentLogin !== undefined && comment.authorLogin !== opts.agentLogin) continue;
     if (normalize(comment.body).includes(needle)) return { ok: true };

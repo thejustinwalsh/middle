@@ -49,13 +49,13 @@ function seedParked(reason: ResumeReason, epic = EPIC): string {
     id,
     kind: "implementation",
     repo: REPO,
-    epicNumber: epic,
+    epicRef: String(epic),
     adapter: "claude",
   });
   updateWorkflow(db, id, { state: "waiting-human" });
   // armWaitForSignal stamps created_at = Date.now(); normalize it to ARMED_AT so
   // recency comparisons in the poller are deterministic.
-  armWaitForSignal(db, signalNameFor(epic, reason), id, JSON.stringify({ reason }));
+  armWaitForSignal(db, signalNameFor(String(epic), reason), id, JSON.stringify({ reason }));
   db.run("UPDATE waitfor_signals SET created_at = ? WHERE workflow_id = ?", [ARMED_AT, id]);
   return id;
 }
@@ -464,9 +464,9 @@ describe("runPoller — resilience", () => {
 
     let n = 0;
     const github: PollGateway = {
-      async listIssueComments(_repo, epicNumber) {
+      async listIssueComments(_repo, epicRef) {
         n++;
-        if (epicNumber === 200) throw new Error("API rate limit exceeded");
+        if (epicRef === "200") throw new Error("API rate limit exceeded");
         return [comment({ id: 1, authorLogin: "human", body: "answer" })];
       },
       async findPrForEpic() {

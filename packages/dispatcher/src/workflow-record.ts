@@ -52,7 +52,13 @@ export type CreateWorkflowRecordInput = {
   id: string;
   kind: "implementation" | "recommender" | "documentation";
   repo: string;
-  epicNumber: number | null;
+  /**
+   * The canonical Epic reference: a stringified issue number in github mode, a
+   * slug in file mode, null for the recommender / docs run (no Epic). The
+   * back-compat `epic_number` column is derived from this — populated when the
+   * ref is a numeric string (github mode), left null for a file-mode slug.
+   */
+  epicRef: string | null;
   adapter: string;
   /**
    * How the dispatch was initiated — `"manual"` for `mm dispatch`, `"auto"` for
@@ -81,16 +87,22 @@ export type CreateWorkflowRecordInput = {
 export function createWorkflowRecord(db: Database, input: CreateWorkflowRecordInput): void {
   const now = Date.now();
   const metaJson = input.source === undefined ? null : JSON.stringify({ source: input.source });
+  // Derive the back-compat numeric column from the ref: github-mode refs are
+  // numeric strings (both columns populated), file-mode slugs leave it null
+  // (only `epic_ref` populated) — per migration 009's dual-column contract.
+  const epicNumber =
+    input.epicRef !== null && /^\d+$/.test(input.epicRef) ? Number(input.epicRef) : null;
   db.run(
     `INSERT INTO workflows
-       (id, kind, repo, epic_number, adapter, state, created_at, updated_at, bunqueue_execution_id, meta_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+       (id, kind, repo, epic_number, epic_ref, adapter, state, created_at, updated_at, bunqueue_execution_id, meta_json)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
      ON CONFLICT(id) DO NOTHING`,
     [
       input.id,
       input.kind,
       input.repo,
-      input.epicNumber,
+      epicNumber,
+      input.epicRef,
       input.adapter,
       now,
       now,
@@ -470,7 +482,7 @@ export type ArmedSignal = { signalName: string; payloadJson: string | null };
 export type PollableWait = {
   workflowId: string;
   repo: string;
-  epicNumber: number | null;
+  epicRef: string | null;
   signalName: string;
   createdAt: number;
   firedAt: number | null;
@@ -485,7 +497,7 @@ export function loadPollableWaits(db: Database): PollableWait[] {
   return db
     .query(
       `SELECT s.workflow_id, s.signal_name, s.created_at, s.fired_at,
-              w.repo, w.epic_number
+              w.repo, w.epic_ref
          FROM waitfor_signals s
          JOIN workflows w ON w.id = s.workflow_id
         WHERE w.state = 'waiting-human'`,
@@ -498,12 +510,12 @@ export function loadPollableWaits(db: Database): PollableWait[] {
         created_at: number;
         fired_at: number | null;
         repo: string;
-        epic_number: number | null;
+        epic_ref: string | null;
       };
       return {
         workflowId: row.workflow_id,
         repo: row.repo,
-        epicNumber: row.epic_number,
+        epicRef: row.epic_ref,
         signalName: row.signal_name,
         createdAt: row.created_at,
         firedAt: row.fired_at,
@@ -656,20 +668,16 @@ export function listActiveImplementationWorkflows(
  * rejected. Scoped to `kind = 'implementation'`: the recommender's own row never
  * claims a dispatch slot.
  */
-export function hasNonTerminalEpicWorkflow(
-  db: Database,
-  repo: string,
-  epicNumber: number,
-): boolean {
+export function hasNonTerminalEpicWorkflow(db: Database, repo: string, epicRef: string): boolean {
   const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
   const row = db
     .query(
       `SELECT 1 AS n FROM workflows
-        WHERE kind = 'implementation' AND repo = ? AND epic_number = ?
+        WHERE kind = 'implementation' AND repo = ? AND epic_ref = ?
           AND state NOT IN (${placeholders})
         LIMIT 1`,
     )
-    .get(repo, epicNumber, ...TERMINAL_STATES) as { n: number } | null;
+    .get(repo, epicRef, ...TERMINAL_STATES) as { n: number } | null;
   return row !== null;
 }
 
@@ -712,33 +720,33 @@ export function listNonTerminalWorkflows(db: Database): NonTerminalWorkflow[] {
 export type ParkedWorkflow = {
   id: string;
   repo: string;
-  epicNumber: number;
+  epicRef: string;
   worktreePath: string | null;
 };
 
 /**
  * Parked `kind = 'implementation'` workflows (`state = 'waiting-human'`) that own
  * an Epic — the set the merged/closed-PR reconciler walks. Rows with a null
- * `epic_number` are excluded: with no Epic there's no PR lifecycle to consult.
+ * `epic_ref` are excluded: with no Epic there's no PR lifecycle to consult.
  * Ordered oldest-first so the burst cap reconciles the longest-stuck rows first.
  */
 export function listParkedImplementationWorkflows(db: Database): ParkedWorkflow[] {
   const rows = db
     .query(
-      `SELECT id, repo, epic_number, worktree_path FROM workflows
-        WHERE kind = 'implementation' AND state = 'waiting-human' AND epic_number IS NOT NULL
+      `SELECT id, repo, epic_ref, worktree_path FROM workflows
+        WHERE kind = 'implementation' AND state = 'waiting-human' AND epic_ref IS NOT NULL
         ORDER BY created_at ASC, rowid ASC`,
     )
     .all() as {
     id: string;
     repo: string;
-    epic_number: number;
+    epic_ref: string;
     worktree_path: string | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
     repo: r.repo,
-    epicNumber: r.epic_number,
+    epicRef: r.epic_ref,
     worktreePath: r.worktree_path,
   }));
 }
@@ -747,7 +755,7 @@ export function listParkedImplementationWorkflows(db: Database): ParkedWorkflow[
 export type RunningWorkflow = {
   id: string;
   repo: string;
-  epicNumber: number;
+  epicRef: string;
   worktreePath: string;
 };
 
@@ -761,21 +769,21 @@ export type RunningWorkflow = {
 export function listRunningImplementationWorkflows(db: Database): RunningWorkflow[] {
   const rows = db
     .query(
-      `SELECT id, repo, epic_number, worktree_path FROM workflows
+      `SELECT id, repo, epic_ref, worktree_path FROM workflows
         WHERE kind = 'implementation' AND state = 'running'
-          AND epic_number IS NOT NULL AND worktree_path IS NOT NULL
+          AND epic_ref IS NOT NULL AND worktree_path IS NOT NULL
         ORDER BY created_at ASC, rowid ASC`,
     )
     .all() as {
     id: string;
     repo: string;
-    epic_number: number;
+    epic_ref: string;
     worktree_path: string;
   }[];
   return rows.map((r) => ({
     id: r.id,
     repo: r.repo,
-    epicNumber: r.epic_number,
+    epicRef: r.epic_ref,
     worktreePath: r.worktree_path,
   }));
 }

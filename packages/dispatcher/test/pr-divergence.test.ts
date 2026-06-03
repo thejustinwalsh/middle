@@ -201,15 +201,15 @@ type DemoteSpy = {
   state: {
     isDraft: boolean;
     headRef: string | null;
-    /** Comments per issue number, keyed by issue number. */
-    comments: Map<number, string[]>;
+    /** Comments per issue/Epic ref, keyed by the string ref. */
+    comments: Map<string, string[]>;
     closedSubs: ClosedSubIssue[];
   };
   calls: {
     convertPrToDraft: Array<[string, number]>;
     reopenIssue: Array<{ repo: string; issueNumber: number; comment: string | undefined }>;
     listClosedSubIssues: Array<[string, number]>;
-    postComment: Array<{ repo: string; issueNumber: number; body: string }>;
+    postComment: Array<{ repo: string; ref: string; body: string }>;
   };
 };
 
@@ -245,14 +245,14 @@ function makeDemoteSpy(over: Partial<DemoteSpy["state"]> = {}): DemoteSpy {
     async reopenIssue(repo, issueNumber, options) {
       calls.reopenIssue.push({ repo, issueNumber, comment: options?.comment });
     },
-    async listIssueComments(_repo, issueNumber) {
-      return (state.comments.get(issueNumber) ?? []).map((body) => ({ body }));
+    async listIssueComments(_repo, ref) {
+      return (state.comments.get(ref) ?? []).map((body) => ({ body }));
     },
-    async postComment(repo, issueNumber, body) {
-      calls.postComment.push({ repo, issueNumber, body });
-      const bucket = state.comments.get(issueNumber) ?? [];
+    async postComment(repo, ref, body) {
+      calls.postComment.push({ repo, ref, body });
+      const bucket = state.comments.get(ref) ?? [];
       bucket.push(body);
-      state.comments.set(issueNumber, bucket);
+      state.comments.set(ref, bucket);
     },
   };
   return { gateway, state, calls };
@@ -282,7 +282,7 @@ describe("applyDemoteToWork", () => {
     expect(spy.calls.reopenIssue[0]?.comment).toContain("PR #99 for Epic #32");
     expect(spy.calls.postComment.length).toBe(2);
     // Dual surface: one on the PR (99) and one on the Epic (32 — derived from head ref).
-    expect(new Set(spy.calls.postComment.map((c) => c.issueNumber))).toEqual(new Set([99, 32]));
+    expect(new Set(spy.calls.postComment.map((c) => c.ref))).toEqual(new Set(["99", "32"]));
     // Conflicting paths are surfaced in the escalation body.
     for (const post of spy.calls.postComment) {
       expect(post.body).toContain("packages/dispatcher/src/main.ts");
@@ -352,7 +352,7 @@ describe("applyDemoteToWork", () => {
     expect(spy.calls.reopenIssue.length).toBe(1);
     expect(spy.calls.reopenIssue[0]?.issueNumber).toBe(50);
     expect(spy.calls.postComment.length).toBe(2);
-    expect(new Set(spy.calls.postComment.map((c) => c.issueNumber))).toEqual(new Set([99, 32]));
+    expect(new Set(spy.calls.postComment.map((c) => c.ref))).toEqual(new Set(["99", "32"]));
     expect(enqueues).toEqual([[REPO, 32]]);
     expect(getDivergenceState(db, REPO, 99)?.state).toBe("DEMOTED");
   });
@@ -363,7 +363,7 @@ describe("applyDemoteToWork", () => {
     // To trigger that path we keep PR.isDraft=false (so the function proceeds)
     // and pre-seed the PR's comments with the marker.
     const spy = makeDemoteSpy({
-      comments: new Map([[99, ["…earlier escalation… <!-- middle-divergence-demoted: 32 -->"]]]),
+      comments: new Map([["99", ["…earlier escalation… <!-- middle-divergence-demoted: 32 -->"]]]),
     });
     await applyDemoteToWork(
       {
@@ -378,7 +378,7 @@ describe("applyDemoteToWork", () => {
     );
     // Only the Epic comment posts — the PR's existing marker gates the duplicate.
     expect(spy.calls.postComment.length).toBe(1);
-    expect(spy.calls.postComment[0]?.issueNumber).toBe(32);
+    expect(spy.calls.postComment[0]?.ref).toBe("32");
   });
 
   test("Epic with no closed sub-issues: still demotes + comments + enqueues; no reopen call", async () => {
@@ -433,7 +433,7 @@ describe("applyDemoteToWork", () => {
     // sub-issue close isn't undone.
     const spy = makeDemoteSpy({
       comments: new Map([
-        [32, ["…earlier demote escalation… <!-- middle-divergence-demoted: 32 -->"]],
+        ["32", ["…earlier demote escalation… <!-- middle-divergence-demoted: 32 -->"]],
       ]),
     });
     const enqueues: Array<[string, number]> = [];
@@ -460,7 +460,7 @@ describe("applyDemoteToWork", () => {
     expect(getDivergenceState(db, REPO, 99)?.state).toBe("DEMOTED");
     // The marker on the Epic also gates the duplicate Epic comment — only PR
     // gets a fresh comment (its marker is absent).
-    expect(new Set(spy.calls.postComment.map((c) => c.issueNumber))).toEqual(new Set([99]));
+    expect(new Set(spy.calls.postComment.map((c) => c.ref))).toEqual(new Set(["99"]));
   });
 
   test("PR doesn't exist (gateway returns null) → no-op", async () => {

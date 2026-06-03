@@ -679,7 +679,13 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
     session: string,
     state?: string,
   ) => {
-    createWorkflowRecord(db, { id, kind: "implementation", repo: REPO, epicNumber: epic, adapter });
+    createWorkflowRecord(db, {
+      id,
+      kind: "implementation",
+      repo: REPO,
+      epicRef: epic === null ? null : String(epic),
+      adapter,
+    });
     updateWorkflow(db, id, { sessionName: session, state: (state ?? "running") as never });
   };
 
@@ -733,7 +739,7 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
       id: "rec",
       kind: "recommender",
       repo: REPO,
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     updateWorkflow(db, "rec", { state: "running" });
@@ -756,7 +762,7 @@ describe("recommender workflow — #44 buildRecommenderContext: from dispatcher 
       id: "b",
       kind: "implementation",
       repo: "other/repo",
-      epicNumber: 9,
+      epicRef: "9",
       adapter: "claude",
     });
     updateWorkflow(db, "b", { sessionName: "other-9", state: "running" as never });

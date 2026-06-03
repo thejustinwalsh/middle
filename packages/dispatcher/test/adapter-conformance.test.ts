@@ -73,7 +73,7 @@ describe.each(knownAdapters())("AgentAdapter contract — %s", (name) => {
 
   test("buildPromptText: initial is the skill slash-command on the Epic", () => {
     expect(
-      adapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial", epicNumber: 60 }),
+      adapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial", epicRef: "60" }),
     ).toBe("/implementing-github-issues implement #60");
   });
 
@@ -94,7 +94,7 @@ describe.each(knownAdapters())("AgentAdapter contract — %s", (name) => {
       dispatcherUrl: "http://127.0.0.1:4120",
       sessionName: "middle-60",
       sessionToken: "tok",
-      epicNumber: 60,
+      epicRef: "60",
     });
     const hook = await Bun.file(join(worktree, ".middle/hooks/hook.sh")).text();
     expect(hook).toStartWith("#!/bin/sh");

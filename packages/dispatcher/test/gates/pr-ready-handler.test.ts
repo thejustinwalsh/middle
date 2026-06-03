@@ -7,7 +7,7 @@ const UNEVIDENCED = "## Acceptance criteria\n- [ ] not done yet, no evidence\n";
 
 function deps(over: Partial<PrReadyGateDeps>): PrReadyGateDeps {
   return {
-    resolveSession: () => ({ repo: "o/r", epicNumber: 27 }),
+    resolveSession: () => ({ repo: "o/r", epicRef: "27" }),
     findEpicPr: async () => ({ body: EVIDENCED }),
     resolveCommentAuthor: async () => ({ login: "human", isBot: false }),
     ...over,

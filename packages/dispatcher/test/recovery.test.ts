@@ -43,7 +43,7 @@ function seedParked(epic: number | null, signalName: string): string {
     id,
     kind: "implementation",
     repo: REPO,
-    epicNumber: epic,
+    epicRef: epic === null ? null : String(epic),
     adapter: "claude",
   });
   updateWorkflow(db, id, { state: "waiting-human" });
@@ -68,7 +68,7 @@ describe("reconcileOrphanedSignals", () => {
     expect(orphans[0]).toMatchObject({
       workflowId: id,
       repo: REPO,
-      epicNumber: 6,
+      epicRef: "6",
       signalName: "epic-6-review-resolved",
     });
     // Finalized to a terminal state so the poller stops watching it (its
@@ -156,7 +156,7 @@ describe("reconcileOrphanedSignals", () => {
     });
 
     expect(orphans).toHaveLength(1);
-    expect(surfaced[0]?.epicNumber).toBeNull();
+    expect(surfaced[0]?.epicRef).toBeNull();
     expect(getWorkflow(db, id)?.state).toBe("failed");
   });
 
@@ -168,7 +168,7 @@ describe("reconcileOrphanedSignals", () => {
       id,
       kind: "implementation",
       repo: REPO,
-      epicNumber: 10,
+      epicRef: "10",
       adapter: "claude",
     });
     armWaitForSignal(db, "epic-10-answered", id, null);

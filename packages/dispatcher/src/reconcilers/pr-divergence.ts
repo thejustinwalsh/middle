@@ -302,7 +302,7 @@ export type WorktreeOpsDeps = {
   createWorktree?: (opts: {
     repoPath: string;
     repo: string;
-    issueNumber: number;
+    epicRef: string;
     worktreeRoot?: string;
   }) => Promise<WorktreeHandle>;
 };
@@ -329,7 +329,7 @@ export async function resolveWorktreePath(
   await create({
     repoPath: deps.resolveRepoPath(repo),
     repo,
-    issueNumber: epicNumber,
+    epicRef: String(epicNumber),
     worktreeRoot: deps.worktreeRoot,
   });
   return { worktreePath, epicNumber };
@@ -398,8 +398,8 @@ export type ReconciliationResolution = "rebased" | "merged-new-work-as-base";
  *  {@link "../github.ts".EpicGateway} method names so the daemon-side
  *  composition is a thin `Pick`. */
 export type PrCommentGateway = {
-  listIssueComments(repo: string, issueNumber: number): Promise<{ body: string }[]>;
-  postComment(repo: string, issueNumber: number, body: string): Promise<void>;
+  listIssueComments(repo: string, ref: string): Promise<{ body: string }[]>;
+  postComment(repo: string, ref: string, body: string): Promise<void>;
 };
 
 /** Deps for `applySuccess` — the union of worktree resolution (head ref +
@@ -470,11 +470,11 @@ export async function applySuccess(
   // also fail to record the success.
   if (mainCommitSha !== null) {
     const marker = reconciledMarker(resolution, mainCommitSha);
-    const existing = await deps.github.listIssueComments(repo, prNumber);
+    const existing = await deps.github.listIssueComments(repo, String(prNumber));
     const alreadyPosted = existing.some((c) => (c.body ?? "").includes(marker));
     if (!alreadyPosted) {
       const body = `🔁 Reconciled with main (${resolution}) after ${mainCommitSha.slice(0, 9)}\n\n${marker}`;
-      await deps.github.postComment(repo, prNumber, body);
+      await deps.github.postComment(repo, String(prNumber), body);
     }
   }
 
@@ -613,7 +613,7 @@ export async function applyDemoteToWork(
   }
 
   const marker = demoteMarker(epicNumber);
-  const epicComments = await deps.github.listIssueComments(repo, epicNumber);
+  const epicComments = await deps.github.listIssueComments(repo, String(epicNumber));
   const epicAlreadyDemoted = epicComments.some((c) => (c.body ?? "").includes(marker));
 
   // Most-recently-closed sub-issue, if any. Skip the reopen when the Epic
@@ -638,9 +638,9 @@ export async function applyDemoteToWork(
     const existing =
       issueNumber === epicNumber
         ? epicComments
-        : await deps.github.listIssueComments(repo, issueNumber);
+        : await deps.github.listIssueComments(repo, String(issueNumber));
     if (!existing.some((c) => (c.body ?? "").includes(marker))) {
-      await deps.github.postComment(repo, issueNumber, escalationBody);
+      await deps.github.postComment(repo, String(issueNumber), escalationBody);
     }
   }
 

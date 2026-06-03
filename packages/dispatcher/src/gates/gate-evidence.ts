@@ -11,8 +11,8 @@ import type { IssueComment } from "./plan-comment.ts";
 
 /** The GitHub seam evidence posting needs (a subset of `EpicGateway`). */
 export interface EvidenceGateway {
-  listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
-  postComment(repo: string, issueNumber: number, body: string): Promise<void>;
+  listIssueComments(repo: string, ref: string): Promise<IssueComment[]>;
+  postComment(repo: string, ref: string, body: string): Promise<void>;
   editComment(repo: string, commentId: number, body: string): Promise<void>;
 }
 
@@ -98,13 +98,13 @@ export async function upsertEvidenceComment(opts: {
   const marker = evidenceMarker(opts.subIssue);
   const body = renderEvidence(opts.subIssue, opts.report);
 
-  const comments = await opts.gh.listIssueComments(opts.repo, opts.prNumber);
+  const comments = await opts.gh.listIssueComments(opts.repo, String(opts.prNumber));
   const existing = comments.find((c) => c.body.includes(marker));
   const id = existing ? commentId(existing.url) : null;
 
   if (existing && id !== null) {
     await opts.gh.editComment(opts.repo, id, body);
   } else {
-    await opts.gh.postComment(opts.repo, opts.prNumber, body);
+    await opts.gh.postComment(opts.repo, String(opts.prNumber), body);
   }
 }
