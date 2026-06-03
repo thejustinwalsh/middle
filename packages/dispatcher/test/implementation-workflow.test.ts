@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
@@ -23,6 +31,8 @@ import {
   signalNameFor,
   type ImplementationDeps,
 } from "../src/workflows/implementation.ts";
+import { makeDefaultPostQuestion } from "../src/build-deps.ts";
+import { AGENT_COMMENT_MARKER } from "../src/poller.ts";
 import { createWorktree, destroyWorktree, listWorktrees } from "../src/worktree.ts";
 
 let scratch: string;
@@ -581,6 +591,36 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
   });
 
+  test("parkForResume removes the consumed blocked.json sentinel (#205)", async () => {
+    // Bug A: once the question is surfaced, the on-disk sentinel must be cleaned
+    // up so a re-dispatch / the watchdog's rule-4 re-arm doesn't treat the stale
+    // file as fresh and re-post on the next cron tick.
+    let worktree = "";
+    const postedQuestions: string[] = [];
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: { ...tmux.ops, status: async () => ({ alive: false }) },
+      sessionGate: hangingGate,
+      livenessPollMs: 20,
+      postQuestion: async (opts) => {
+        postedQuestions.push(opts.question);
+      },
+      getAdapter: () =>
+        blockedAdapter(QUESTION, (wt) => {
+          worktree = wt;
+        }),
+    });
+    const id = await start(deps);
+    await awaitParked(id);
+
+    // The question was surfaced exactly once, and the sentinel is gone.
+    expect(postedQuestions).toEqual(["is the sandbox configured?"]);
+    expect(worktree).not.toBe("");
+    expect(existsSync(join(worktree, ".middle", "blocked.json"))).toBe(false);
+    // The durable wait is still armed (cleanup must not strand the resume).
+    expect(getWaitForSignal(db, id)).not.toBeNull();
+  });
+
   test("a session that dies mid-nudge with a blocked sentinel parks, not compensates", async () => {
     // The initial Stop is a real bare-stop; resolveBareStop nudges, and the
     // session dies during the nudge wait with a blocked.json present. The nudge
@@ -609,6 +649,89 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
 
     expect(await listWorktrees({ repoPath, worktreeRoot })).toHaveLength(1);
     expect(getWaitForSignal(db, id)).not.toBeNull();
+  });
+});
+
+describe("implementation workflow — question-spam integration (#205)", () => {
+  /** A SessionGate whose Stop wait never resolves — models an agent that hangs. */
+  const hangingGate: SessionGate = {
+    awaitSessionStart: async () =>
+      ({ session_id: "stub-session", transcript_path: "/tmp/stub.jsonl" }) as HookPayload,
+    awaitStop: () => new Promise<HookPayload>(() => {}),
+  };
+
+  /** A stateful Epic comment thread (the github seam `postQuestion` writes to). */
+  function commentStore() {
+    const comments: IssueComment[] = [];
+    let next = 1;
+    return {
+      comments,
+      listIssueComments: async () => comments.map((c) => ({ ...c })),
+      postComment: async (_repo: string, _ref: string, body: string) => {
+        comments.push({ authorLogin: "agent-bot", body, url: `https://x/#issuecomment-${next++}` });
+      },
+    };
+  }
+
+  /**
+   * An adapter that re-writes a stale `.middle/blocked.json` on every dispatch
+   * (each tick lands on the worktree with the sentinel present) and classifies
+   * the Stop as the open question.
+   */
+  function staleSentinelAdapter(onInstall: (worktree: string) => void): AgentAdapter {
+    const base = makeAdapterStub({
+      kind: "asked-question",
+      sentinelPath: "/ignored/blocked.json",
+      sentinel: { question: "is the sandbox configured?" },
+    });
+    return {
+      ...base,
+      async installHooks(opts) {
+        mkdirSync(join(opts.worktree, ".middle"), { recursive: true });
+        writeFileSync(
+          join(opts.worktree, ".middle", "blocked.json"),
+          JSON.stringify({ question: "is the sandbox configured?" }),
+        );
+        onInstall(opts.worktree);
+      },
+    };
+  }
+
+  test("three consecutive dispatch ticks on a stale sentinel grow the Epic by ≤1 comment", async () => {
+    // The #177 reproduction: the recommender re-dispatches a stuck Epic each cron
+    // tick, every tick landing on a worktree with a (re-)written blocked.json. The
+    // real default postQuestion (idempotent) + parkForResume's sentinel cleanup
+    // together must hold the comment count at 1 across three ticks — not 3 (and
+    // certainly not the 1137 #177 accumulated).
+    const store = commentStore();
+    let worktree = "";
+    const tmux = makeTmuxStub();
+    const deps = makeDeps({
+      tmux: { ...tmux.ops, status: async () => ({ alive: false }) },
+      sessionGate: hangingGate,
+      livenessPollMs: 20,
+      // The REAL default poster (github mode — no repo_config row), bound to the
+      // stateful fake. Not a stub: this is the production idempotency path.
+      postQuestion: makeDefaultPostQuestion({ db, resolveRepoPath: () => repoPath, github: store }),
+      getAdapter: () =>
+        staleSentinelAdapter((wt) => {
+          worktree = wt;
+        }),
+    });
+    engine.register(createImplementationWorkflow(deps));
+
+    for (let tick = 0; tick < 3; tick++) {
+      const handle = await engine.start("implementation", INPUT);
+      await awaitParked(handle.id);
+      // Each park consumes (removes) the sentinel; the next tick's installHooks
+      // re-writes it — exactly the cross-dispatch staleness the fix must survive.
+      expect(existsSync(join(worktree, ".middle", "blocked.json"))).toBe(false);
+    }
+
+    // Three ticks, at most one comment — the spam is dead.
+    expect(store.comments).toHaveLength(1);
+    expect(store.comments[0]!.body).toContain("is the sandbox configured?");
+    expect(store.comments[0]!.body.startsWith(AGENT_COMMENT_MARKER)).toBe(true);
   });
 });
 
