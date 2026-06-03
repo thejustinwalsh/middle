@@ -25,6 +25,10 @@ describe("claudeAdapter identity", () => {
     expect(claudeAdapter.name).toBe("claude");
     expect(claudeAdapter.readyEvent).toBe("session.started");
   });
+
+  test("does NOT set startsSessionOnFirstPrompt — Claude fires SessionStart at boot, so the dispatcher keeps await-first order (#183 regression)", () => {
+    expect(claudeAdapter.startsSessionOnFirstPrompt).toBeFalsy();
+  });
 });
 
 describe("buildLaunchCommand", () => {
