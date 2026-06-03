@@ -8,7 +8,7 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(pnpm:*), Bash(mkdir:*), Read, Write
 
 End-to-end workflow for taking an Epic from "assigned" to "PR open with verification evidence, marked ready for human review." All phases of one Epic land on **one branch** and **one PR**; the PR is the long-lasting context for the workstream.
 
-**Mode-specific commands:** the Epic's data and the agent-↔-human conversation live in one of two stores — a GitHub issue (**github mode**) or a Markdown file under `planning/epics/` (**file mode**). PRs, reviews, and CI are GitHub-native in *both* modes. This skill body is mode-agnostic: it says "fetch the Epic", "post the plan to the Epic", "close the sub-issue with evidence", "post the reviewer's brief", "mark the PR ready" — the concrete incantations live in `references/<mode>-mode-commands.md` (`github-mode-commands.md` / `file-mode-commands.md`), mirrored into your worktree at `.middle/skills/implementing-github-issues/references/` for your run's mode. Use that file for every Epic/plan/sub-issue/conversation operation; use the PR commands (identical in both modes) inline below.
+**Mode-specific commands:** the Epic's data and the agent-↔-human conversation live in one of two stores — a GitHub issue (**GitHub mode**) or a Markdown file under `planning/epics/` (**file mode**). PRs, reviews, and CI are GitHub-native in *both* modes. This skill body is mode-agnostic: it says "fetch the Epic", "post the plan to the Epic", "close the sub-issue with evidence", "post the reviewer's brief", "mark the PR ready" — the concrete incantations live in `references/<mode>-mode-commands.md` (`github-mode-commands.md` / `file-mode-commands.md`), mirrored into your worktree at `.middle/skills/implementing-github-issues/references/` for your run's mode. Use that file for every Epic/plan/sub-issue/conversation operation; use the PR commands (identical in both modes) inline below.
 
 ## Dispatch brief (read first)
 
@@ -206,7 +206,7 @@ N. ...
 
 ## Phase 4 — Post the plan to the Epic
 
-Post the plan body to the Epic's conversation (the Epic's **plan comment**). See `references/<mode>-mode-commands.md` for the exact write — in github mode it's an issue comment; in file mode the renderer appends it to the Epic file's conversation section (never hand-edit the strict markers).
+Post the plan body to the Epic's conversation (the Epic's **plan comment**). See `references/<mode>-mode-commands.md` for the exact write — in GitHub mode it's an issue comment; in file mode the renderer appends it to the Epic file's conversation section (never hand-edit the strict markers).
 
 This is non-negotiable. The plan-on-the-Epic serves three purposes:
 1. The reporter / stakeholders can correct your direction before you write code
@@ -391,7 +391,7 @@ If you genuinely believe an acceptance-criterion item should be deferred, ask th
 
 ### Filing a sub-issue under an existing parent
 
-File the follow-up as a sub-issue under its parent — the body carries the parent, the context (what you saw, where), why it's a sub-issue and not in-scope, and a suggested approach if you have one. See `references/<mode>-mode-commands.md` for the exact mechanics (github mode: create the child issue then attach it under the parent via the sub-issues REST endpoint; file mode: append a new `<!-- middle:sub-issue id=N -->` block to the Epic file via the renderer).
+File the follow-up as a sub-issue under its parent — the body carries the parent, the context (what you saw, where), why it's a sub-issue and not in-scope, and a suggested approach if you have one. See `references/<mode>-mode-commands.md` for the exact mechanics (GitHub mode: create the child issue then attach it under the parent via the sub-issues REST endpoint; file mode: append a new `<!-- middle:sub-issue id=N -->` block to the Epic file via the renderer).
 
 ### Creating a parent for a natural collection
 
@@ -654,7 +654,7 @@ Everything above describes the skill running interactively. When **middle-manage
 
 ### You are pointed at an Epic — its sub-issues are your plan phases
 
-middle dispatches **Epics**, not individual issues. The Epic you're pointed at has sub-issues, and **its open sub-issues ARE the phases of your plan**. Don't invent a phase breakdown — fetch the Epic's sub-issues (see `references/<mode>-mode-commands.md`: github mode reads the sub-issues REST graph; file mode reads the `<!-- middle:sub-issue id=N -->` blocks in the Epic file), and each one is a phase. Your `plan.md` Phases list and the PR's Status checkboxes are one-per-sub-issue.
+middle dispatches **Epics**, not individual issues. The Epic you're pointed at has sub-issues, and **its open sub-issues ARE the phases of your plan**. Don't invent a phase breakdown — fetch the Epic's sub-issues (see `references/<mode>-mode-commands.md`: GitHub mode reads the sub-issues REST graph; file mode reads the `<!-- middle:sub-issue id=N -->` blocks in the Epic file), and each one is a phase. Your `plan.md` Phases list and the PR's Status checkboxes are one-per-sub-issue.
 
 One Epic → one worktree → one branch → one PR. You work *down* the sub-issues in dependency order on that single branch, ticking each Status checkbox as its sub-issue's work verifies. Do **not** open a PR per sub-issue, and do **not** wait for review between sub-issues — the whole Epic is reviewed once, as one PR, when every sub-issue is done.
 
@@ -666,7 +666,7 @@ The dispatcher created your worktree and branch and spawned you inside it. Do **
 
 ### Asking a question = write `.middle/blocked.json` and exit (overrides Phase 2's "comment and wait")
 
-You cannot "comment on the Epic and wait" — headless, there is nothing to wait *in*. When you genuinely need human input (ambiguous acceptance criteria, a decision CLAUDE.md/skills/docs don't resolve and that isn't worth a fork), write `<worktree>/.middle/blocked.json` containing the question and the context a human needs to answer it, then **exit cleanly**. The `blocked.json` sentinel is mode-agnostic — you write it the same way in both modes. Middle's exit classifier detects it, parks the workflow on a `waitFor` signal, and surfaces the question on the Epic (github mode: an issue comment; file mode: a `<!-- middle:question -->` block the dispatcher appends to the Epic file via the renderer). The human answers (github mode: a reply comment; file mode: editing the `<!-- middle:answer -->` block, or running `mm resume <repo> <slug> --answer "…"`), and you're re-spawned with the answer. Do not guess past a real blocker; do not spin idle.
+You cannot "comment on the Epic and wait" — headless, there is nothing to wait *in*. When you genuinely need human input (ambiguous acceptance criteria, a decision CLAUDE.md/skills/docs don't resolve and that isn't worth a fork), write `<worktree>/.middle/blocked.json` containing the question and the context a human needs to answer it, then **exit cleanly**. The `blocked.json` sentinel is mode-agnostic — you write it the same way in both modes. Middle's exit classifier detects it, parks the workflow on a `waitFor` signal, and surfaces the question on the Epic (GitHub mode: an issue comment; file mode: a `<!-- middle:question -->` block the dispatcher appends to the Epic file via the renderer). The human answers (GitHub mode: a reply comment; file mode: editing the `<!-- middle:answer -->` block, or running `mm resume <repo> <slug> --answer "…"`), and you're re-spawned with the answer. Do not guess past a real blocker; do not spin idle.
 
 ### Complexity is fork branching factor — pause the sub-issue past the ceiling
 
@@ -683,7 +683,7 @@ When a human answers, middle re-spawns you with the answer injected into your pr
 
 ### The plan comment is mechanically gated (reinforces Phase 4)
 
-After your plan step, the dispatcher's **plan-comment guard** verifies the plan body was posted to the Epic (github mode: a comment by your account on the issue; file mode: a plan entry in the Epic file's conversation section, written by the renderer). No plan on the Epic → the workflow fails. Phase 4 was always "non-negotiable"; under middle it is literally enforced.
+After your plan step, the dispatcher's **plan-comment guard** verifies the plan body was posted to the Epic (GitHub mode: a comment by your account on the issue; file mode: a plan entry in the Epic file's conversation section, written by the renderer). No plan on the Epic → the workflow fails. Phase 4 was always "non-negotiable"; under middle it is literally enforced.
 
 ### `gh pr ready` is mechanically gated (reinforces Phase 10)
 

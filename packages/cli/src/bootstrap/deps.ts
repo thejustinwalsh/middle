@@ -168,10 +168,15 @@ export const realDeps: BootstrapDeps = {
     return { owner: slug.owner, name: slug.name, defaultBranch };
   },
 
+  /**
+   * Resolve `{ owner, name }` for a repo from its local `origin` remote only —
+   * the offline counterpart to {@link BootstrapDeps.resolveRepoInfo} used by the
+   * file-mode init path. Parses `getRemoteUrl(repo)` with `parseRepoSlug` and
+   * **never shells out to `gh`**, so `defaultBranch` isn't knowable and falls
+   * back to `"main"` (file mode doesn't depend on it). Throws if the origin URL
+   * can't be parsed into an owner/name.
+   */
   async resolveRepoInfoLocal(repo: string): Promise<RepoInfo> {
-    // File mode is offline — derive owner/name from the local `origin` URL and
-    // never shell out to `gh`. The default branch isn't knowable without GitHub,
-    // so it falls back to "main" (file mode doesn't depend on it).
     const url = (await this.getRemoteUrl(repo)) ?? "";
     const slug = parseRepoSlug(url);
     if (!slug) throw new Error(`could not parse owner/name from origin remote: "${url}"`);

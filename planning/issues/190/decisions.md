@@ -27,8 +27,8 @@ truth on the interface shape; the seam name `epicRef` is correct where the value
 
 **Decision:** A single `refToIssueNumber(ref)` helper converts the string ref to an integer
 at each `gh`-calling method; it throws a clear error when the ref is not a parseable positive
-integer (github mode contract: numeric-string refs only).
-**Why:** github mode keeps working unchanged — the workflow layer now speaks strings, and the
+integer (GitHub mode contract: numeric-string refs only).
+**Why:** GitHub mode keeps working unchanged — the workflow layer now speaks strings, and the
 only place that needs an int is the `gh` CLI call itself. Centralizing the parse keeps the
 error message uniform and the "numeric-string only" contract in one place.
 **Evidence:** sub-issue #191 acceptance criterion 2.
@@ -56,16 +56,16 @@ that feed the epicRef seam; display SELECTs feeding numeric schemas are out of s
 **File(s):** `packages/dispatcher/src/workflow-record.ts`, `packages/dashboard/test/{helpers,api,sse}.*`
 **Date:** 2026-06-03
 
-**Decision:** github-mode `createWorkflowRecord` now writes BOTH `epic_number` (parsed
+**Decision:** GitHub-mode `createWorkflowRecord` now writes BOTH `epic_number` (parsed
 from the numeric ref) and `epic_ref` (the stringified number). Two #187 dashboard tests
-that asserted a github row's `epicRef` is `null` were updated to expect the stringified
+that asserted a GitHub row's `epicRef` is `null` were updated to expect the stringified
 number; the `EpicRef` component is unaffected (it keys its `#N` render off `epic`, only
 consulting `epicRef` when `epic === null`).
-**Why:** The spec's dual-column contract is "github mode writes both columns"; the #187
+**Why:** The spec's dual-column contract is "GitHub mode writes both columns"; the #187
 tests were written against the foundation's incomplete `createWorkflowRecord` (which
 wrote only `epic_number`). Completing the write path makes those `epicRef: null`
 assertions stale — the faithful fix is to assert the new value, not to fake the old DB
-state in the test helper. github-mode *rendering* is byte-for-byte unchanged.
+state in the test helper. GitHub-mode *rendering* is byte-for-byte unchanged.
 **Evidence:** spec "Config schema" (dual-column); `EpicRef.tsx` (epicNumber-first render).
 
 ## Worktree seam is string-keyed (`epicRef`), unit path unchanged
@@ -74,23 +74,23 @@ state in the test helper. github-mode *rendering* is byte-for-byte unchanged.
 
 **Decision:** `CreateWorktreeOpts.issueNumber?: number` became `epicRef?: string`; the
 dispatch-unit directory stays `issue-${epicRef}` (so `issue-27` is byte-identical for a
-github ref). The pr-divergence reconciler parses the numeric epic from the head ref and
+GitHub ref). The pr-divergence reconciler parses the numeric epic from the head ref and
 stringifies it at the `createWorktree` boundary.
 **Why:** The workflow seam now threads a string; the worktree directory must accept it so
-a file-mode slug yields `issue-<slug>` without a numeric coercion. github paths are unchanged.
+a file-mode slug yields `issue-<slug>` without a numeric coercion. GitHub paths are unchanged.
 **Evidence:** sub-issue #191 (string seam everywhere); worktree layout in root `CLAUDE.md`/spec.
 
 ## `EpicListItem` gains `ref`; `number` nullable; numeric epics cache skips file Epics
 **File(s):** `packages/dispatcher/src/github.ts`, `epics-cache.ts`
 **Date:** 2026-06-03
 
-**Decision:** `EpicListItem` gains a required `ref: string` (github: `String(number)`,
+**Decision:** `EpicListItem` gains a required `ref: string` (GitHub: `String(number)`,
 file: slug) and `number` becomes `number | null` (null for a file Epic). `refreshEpics`
 skips rows with `number === null` — the browse cache table is numeric-keyed `(repo, number)`.
 **Why:** `fileEpicGateway.listOpenEpics` must return file Epics, which have only a slug.
-The browse cache is github-only this phase (`refreshEpics` is always called with `ghGitHub`
+The browse cache is GitHub-only this phase (`refreshEpics` is always called with `ghGitHub`
 in `main.ts`); a file-aware browse cache is a later phase, so skipping null-numbered rows
-keeps the numeric table honest without a schema change. github rows are unaffected.
+keeps the numeric table honest without a schema change. GitHub rows are unaffected.
 **Evidence:** `epics-cache.ts` `(repo, number)` PK; #192 integration scope (dispatch+postComment, not browse).
 
 ## File-mode PR-poll resolution (`findPrForEpic`) is a Phase-2 refinement
@@ -102,7 +102,7 @@ poll comments with `authorIsBot` from the marker — the #178-class closure). `g
 delegates to gh. `findPrForEpic`/`findEpicPrLifecycle` delegate to gh for a numeric ref but
 return `null` for a file-mode slug (no PR yet / Phase-1 limitation) rather than feed a slug
 into gh's `Closes #<number>` search (which `refToIssueNumber` would reject).
-**Why:** github's PR-finders resolve a PR by `Closes #<epicNumber>`, which a file Epic (slug,
+**Why:** GitHub's PR-finders resolve a PR by `Closes #<epicNumber>`, which a file Epic (slug,
 no GitHub issue) can't carry; the file↔PR link is the `<!-- middle:epic <slug> -->` body
 marker + `meta.pr`, and `PollGateway` has no by-PR-number snapshot method to fetch through.
 Spec Phase 1 is "File-Epic dispatch (no watcher)"; review-resume on file mode rides Phase 2's
@@ -120,13 +120,13 @@ is unaffected.
 (`makeRoutingEpicGateway`) that reads `repo_config` per call and delegates to the
 repo's file or gh backend, keyed on the method's `repo` arg. `build-deps` defaults
 `github`/`planCommentReader` to the router and routes `postQuestion` by mode
-(file → `appendQuestion`, github → `formatPauseComment` via gh).
+(file → `appendQuestion`, GitHub → `formatPauseComment` via gh).
 **Why:** The spec's "buildImplementationDeps picks the trio" reads as a single
 selection, but the daemon serves many repos through one registration — so the
 selection must happen per-call. Every gateway method already takes `repo` first, so
-a router is the minimal, interface-preserving way to run github repo A and file repo
+a router is the minimal, interface-preserving way to run GitHub repo A and file repo
 B under one daemon. An injected `args.github`/`args.postQuestion` still overrides
-(tests). github-mode repos route to `ghGitHub`, so behavior is byte-identical.
+(tests). GitHub-mode repos route to `ghGitHub`, so behavior is byte-identical.
 **Evidence:** spec "Architecture" ("daemon runs both modes simultaneously"); `main.ts`
 registers one workflow with one deps.
 
@@ -135,12 +135,12 @@ registers one workflow with one deps.
 **Date:** 2026-06-03
 
 **Decision:** The control endpoint now accepts either a non-empty string `epicRef`
-(file mode) or an integer `epicNumber` ≥ 1 (github mode, stringified), building the
+(file mode) or an integer `epicNumber` ≥ 1 (GitHub mode, stringified), building the
 string-keyed `ControlDispatchInput.epicRef` from whichever is present.
 **Why:** A file-mode dispatch references a slug, which the prior numeric-only
 validation rejected. This makes the dispatch entry mode-agnostic so #193's selector
 is reachable end-to-end; the CLI sends the right field in #194. Existing numeric
-clients are unaffected (the github branch is unchanged).
+clients are unaffected (the GitHub branch is unchanged).
 **Evidence:** #193 integration criterion (HTTP dispatch with a file-mode slug).
 
 ## `mm resume` is overloaded: clear-pause vs answer-a-parked-Epic
@@ -166,12 +166,12 @@ looks up the parked workflow by `epic_ref`, so it works in both modes.
 **Date:** 2026-06-03
 
 **Decision:** `mm dispatch <repo> <epic>` (and `--epic <ref>`) accept a file slug or
-a github issue number. A digit-leading ref must be a whole number ≥ 1 (else rejected);
+a GitHub issue number. A digit-leading ref must be a whole number ≥ 1 (else rejected);
 a non-digit-leading ref is a slug. Only a numeric ref triggers the `agent:<name>`
 label lookup via gh; a slug skips gh (file-mode Epics carry their adapter in the file
 meta, which the daemon reads). The POST body now sends `epicRef` (string).
 **Why:** file-mode Epics are slugs; the dispatch entry must accept them and avoid a gh
-call for a non-GitHub Epic. github-mode numeric dispatch is unchanged in behavior.
+call for a non-GitHub Epic. GitHub-mode numeric dispatch is unchanged in behavior.
 **Evidence:** sub-issue #194 (slug-or-number positional + `--epic`).
 
 ## Mode-commands mirror reads the worktree's installed skill (no dispatcher→cli import)
@@ -220,12 +220,12 @@ cron (`StartPollerOptions.fileWatcher`) — same 120s cadence, no new cron. The 
 tracks `lastWatcherTick` and scans each file-mode repo's `epics_dir`; firing the
 resume marks the durable wait fired and flips the question to `resolved` (structural
 dedup — a later tick never re-fires).
-**Why:** file answers can't be detected by the github `createdAt > sinceMs` path (a
+**Why:** file answers can't be detected by the GitHub `createdAt > sinceMs` path (a
 file answer inherits the question's ts, which predates the park) — so file mode needs
 the mtime + open-question-status mechanism. Sharing the cron keeps the cadence
-symmetric with github comment polling and avoids a second timer. `runFileWatcherTick`
+symmetric with GitHub comment polling and avoids a second timer. `runFileWatcherTick`
 is extracted (not inlined in main.ts) so the daemon and the integration test share one
-implementation — no drift. The github resume poll stays untouched.
+implementation — no drift. The GitHub resume poll stays untouched.
 **Evidence:** spec "filePollGateway" file-watcher paragraph; `poller.ts`
 `classifyNewHumanReply` (createdAt-gated); sub-issue #197 "no new cron".
 
@@ -241,12 +241,12 @@ burning the rate-limit probe in a mixed deployment). Fixed by adding
 `makeRoutingPollGateway` (the poller's counterpart to `makeRoutingEpicGateway`) and
 wiring the poller's `github` + the orphan surface to the per-repo routers in `main.ts`.
 For a file-mode repo the routed poll gateway's PR-finders return null and its
-comment-listing reads the Epic file, so the github resume poll is a clean no-op (the
+comment-listing reads the Epic file, so the GitHub resume poll is a clean no-op (the
 file-watcher owns that resume). Also added a reason-guard to `runFileWatcherTick`: it
 only fires when the parked workflow's armed signal is the `answered-question` one (so
 an answer edit can't resume a workflow parked for another reason).
-**Why:** "github mode unchanged" must extend to "file mode doesn't spam/contend the
-github poller". Resolving the class (route every gh-facing poller/recovery seam, not
+**Why:** "GitHub mode unchanged" must extend to "file mode doesn't spam/contend the
+GitHub poller". Resolving the class (route every gh-facing poller/recovery seam, not
 just the implementation deps) within the review's blast radius, each with a test.
 **Evidence:** the adversarial review's BUG 1 / RISK 2 / RISK 3; tests
 `selector.test.ts` (routing poll gateway) + `watcher.test.ts` (reason guard).

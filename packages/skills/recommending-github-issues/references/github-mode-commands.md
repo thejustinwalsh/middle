@@ -1,6 +1,6 @@
-# recommending-github-issues — github-mode commands
+# recommending-github-issues — GitHub-mode commands
 
-The concrete state-issue read/write commands for **github mode**: dispatch units
+The concrete state-issue read/write commands for **GitHub mode**: dispatch units
 are GitHub issues/Epics, and the state body is the `agent-queue:state` issue.
 
 ## Fetch repo state and resolve the Epic graph (Phase 2)

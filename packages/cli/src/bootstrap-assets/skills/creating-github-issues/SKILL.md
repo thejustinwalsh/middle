@@ -8,7 +8,7 @@ allowed-tools: Bash(gh:*), Bash(git:status), Read, Grep, Glob
 
 End-to-end workflow for taking a planning artifact (spec, brainstorm, build doc) and producing a set of well-formed GitHub issues with consistent titles, complete acceptance criteria, proper labels, and correct parent/sub-issue hierarchy. The output is the seed set of work that downstream skills (`implementing-github-issues`, `recommending-github-issues`) operate on.
 
-**Two modes.** Everything below is **github mode** (the default): each Epic is a GitHub issue and sub-issues are native GitHub sub-issues, created with `gh`. If the repo runs in **file mode** (`epic_store = "file"`), an Epic is instead a Markdown file under `planning/epics/` and there is **no `gh issue create`** — see the **"File-mode addendum"** section at the end and `references/file-mode-commands.md`. The principles (read the source fully, mandatory acceptance criteria, hierarchy by default, integration rubric) are identical in both modes; only the authoring mechanics differ.
+**Two modes.** Everything below is **GitHub mode** (the default): each Epic is a GitHub issue and sub-issues are native GitHub sub-issues, created with `gh`. If the repo runs in **file mode** (`epic_store = "file"`), an Epic is instead a Markdown file under `planning/epics/` and there is **no `gh issue create`** — see the **"File-mode addendum"** section at the end and `references/file-mode-commands.md`. The principles (read the source fully, mandatory acceptance criteria, hierarchy by default, integration rubric) are identical in both modes; only the authoring mechanics differ.
 
 ## Core principles
 
@@ -540,7 +540,7 @@ blocked-by: [other-epic-slug]
 ## Context
 
 <1-3 paragraphs: what this Epic delivers, where in the spec it comes from. Same
-content you'd put in a github-mode parent's Context.>
+content you'd put in a GitHub-mode parent's Context.>
 
 ## Acceptance criteria
 
@@ -582,7 +582,7 @@ content you'd put in a github-mode parent's Context.>
 
 ### What's the same, what's different
 
-| Concern | github mode | file mode |
+| Concern | GitHub mode | file mode |
 |---|---|---|
 | Epic | a GitHub issue | `planning/epics/<slug>.md` |
 | Sub-issue | native GitHub sub-issue | `<!-- middle:sub-issue id=N -->` block in the file |

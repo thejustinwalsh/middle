@@ -6,7 +6,7 @@ Markdown, not GitHub issues. PRs/reviews/CI remain GitHub-native, but issue
 creation is not part of file mode at all.
 
 The workflow phases (read the source, inventory, decide hierarchy, triage unknowns,
-audit against the integration rubric) are identical to the github-mode body. Only
+audit against the integration rubric) are identical to the GitHub-mode body. Only
 the "file the issues" mechanics change: instead of `gh issue create` + sub-issue
 REST attaches, you write one Epic file per Epic.
 
@@ -36,7 +36,7 @@ blocked-by: [other-epic-slug]
 
 ## Context
 
-<1-3 paragraphs pointing to the spec section; same content as a github-mode
+<1-3 paragraphs pointing to the spec section; same content as a GitHub-mode
 parent's Context.>
 
 ## Acceptance criteria
@@ -78,7 +78,7 @@ YAML-lite, one key per line, between `<!-- middle:meta` and `-->`:
 (`pr:` and `closed:` also live in meta but are written by the dispatcher at
 runtime — do not author them.)
 
-## Rules that carry over from the github-mode body
+## Rules that carry over from the GitHub-mode body
 
 - **Acceptance criteria are mandatory** — both Epic-level (`## Acceptance criteria`)
   and per sub-issue (`*Acceptance:*`). Same concrete/verifiable/scoped bar.

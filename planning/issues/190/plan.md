@@ -15,7 +15,7 @@ parallel file implementations selected per-repo at bootstrap.
 - The foundation (gateway rename, migrations 007/008/009, Epic-file parser/renderer +
   byte-identical round-trip) merged in PR #188 and is already on this branch's base.
 - Make the workflow seam string-keyed (`epicRef: string`) so a file slug is a
-  first-class Epic identifier; github mode parses `Number(epicRef)` at the `gh` boundary.
+  first-class Epic identifier; GitHub mode parses `Number(epicRef)` at the `gh` boundary.
 - Add three composite file gateways: Epic/state methods read/write local files via the
   existing pure parser+renderer; PR-shaped methods delegate to an injected `gh` backend.
 - Select the gateway trio per-repo from `repo_config.epic_store` in `build-deps.ts`.
@@ -30,7 +30,7 @@ parallel file implementations selected per-repo at bootstrap.
 3. **#193** feat(epic-store): bootstrap selector + `postQuestion` file-mode wiring — *blocked by #192*
 4. **#194** feat(cli): `mm init/dispatch/doctor/resume` — file-mode support — *blocked by #193*
 5. **#195** refactor(skills): abstract Epic-aware skills + dispatch-brief mode injection — *blocked by #193*
-6. **#196** test(epic-store): parity test (github ⇔ file) + Phase 1 smoke — *blocked by #194, #195*
+6. **#196** test(epic-store): parity test (GitHub ⇔ file) + Phase 1 smoke — *blocked by #194, #195*
 7. **#197** feat(epic-store): Phase 2 — file-watcher Q&A loop on the poller cron — *blocked by #196*
 
 ## Files likely to change

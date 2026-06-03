@@ -1,7 +1,7 @@
 /**
  * `fileEpicGateway` — the file-backed `EpicGateway`. A **composite**: Epic-shaped
  * methods read/write the local Epic file (via the round-trip-pure
- * `epic-file/{parser,renderer}`); PR-shaped and github-native-issue methods
+ * `epic-file/{parser,renderer}`); PR-shaped and GitHub-native-issue methods
  * delegate to an injected `gh` backend (PRs/reviews/CI are GitHub-native in both
  * modes — the "hybrid" of the design).
  *
@@ -24,7 +24,7 @@ export const FILE_HUMAN_LOGIN = "human";
 export type FileEpicGatewayDeps = {
   /** Absolute path to this repo's Epic directory (`planning/epics`). */
   epicsDir: string;
-  /** Backend for PR-shaped + github-native-issue methods (the hybrid half). */
+  /** Backend for PR-shaped + GitHub-native-issue methods (the hybrid half). */
   gh: EpicGateway;
   /** Wall-clock for the dispatch-event timestamp; injectable for deterministic tests. */
   now?: () => Date;
@@ -69,16 +69,24 @@ function conversationToComments(
   return comments;
 }
 
+/**
+ * Build the file-backed `EpicGateway` for one repo's Epic directory — a composite.
+ * Each method that takes a `ref` routes by `epicFileExists`: a slug (a `<slug>.md`
+ * file) is served from the local Epic file via the round-trip-pure
+ * `epic-file/{parser,renderer}`; a numeric PR/issue ref with no matching file falls
+ * through to the injected `gh` backend (PRs/reviews/CI stay GitHub-native). `now` is
+ * an injectable clock seam (defaults to `Date`) for deterministic tests.
+ */
 export function makeFileEpicGateway(deps: FileEpicGatewayDeps): EpicGateway {
   const { epicsDir, gh } = deps;
   const now = deps.now ?? (() => new Date());
 
   return {
-    // ── delegated to gh (PR-shaped + github-native; hybrid half) ──────────────
+    // ── delegated to gh (PR-shaped + GitHub-native; hybrid half) ──────────────
     getPullRequest: (repo, prNumber) => gh.getPullRequest(repo, prNumber),
     editPullRequestBody: (repo, prNumber, body) => gh.editPullRequestBody(repo, prNumber, body),
     // editComment edits a GitHub PR/issue comment in place (gate-evidence upsert),
-    // which is github-native in file mode too — delegate.
+    // which is GitHub-native in file mode too — delegate.
     editComment: (repo, commentId, body) => gh.editComment(repo, commentId, body),
     listOpenIssues: (repo) => gh.listOpenIssues(repo),
     listMergedPrsClosingRefs: (repo) => gh.listMergedPrsClosingRefs(repo),

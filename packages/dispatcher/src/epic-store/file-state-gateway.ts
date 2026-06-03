@@ -11,7 +11,7 @@
  * for file mode.
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { StateGateway } from "../state-issue.ts";
 
@@ -20,6 +20,14 @@ export type FileStateGatewayDeps = {
   stateFile: string;
 };
 
+/**
+ * Build the file-backed `StateGateway` for one repo's recommender state file.
+ * `readBody` returns the file verbatim (throwing a `mm init` hint when it's
+ * absent); `writeBody` is atomic — it writes a hidden sibling temp (`.<name>.tmp`,
+ * named via `node:path` `basename` so it's separator-safe) then `rename`s it over
+ * the target, creating parent dirs and cleaning up the temp on failure. The
+ * `_issueNumber` arg is interface-shared but unused in file mode.
+ */
 export function makeFileStateGateway(deps: FileStateGatewayDeps): StateGateway {
   const { stateFile } = deps;
   return {
@@ -34,7 +42,7 @@ export function makeFileStateGateway(deps: FileStateGatewayDeps): StateGateway {
       // Atomic write: temp sibling + rename, so a concurrent reader never sees a
       // half-written state file. The temp is cleaned up on a write failure.
       mkdirSync(dirname(stateFile), { recursive: true });
-      const tmp = join(dirname(stateFile), `.${pathStem(stateFile)}.tmp`);
+      const tmp = join(dirname(stateFile), `.${basename(stateFile)}.tmp`);
       try {
         writeFileSync(tmp, body);
         renameSync(tmp, stateFile);
@@ -44,9 +52,4 @@ export function makeFileStateGateway(deps: FileStateGatewayDeps): StateGateway {
       }
     },
   };
-}
-
-/** The filename (without directory) of a path — for naming the sibling temp file. */
-function pathStem(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1);
 }

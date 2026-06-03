@@ -1,6 +1,6 @@
 # implementing-github-issues — file-mode commands
 
-The file-mode equivalents of every Epic/plan/sub-issue/conversation operation the skill body refers to mode-agnostically. In **file mode** the Epic is a Markdown file at `planning/epics/<slug>.md` (the slug is the file's stem and the canonical Epic reference), and the agent-↔-human conversation lives in that file's `<!-- middle:conversation -->` section. **PRs, reviews, and CI stay GitHub-native** — the PR/CI commands are identical to github mode (`gh pr …`).
+The file-mode equivalents of every Epic/plan/sub-issue/conversation operation the skill body refers to mode-agnostically. In **file mode** the Epic is a Markdown file at `planning/epics/<slug>.md` (the slug is the file's stem and the canonical Epic reference), and the agent-↔-human conversation lives in that file's `<!-- middle:conversation -->` section. **PRs, reviews, and CI stay GitHub-native** — the PR/CI commands are identical to GitHub mode (`gh pr …`).
 
 ## The one rule that governs every write below
 
@@ -58,7 +58,7 @@ Each `<!-- middle:sub-issue id=N -->` block is one phase. An *open* sub-issue is
 
 ## Post the plan to the Epic (Phase 4)
 
-The plan goes into the Epic file's `<!-- middle:conversation -->` section as a conversation entry — **written by the renderer, not by hand.** Under middle's dispatch this is the plan step the dispatcher records via the renderer; the plan-comment guard then verifies a plan entry exists in the conversation section. You author the plan body (in `planning/epics/<slug>.md`'s adjacent `planning/issues/<slug>/plan.md`, same as github mode); the renderer appends it to the conversation. Do not edit the conversation markers yourself.
+The plan goes into the Epic file's `<!-- middle:conversation -->` section as a conversation entry — **written by the renderer, not by hand.** Under middle's dispatch this is the plan step the dispatcher records via the renderer; the plan-comment guard then verifies a plan entry exists in the conversation section. You author the plan body (in `planning/epics/<slug>.md`'s adjacent `planning/issues/<slug>/plan.md`, same as GitHub mode); the renderer appends it to the conversation. Do not edit the conversation markers yourself.
 
 ## Close a sub-issue with evidence
 
@@ -75,7 +75,7 @@ The recommender's "open sub-issues" count scans for unchecked boxes, so a checke
 
 ## Ask a question / surface a blocker
 
-Identical agent action to github mode: write `<worktree>/.middle/blocked.json` and exit. The dispatcher's file-backed writer appends a `<!-- middle:question id=N status=open … -->` block to the conversation section **via the renderer** — you never write the question marker yourself. The human answers by editing the `<!-- middle:answer for=N -->` block in the file (the file-watcher fires resume when that block becomes non-empty) or by running:
+Identical agent action to GitHub mode: write `<worktree>/.middle/blocked.json` and exit. The dispatcher's file-backed writer appends a `<!-- middle:question id=N status=open … -->` block to the conversation section **via the renderer** — you never write the question marker yourself. The human answers by editing the `<!-- middle:answer for=N -->` block in the file (the file-watcher fires resume when that block becomes non-empty) or by running:
 
 ```bash
 mm resume <repo> <slug> --answer "…"
@@ -100,7 +100,7 @@ A "parent for a natural collection" is the Epic itself — file each related ite
 
 A genuinely cross-workstream item is a *new Epic file*: author `planning/epics/<other-slug>.md` with its own `<!-- middle:epic v1 -->` + `<!-- middle:meta -->` (see "creating-github-issues" file-mode addendum). A "Discovered while working on: <slug>" line in its Context is the cross-reference. Again — no `gh issue create`.
 
-## PR / CI operations (GitHub-native — same as github mode)
+## PR / CI operations (GitHub-native — same as GitHub mode)
 
 PRs, reviews, and CI are GitHub-native in file mode too. Use the same commands the skill body lists inline:
 
