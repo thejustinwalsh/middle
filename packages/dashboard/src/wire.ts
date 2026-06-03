@@ -62,7 +62,14 @@ export type RunnerSummary = {
   /** The tmux session name — the key for `/api/sessions/:session/*`. */
   session: string;
   workflowId: string;
+  /** The github-mode Epic issue number, or null in file mode. */
   epic: number | null;
+  /**
+   * The canonical Epic reference: a slug in file mode (`epic` is then null), or
+   * `String(epic)` / null in github mode. Renders as a `file://` link when set
+   * and `epic` is null; github-mode rows render from `epic`.
+   */
+  epicRef: string | null;
   adapter: string;
   /** `sub-issue 2/4` or `running`. */
   progress: string;
@@ -104,7 +111,14 @@ export type RunnerPanel = {
   session: string;
   workflowId: string;
   repo: string;
+  /** The github-mode Epic issue number, or null in file mode. */
   epic: number | null;
+  /**
+   * The canonical Epic reference: a slug in file mode (`epic` is then null), or
+   * `String(epic)` / null in github mode. Renders as a `file://` link when set
+   * and `epic` is null; github-mode rows render from `epic`.
+   */
+  epicRef: string | null;
   adapter: string;
   state: string;
   controlledBy: "middle" | "human";

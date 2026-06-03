@@ -7,6 +7,7 @@
 import type { RunnerSummary } from "../../wire.ts";
 import { ago } from "../format.ts";
 import { CopyCommand } from "./CopyCommand.tsx";
+import { EpicRef } from "./EpicRef.tsx";
 
 export function RunnerRow({
   runner,
@@ -28,8 +29,8 @@ export function RunnerRow({
         className="runner-open"
         onClick={() => onOpenInspector?.(runner.session)}
       >
-        #{runner.epic ?? "—"} · {runner.adapter} · {runner.progress} ·{" "}
-        {ago(runner.lastHeartbeat, now)} ago
+        <EpicRef epicNumber={runner.epic} epicRef={runner.epicRef} fallback="#—" /> ·{" "}
+        {runner.adapter} · {runner.progress} · {ago(runner.lastHeartbeat, now)} ago
       </button>
       {runner.controlledBy === "human" ? <span className="badge human">human</span> : null}
       <span className="runner-actions">

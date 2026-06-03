@@ -81,6 +81,7 @@ type WorkflowRow = {
   id: string;
   repo: string;
   epic_number: number | null;
+  epic_ref: string | null;
   adapter: string;
   state: string;
   controlled_by: string;
@@ -94,7 +95,7 @@ type WorkflowRow = {
 };
 
 const WORKFLOW_COLUMNS =
-  "id, repo, epic_number, adapter, state, controlled_by, session_name, transcript_path, worktree_path, current_sub_issue, pr_number, pr_branch, last_heartbeat";
+  "id, repo, epic_number, epic_ref, adapter, state, controlled_by, session_name, transcript_path, worktree_path, current_sub_issue, pr_number, pr_branch, last_heartbeat";
 
 /** Lifecycle states a workflow has finished in — excluded from "in flight". */
 const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as const;
@@ -117,6 +118,7 @@ function toRunnerSummary(row: WorkflowRow): RunnerSummary {
     session: row.session_name ?? row.id,
     workflowId: row.id,
     epic: row.epic_number,
+    epicRef: row.epic_ref,
     adapter: row.adapter,
     progress: progressOf(row),
     state: row.state,
@@ -437,6 +439,7 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
         workflowId: row.id,
         repo: row.repo,
         epic: row.epic_number,
+        epicRef: row.epic_ref,
         adapter: row.adapter,
         state: row.state,
         controlledBy: row.controlled_by === "human" ? "human" : "middle",
