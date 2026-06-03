@@ -4,18 +4,25 @@
  * signed-in `CODEX_HOME`, `tmux`, and network, so it's a manual/CI-gated probe.
  *
  * It exercises the **real adapter code** — `codexAdapter.installHooks`,
- * `buildLaunchCommand`, and `enterAutoMode` — end to end:
+ * `buildLaunchCommand`, and `enterAutoMode` — end to end, driving the **real
+ * dispatcher launch order** for a `startsSessionOnFirstPrompt` adapter (#183):
  *   1. installHooks writes `.codex/config.toml` + `hook.sh` + the gate + the
  *      auth symlink into a fresh worktree.
  *   2. A local HTTP receiver stands in for the dispatcher, recording every
  *      `POST /hooks/:event` (the normalized events) and allowing the
  *      `/gates/pr-ready` gate (200).
  *   3. buildLaunchCommand's argv+env (incl. `CODEX_HOME`) launch interactive
- *      codex in tmux; enterAutoMode answers the trust dialog(s).
- *   4. A prompt makes the agent run one shell command, then stop.
+ *      codex in tmux.
+ *   4. PROMPT-FIRST ordering (mirrors `implementation.ts` launch→drive): await
+ *      `enterAutoMode` (answers the trust dialog(s), returns on composer-ready),
+ *      THEN send the prompt, THEN await `session.started`. codex fires no
+ *      SessionStart until the prompt arrives, so this order is what makes a live
+ *      dispatch work — the old await-first order would deadlock.
  *   5. We assert the heartbeat arrived: `session.started` (carrying
  *      `transcript_path`), `turn.started`, `tool.pre`, `tool.post`,
- *      `agent.stopped`.
+ *      `agent.stopped` — AND that `session.started` arrived only AFTER the prompt
+ *      was sent (proving the prompt-triggered-session behavior), AND that
+ *      `enterAutoMode` returned promptly (composer-ready, not the boot deadline).
  *
  * Run: `bun run packages/adapters/codex/scripts/verify-live-hooks.ts`
  * Exits 0 on PASS, 1 on FAIL.
@@ -101,18 +108,21 @@ async function main(): Promise<void> {
   newSessionArgs.push(...argv);
   await sh(newSessionArgs);
 
-  // 4. Drive: enterAutoMode answers the trust dialog(s). Fire-and-forget exactly
-  //    like the dispatcher (`void dismissPromise`) — do NOT await its full boot
-  //    window; send the prompt as soon as SessionStart lands.
-  void codexAdapter.enterAutoMode({ sessionName: SESSION }).catch((e: unknown) => {
-    console.error(`enterAutoMode error: ${(e as Error).message}`);
-  });
-
-  // Wait for SessionStart to land (transcript_path proves the hook fired).
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline && !received.some((r) => r.event === "session.started")) {
-    await Bun.sleep(500);
+  // 4. Drive in the real dispatcher order for a startsSessionOnFirstPrompt
+  //    adapter: AWAIT enterAutoMode (answers the trust dialog(s) and returns on
+  //    composer-ready), THEN send the prompt, THEN await session.started. codex
+  //    fires no SessionStart until the prompt arrives.
+  if (codexAdapter.startsSessionOnFirstPrompt !== true) {
+    console.error("FAIL: codexAdapter.startsSessionOnFirstPrompt is not true");
+    process.exit(1);
   }
+  const enterStart = Date.now();
+  await codexAdapter.enterAutoMode({ sessionName: SESSION });
+  const enterMs = Date.now() - enterStart;
+  console.log(`enterAutoMode returned in ${enterMs}ms (composer-ready)`);
+
+  // No session must exist yet — codex is prompt-triggered.
+  const sessionStartedBeforePrompt = received.some((r) => r.event === "session.started");
 
   // Send the prompt, then Enter — split like the dispatcher's sendText/sendEnter
   // (a combined send can submit before the TUI registers the typed text). `-l`
@@ -127,6 +137,14 @@ async function main(): Promise<void> {
   ]);
   await Bun.sleep(500);
   await sh(["tmux", "send-keys", "-t", SESSION, "Enter"]);
+  const promptSentAt = Date.now();
+
+  // Wait for session.started (transcript_path proves the hook fired) — it should
+  // arrive only AFTER the prompt above.
+  const startDeadline = Date.now() + 90_000;
+  while (Date.now() < startDeadline && !received.some((r) => r.event === "session.started")) {
+    await Bun.sleep(500);
+  }
 
   // Wait for agent.stopped (turn boundary).
   const stopDeadline = Date.now() + 90_000;
@@ -138,17 +156,26 @@ async function main(): Promise<void> {
   await sh(["tmux", "kill-session", "-t", SESSION]);
   await server.stop(true);
 
-  // 5. Assert the heartbeat.
+  // 5. Assert the heartbeat AND the prompt-first invariants.
   const events = received.map((r) => r.event);
   const want = ["session.started", "turn.started", "tool.pre", "tool.post", "agent.stopped"];
   const missing = want.filter((w) => !events.includes(w));
   const sessionStart = received.find((r) => r.event === "session.started");
   const hasTranscriptPath = typeof sessionStart?.payload.transcript_path === "string";
+  // enterAutoMode must return on composer-ready, well before the boot deadline —
+  // otherwise prompt-first would stall every launch.
+  const enterReturnedPromptly = enterMs < 60_000;
+  // session.started must be prompt-triggered: absent before the prompt was sent.
+  const promptTriggered = !sessionStartedBeforePrompt;
 
   console.log("=== received normalized events (in order) ===");
   console.log(events.join("\n") || "(none)");
   console.log("\n=== session.started payload ===");
   console.log(JSON.stringify(sessionStart?.payload ?? {}, null, 2));
+  console.log("\n=== prompt-first invariants ===");
+  console.log(`enterAutoMode returned in ${enterMs}ms (promptly: ${enterReturnedPromptly})`);
+  console.log(`session.started before prompt sent: ${sessionStartedBeforePrompt} (want false)`);
+  console.log(`prompt sent at +${promptSentAt - enterStart}ms from enterAutoMode start`);
   console.log("\n=== final pane tail ===");
   console.log(
     finalPane
@@ -158,14 +185,20 @@ async function main(): Promise<void> {
       .join("\n"),
   );
 
-  const ok = missing.length === 0 && hasTranscriptPath;
+  const ok = missing.length === 0 && hasTranscriptPath && enterReturnedPromptly && promptTriggered;
   console.log(`\n=== ${ok ? "PASS" : "FAIL"} ===`);
   if (!ok) {
     if (missing.length) console.log(`missing events: ${missing.join(", ")}`);
     if (!hasTranscriptPath) console.log("session.started carried no transcript_path");
+    if (!enterReturnedPromptly) console.log(`enterAutoMode stalled to ${enterMs}ms`);
+    if (!promptTriggered)
+      console.log("session.started fired BEFORE the prompt (not prompt-triggered)");
     process.exit(1);
   }
-  console.log("all heartbeat events fired through the real adapter; transcript_path present.");
+  console.log(
+    "all heartbeat events fired through the real adapter (prompt-first order); " +
+      "session.started is prompt-triggered and carries transcript_path.",
+  );
 }
 
 await main();
