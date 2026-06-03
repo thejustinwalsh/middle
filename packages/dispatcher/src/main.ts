@@ -41,6 +41,7 @@ import {
   readEpicStoreConfig,
   registerManagedRepo,
 } from "./repo-config.ts";
+import { makeRoutingEpicGateway, makeRoutingPollGateway } from "./epic-store/index.ts";
 import { runFileWatcherTick } from "./epic-store/watcher.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateGateway } from "./state-issue.ts";
@@ -233,6 +234,23 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     repoPaths.set(repo, repoPath);
     registerManagedRepo(db, repo, repoPath);
   };
+
+  const resolveRepoPath = (repo: string): string => {
+    const path = repoPaths.get(repo);
+    if (path === undefined) throw new Error(`no checkout path registered for repo ${repo}`);
+    return path;
+  };
+  // Per-repo routing gateways: the daemon serves many repos through one poller +
+  // recovery surface, but Epic-store mode is per-repo. These route each call to the
+  // repo's file or gh backend so a file-mode slug never reaches gh's numeric
+  // `Closes #<n>` finders (which would throw `refToIssueNumber` every tick).
+  const routingEpicGateway = makeRoutingEpicGateway({ db, resolveRepoPath, ghEpic: ghGitHub });
+  const routingPollGateway = makeRoutingPollGateway({
+    db,
+    resolveRepoPath,
+    ghEpic: ghGitHub,
+    ghPoll: ghPollGateway,
+  });
 
   // ── Auto-dispatch (build spec → "Auto-dispatch loop") ──────────────────────
   // The collision-guarded enqueue: the single source of truth for the 409 guard
@@ -513,11 +531,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const { deps } = await buildImplementationDeps({
     db,
     getAdapter,
-    resolveRepoPath: (repo) => {
-      const path = repoPaths.get(repo);
-      if (path === undefined) throw new Error(`no checkout path registered for repo ${repo}`);
-      return path;
-    },
+    resolveRepoPath,
     worktreeRoot: config.global.worktreeRoot,
     // The dispatch brief tells the agent its fork budget — the repo's
     // `[limits] complexity_ceiling` (default 3), resolved per repo.
@@ -693,7 +707,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         `[recover] orphaned parked signal '${signalName}' for ${repo}#${epicRef ?? "?"} (workflow ${workflowId}) — no recoverable execution; finalized failed`,
       );
       if (epicRef === null) return;
-      return ghGitHub
+      // Route per-repo: a file-mode orphan's slug would throw on the raw gh poster.
+      return routingEpicGateway
         .postComment(
           repo,
           epicRef,
@@ -802,7 +817,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const stopPoller = await startPoller(
     {
       db,
-      github: ghPollGateway,
+      // Per-repo routing: a file-mode parked Epic's slug never hits gh's numeric
+      // PR-finders (file-mode resume rides the file-watcher pass below).
+      github: routingPollGateway,
       fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
       // Reconcile pass: when a parked Epic's PR has merged/closed, finalize the row
       // and best-effort tear down its worktree (repo checkout from the registry).

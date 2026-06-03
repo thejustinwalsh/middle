@@ -147,6 +147,34 @@ export function makeRoutingEpicGateway(deps: {
 }
 
 /**
+ * A daemon-global `PollGateway` that routes each call to the right per-repo backend
+ * (file or gh), keyed on the method's `repo` argument — the poller's counterpart to
+ * {@link makeRoutingEpicGateway}. Without it, the poller would feed a file-mode
+ * slug into gh's `Closes #<number>` finders (which `refToIssueNumber` rejects),
+ * throwing every tick for a parked file-mode Epic; routed, a file-mode repo's
+ * PR-finders return null and its comment-listing reads the Epic file, so the github
+ * resume poll is a clean no-op for file mode (the file-watcher owns that resume).
+ * `getRateLimit` has no repo and always delegates to gh (the budget is global).
+ */
+export function makeRoutingPollGateway(deps: {
+  db: Database;
+  resolveRepoPath: (repo: string) => string;
+  ghEpic?: EpicGateway;
+  ghPoll?: PollGateway;
+}): PollGateway {
+  const ghEpic = deps.ghEpic ?? ghGitHub;
+  const ghPoll = deps.ghPoll ?? ghPollGateway;
+  const pollFor = (repo: string): PollGateway =>
+    trioForRepo(deps.db, repo, deps.resolveRepoPath, { epic: ghEpic, poll: ghPoll }).pollGateway;
+  return {
+    listIssueComments: (repo, ref) => pollFor(repo).listIssueComments(repo, ref),
+    findPrForEpic: (repo, epicRef) => pollFor(repo).findPrForEpic(repo, epicRef),
+    findEpicPrLifecycle: (repo, epicRef) => pollFor(repo).findEpicPrLifecycle(repo, epicRef),
+    getRateLimit: () => ghPoll.getRateLimit(),
+  };
+}
+
+/**
  * Append a `<!-- middle:question -->` block to an Epic file's conversation — the
  * file-mode `postQuestion` endpoint (the agent-side of #178's class, structurally
  * distinct from any human-written `<!-- middle:answer -->`). The renderer is the

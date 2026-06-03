@@ -8,7 +8,14 @@ import {
   buildFileGateways,
   buildGitHubGateways,
   makeRoutingEpicGateway,
+  makeRoutingPollGateway,
 } from "../../src/epic-store/index.ts";
+import type {
+  EpicPrLifecycle,
+  PollGateway,
+  PrSnapshot,
+  RateLimitStatus,
+} from "../../src/poller.ts";
 import { ghGitHub } from "../../src/github.ts";
 import { ghPollGateway } from "../../src/poller-gateway.ts";
 import { ghStateIssueGateway } from "../../src/state-issue.ts";
@@ -96,6 +103,55 @@ describe("makeRoutingEpicGateway", () => {
       // github repo (no config row) → delegates to the gh backend
       expect(await router.getIssueLabels("o/github", "7")).toEqual(["gh-label"]);
       expect(ghLabelsCalled).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("makeRoutingPollGateway", () => {
+  test("a file-mode slug never reaches gh's numeric PR-finders; github delegates", async () => {
+    const scratch = tmpDir("middle-pollroute-");
+    const db = openAndMigrate(join(scratch, "db.sqlite3"));
+    try {
+      const repoDir = join(scratch, "repo");
+      const epicsDir = join(repoDir, "planning", "epics");
+      mkdirSync(epicsDir, { recursive: true });
+      seedEpic(epicsDir, "rollout", []);
+      registerManagedRepo(db, "o/file", repoDir);
+      setEpicStoreConfig(db, "o/file", {
+        mode: "file",
+        epicsDir: "planning/epics",
+        stateFile: ".middle/state.md",
+      });
+      const ghCalls: string[] = [];
+      const ghPoll: PollGateway = {
+        async listIssueComments() {
+          return [];
+        },
+        async findPrForEpic(_repo, epicRef): Promise<PrSnapshot | null> {
+          ghCalls.push(`findPr:${epicRef}`);
+          return { number: 5, reviewDecision: null, reviews: [], labels: [] };
+        },
+        async findEpicPrLifecycle(): Promise<EpicPrLifecycle | null> {
+          return { number: 5, state: "OPEN" };
+        },
+        async getRateLimit(): Promise<RateLimitStatus> {
+          ghCalls.push("rate");
+          return { remaining: 4999, resetAt: 0 };
+        },
+      };
+      const router = makeRoutingPollGateway({ db, resolveRepoPath: () => repoDir, ghPoll });
+
+      // file repo: the slug routes to the file poll gateway → null, gh never consulted.
+      expect(await router.findPrForEpic("o/file", "rollout")).toBeNull();
+      expect(ghCalls).toEqual([]);
+      // github repo (no config): delegates to the gh poll backend.
+      expect(await router.findPrForEpic("o/github", "7")).toMatchObject({ number: 5 });
+      expect(ghCalls).toEqual(["findPr:7"]);
+      // getRateLimit always delegates to gh (the budget is global, no repo).
+      await router.getRateLimit();
+      expect(ghCalls).toContain("rate");
     } finally {
       db.close();
     }

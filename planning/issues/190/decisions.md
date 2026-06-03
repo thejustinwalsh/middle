@@ -228,3 +228,25 @@ is extracted (not inlined in main.ts) so the daemon and the integration test sha
 implementation — no drift. The github resume poll stays untouched.
 **Evidence:** spec "filePollGateway" file-watcher paragraph; `poller.ts`
 `classifyNewHumanReply` (createdAt-gated); sub-issue #197 "no new cron".
+
+## Self-review hardening: route the poller + recovery surface; guard the watcher's reason
+**File(s):** `epic-store/index.ts`, `main.ts`, `epic-store/watcher.ts`
+**Date:** 2026-06-03
+
+**Decision:** A clean-eyes review caught that the poller, its merged-parks reconciler,
+and the orphan-recovery comment surface were still wired to the raw `ghPollGateway`/
+`ghGitHub` — so a parked **file-mode** Epic's slug reached gh's numeric `Closes #<n>`
+finders and threw `refToIssueNumber` every 120s tick (caught + logged, but noisy and
+burning the rate-limit probe in a mixed deployment). Fixed by adding
+`makeRoutingPollGateway` (the poller's counterpart to `makeRoutingEpicGateway`) and
+wiring the poller's `github` + the orphan surface to the per-repo routers in `main.ts`.
+For a file-mode repo the routed poll gateway's PR-finders return null and its
+comment-listing reads the Epic file, so the github resume poll is a clean no-op (the
+file-watcher owns that resume). Also added a reason-guard to `runFileWatcherTick`: it
+only fires when the parked workflow's armed signal is the `answered-question` one (so
+an answer edit can't resume a workflow parked for another reason).
+**Why:** "github mode unchanged" must extend to "file mode doesn't spam/contend the
+github poller". Resolving the class (route every gh-facing poller/recovery seam, not
+just the implementation deps) within the review's blast radius, each with a test.
+**Evidence:** the adversarial review's BUG 1 / RISK 2 / RISK 3; tests
+`selector.test.ts` (routing poll gateway) + `watcher.test.ts` (reason guard).
