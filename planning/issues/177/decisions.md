@@ -1,5 +1,58 @@
 # Decisions — Issue #177 (Codex adapter, live 0.133.0)
 
+## RESOLUTION (2026-06-03): maintainer approved Option A — implemented criterion 5 prompt-first
+**File(s):** `packages/core/src/adapter.ts`, `packages/adapters/codex/src/index.ts`, `packages/dispatcher/src/workflows/implementation.ts`, `packages/adapters/codex/scripts/verify-live-hooks.ts`
+**Date:** 2026-06-03
+
+**The decision:** The maintainer (`thejustinwalsh`, OWNER) ended the park — posted
+**"Approved: A"** on #177 and applied the `approved` label (06:49Z). That selects
+the recommended Option A from the DISCOVERY note below and #183: an additive,
+optional `AgentAdapter` capability flag plus a dispatcher prompt-first launch
+branch. (All prior "resumes" were #178 poller misfires; #178/PR #184 are now
+merged. This is the first genuine decision — confirmed: OWNER association, literal
+"Approved: A", `approved` label by the maintainer.)
+
+**What shipped (Option A, folded into PR #182 per #183's "within PR #182" path):**
+1. `AgentAdapter.startsSessionOnFirstPrompt?: boolean` — additive, optional,
+   documented. Absent/`false` = today's boot-triggered order (Claude). The
+   `AgentAdapter` signature only *grows* an optional field; every existing adapter
+   and call site compiles unchanged.
+2. Dispatcher `launch→drive` branches on the flag (`implementation.ts`): for a
+   flagged adapter it **awaits `enterAutoMode` (dialogs) → sends the prompt →
+   awaits `session.started`**; unflagged keeps **await-first → send prompt**. The
+   hook server already stashes a `session.started` that lands before the gate is
+   parked (`hook-server.ts` `#deliver`/`#await`), so the prompt racing ahead of the
+   await is race-safe. The Claude path's call sequence is unchanged (regression
+   test + a Claude-adapter "flag stays unset" test).
+3. codex sets `startsSessionOnFirstPrompt: true` and `enterAutoMode` now returns
+   the instant the composer is ready (`detectReadyForInput` — the
+   `OpenAI Codex (vX.Y.Z)` welcome banner, captured live), instead of idling to the
+   90s boot deadline. That promptness is load-bearing: the dispatcher now *awaits*
+   `enterAutoMode` before sending the prompt, so a return that lagged to the
+   deadline would stall every launch.
+
+**Why `enterAutoMode` awaited (not fire-and-forget) on the flagged path:** the
+prompt must land at the composer, not a half-dismissed dialog, and a needs-login
+throw should fail the launch fast rather than feed the prompt into a login screen.
+The unflagged path keeps fire-and-forget because there the `session.started` wait
+(not the dialog) is the gate.
+
+**Live evidence (criterion 5 met):** rewrote `verify-live-hooks.ts` to drive the
+real prompt-first order against codex 0.133.0. PASS:
+`enterAutoMode` returned in **1317ms** (composer-ready, not the deadline);
+`session.started` did **not** fire before the prompt (proving prompt-triggered);
+full heartbeat `session.started → turn.started → tool.pre → tool.post →
+agent.stopped` with a real `transcript_path` rollout; the agent ran the shell
+command and stopped. (The old script waited for `session.started` *before* sending
+the prompt — it always fell through its 90s wait and then sent, so it never
+exercised the real dispatcher order; that masked the deadlock. The rewrite is a
+faithful mirror of `implementation.ts`.)
+
+**Candidate count vs ceiling:** Option A was the single clearly-leading candidate
+(see DISCOVERY's candidate space); the only true fork was a scope/design call the
+issue's "no interface change" headline reserved for the maintainer — hence the
+park, now resolved. #183 is closed by this PR.
+
 ## Codex hooks are Claude-Code-shaped — read off the binary + confirmed live
 **File(s):** `packages/adapters/codex/src/hooks.ts`
 **Date:** 2026-05-29
