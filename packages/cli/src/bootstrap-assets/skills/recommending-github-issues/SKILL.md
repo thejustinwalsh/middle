@@ -123,6 +123,8 @@ surfaces it as `needs-human`. You do not estimate or gate on it here.
 `excluded` is not ranked this cycle. Categories fixed (see schema). An Epic with no
 open sub-issues is `excluded` (`no open sub-issues`) — it is effectively done.
 
+**Silent exclusion is the failure mode.** If an open issue would qualify as an Epic by every other rule (has sub-issues, isn't archived, isn't the state issue itself) but is **missing the `epic` label**, surface it in `## Excluded` with the reason `missing 'epic' label — add via 'gh issue edit <n> --add-label epic' so the recommender will rank it`. Don't drop it without a trace: a misfiled Epic that just vanishes from the queue is what makes "stuck dispatch" diagnostically opaque (see middle's own #190 incident — 90 minutes lost because the recommender silently filtered an Epic that the dispatcher could otherwise have ranked first).
+
 **Adapter selection:**
 1. Explicit `agent:<name>` label on the Epic overrides
 2. Else `config.default_adapter`
