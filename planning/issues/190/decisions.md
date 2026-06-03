@@ -173,3 +173,21 @@ meta, which the daemon reads). The POST body now sends `epicRef` (string).
 **Why:** file-mode Epics are slugs; the dispatch entry must accept them and avoid a gh
 call for a non-GitHub Epic. github-mode numeric dispatch is unchanged in behavior.
 **Evidence:** sub-issue #194 (slug-or-number positional + `--epic`).
+
+## Mode-commands mirror reads the worktree's installed skill (no dispatcher→cli import)
+**File(s):** `packages/dispatcher/src/workflows/implementation.ts`, `build-deps.ts`
+**Date:** 2026-06-03
+
+**Decision:** `ensurePromptFile`'s sibling `mirrorModeCommands` copies the run's
+`<worktree>/.claude/skills/implementing-github-issues/references/<mode>-mode-commands.md`
+(installed by `mm init`, byte-identical to `packages/skills/` via the sync mirror) into
+`<worktree>/.middle/skills/.../references/`. The mode comes from a new
+`resolveEpicStoreMode` deps seam (default: `readEpicStoreConfig(db, repo).mode`). It's
+best-effort — a worktree predating the per-mode references is a no-op, never a failure.
+**Why:** the source is the worktree's own installed skill, so the dispatcher needs no
+import of the CLI's `CANONICAL_SKILLS_DIR` (which would invert the cli→dispatcher
+dependency). The agent then reads one mode-resolved file instead of choosing between
+both. The mode is injected (DI) so the workflow stays db-free, matching
+`resolveComplexityCeiling`/`isEpicApproved`.
+**Evidence:** sub-issue #195 integration criterion; `bootstrap/skills-sync.ts`
+(canonical↔mirror byte-identity).

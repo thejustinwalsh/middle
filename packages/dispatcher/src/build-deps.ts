@@ -210,6 +210,9 @@ export async function buildImplementationDeps(
         }
       }),
     resolveComplexityCeiling: args.resolveComplexityCeiling,
+    // The repo's Epic-store mode selects which mode-commands reference the brief
+    // mirrors into the worktree; read from `repo_config` (defaults to github).
+    resolveEpicStoreMode: (repo) => readEpicStoreConfig(args.db, repo).mode,
     // Default: the Epic is approved iff it carries the `approved` label (#53).
     isEpicApproved:
       args.isEpicApproved ??

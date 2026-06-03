@@ -6,7 +6,9 @@ allowed-tools: Bash(gh:*), Bash(git:*), Bash(pnpm:*), Bash(mkdir:*), Read, Write
 
 # Implementing GitHub Issues
 
-End-to-end workflow for taking a GitHub issue from "assigned" to "PR open with verification evidence, marked ready for human review." All phases of one issue land on **one branch** and **one PR**; the PR is the long-lasting context for the workstream.
+End-to-end workflow for taking an Epic from "assigned" to "PR open with verification evidence, marked ready for human review." All phases of one Epic land on **one branch** and **one PR**; the PR is the long-lasting context for the workstream.
+
+**Mode-specific commands:** the Epic's data and the agent-↔-human conversation live in one of two stores — a GitHub issue (**github mode**) or a Markdown file under `planning/epics/` (**file mode**). PRs, reviews, and CI are GitHub-native in *both* modes. This skill body is mode-agnostic: it says "fetch the Epic", "post the plan to the Epic", "close the sub-issue with evidence", "post the reviewer's brief", "mark the PR ready" — the concrete incantations live in `references/<mode>-mode-commands.md` (`github-mode-commands.md` / `file-mode-commands.md`), mirrored into your worktree at `.middle/skills/implementing-github-issues/references/` for your run's mode. Use that file for every Epic/plan/sub-issue/conversation operation; use the PR commands (identical in both modes) inline below.
 
 ## Dispatch brief (read first)
 
@@ -147,17 +149,15 @@ git worktree add .claude/worktrees/<branch>-fork-B -b <branch>-fork-B
 
 **Once chosen, collapse and clean up.** Don't leave the losing branch hanging "just in case." Delete the worktree, delete the branch, close the PR. Forks are disambiguation, not insurance.
 
-## Phase 1 — Fetch issue context
+## Phase 1 — Fetch the Epic's context
 
-```bash
-gh issue view <num> --json number,title,body,labels,assignees,milestone,comments,url
-```
+Fetch the Epic — its title, body, acceptance criteria, sub-issues, and conversation log (see `references/<mode>-mode-commands.md` for the exact read).
 
-Read the body AND every comment. The latest decisions are often in comments, not the description. Note:
+Read the body AND every conversation entry. The latest decisions are often in the conversation, not the description. Note:
 - Acceptance criteria (explicit or implicit)
 - Linked issues / PRs / discussions
 - Constraints called out by the reporter
-- Anyone @-mentioned who might be a stakeholder
+- Anyone called out who might be a stakeholder
 
 ## Phase 2 — Research the codebase
 
@@ -168,7 +168,7 @@ Before drafting a plan, ground yourself:
 - Read the relevant `CLAUDE.md` (root + nested) — these are the source of architectural patterns and conventions
 - For broad investigations, dispatch `Explore` subagent (50-100x context savings)
 
-**STOP if:** The issue is ambiguous, the acceptance criteria are unclear, or the research reveals the issue's premise is wrong. Comment on the issue with your questions and wait, rather than guessing.
+**STOP if:** The Epic is ambiguous, the acceptance criteria are unclear, or the research reveals the Epic's premise is wrong. Post your questions to the Epic's conversation and wait, rather than guessing. (Headless under middle, "ask a question" is a sentinel-write — see "Running under middle".)
 
 ## Phase 3 — Draft a lightweight plan
 
@@ -204,15 +204,13 @@ N. ...
 
 **Lightweight means lightweight.** If you're writing more than ~100 lines for a multi-phase plan, you're either over-planning or the issue should be split. For genuinely complex multi-day work, use `superpowers:writing-plans` and link from the issue comment.
 
-## Phase 4 — Post plan as issue comment
+## Phase 4 — Post the plan to the Epic
 
-```bash
-gh issue comment <num> --body-file planning/issues/<num>/plan.md
-```
+Post the plan body to the Epic's conversation (the Epic's **plan comment**). See `references/<mode>-mode-commands.md` for the exact write — in github mode it's an issue comment; in file mode the renderer appends it to the Epic file's conversation section (never hand-edit the strict markers).
 
-This is non-negotiable. The plan-as-comment serves three purposes:
+This is non-negotiable. The plan-on-the-Epic serves three purposes:
 1. The reporter / stakeholders can correct your direction before you write code
-2. It's discoverable from the issue itself (not buried in a branch)
+2. It's discoverable from the Epic itself (not buried in a branch)
 3. It creates a public commitment that disciplines the work
 
 If you skip this step, you've broken the contract of this skill.
@@ -351,7 +349,7 @@ If during implementation you spot:
 - Performance concerns you noticed but didn't fix
 - API surface that should be reconsidered
 
-…before reaching for `gh issue create`, walk this decision tree:
+…before filing a new follow-up, walk this decision tree:
 
 ```dot
 digraph followup_decision {
@@ -393,51 +391,15 @@ If you genuinely believe an acceptance-criterion item should be deferred, ask th
 
 ### Filing a sub-issue under an existing parent
 
-GitHub supports native sub-issues via REST API. `gh` CLI 2.67+ doesn't have a `--parent` flag yet, so use `gh api`:
-
-```bash
-OWNER=<owner>; REPO=<repo>; PARENT=<parent-issue-number>
-
-# 1. Create the child issue
-URL=$(gh issue create --repo $OWNER/$REPO \
-  --title "<descriptive title>" \
-  --body "$(cat <<'EOF'
-**Parent:** #<parent-num> (PR #<pr> surfaced this)
-
-**Context:** <what you saw, where>
-
-**Why a sub-issue and not in-scope:** <e.g., "parallelizable; another agent can pick this up while we work on Phase 2">
-
-**Suggested approach:** <if you have one — otherwise omit>
-EOF
-)")
-CHILD_NUM=$(basename "$URL")
-
-# 2. Look up the child's database id (NOT issue number, NOT node_id)
-CHILD_ID=$(gh api /repos/$OWNER/$REPO/issues/$CHILD_NUM --jq '.id')
-
-# 3. Attach as sub-issue under parent.
-# CRITICAL: use -F (integer) not -f (string). The endpoint rejects strings:
-# `Invalid property /sub_issue_id: "12345" is not of type integer`.
-gh api --method POST /repos/$OWNER/$REPO/issues/$PARENT/sub_issues \
-  -F sub_issue_id=$CHILD_ID
-```
+File the follow-up as a sub-issue under its parent — the body carries the parent, the context (what you saw, where), why it's a sub-issue and not in-scope, and a suggested approach if you have one. See `references/<mode>-mode-commands.md` for the exact mechanics (github mode: create the child issue then attach it under the parent via the sub-issues REST endpoint; file mode: append a new `<!-- middle:sub-issue id=N -->` block to the Epic file via the renderer).
 
 ### Creating a parent for a natural collection
 
-If you spotted ≥2 related items and there's no parent issue yet, create the parent FIRST, then file each item as a sub-issue under it. The parent issue body should describe the umbrella concern; sub-issue bodies stay focused on their specific scope.
-
-```bash
-PARENT_URL=$(gh issue create --repo $OWNER/$REPO \
-  --title "<umbrella concern>" \
-  --body "Tracks several related items surfaced during PR #<pr>. See sub-issues.")
-PARENT_NUM=$(basename "$PARENT_URL")
-# Then file each child as a sub-issue under $PARENT_NUM as above.
-```
+If you spotted ≥2 related items and there's no parent yet, create the parent FIRST, then file each item as a sub-issue under it. The parent describes the umbrella concern; sub-issue bodies stay focused on their specific scope. See `references/<mode>-mode-commands.md`.
 
 ### Standalone issue (the exception)
 
-Only when the work is genuinely a different workstream — affects packages outside the current issue's surface area, or is a separate feature/initiative entirely. File without `--parent` linkage; the body's "Discovered while working on:" line is enough cross-reference.
+Only when the work is genuinely a different workstream — affects packages outside the current Epic's surface area, or is a separate feature/initiative entirely. File without parent linkage; a "Discovered while working on:" line is enough cross-reference. See `references/<mode>-mode-commands.md`.
 
 ### PR description cross-linking
 
@@ -601,14 +563,19 @@ git merge origin/main    # one holistic resolution instead of N brittle per-comm
 
 ## Quick reference
 
+Epic/plan/sub-issue/conversation operations are mode-specific — see `references/<mode>-mode-commands.md`. PR/CI operations are GitHub-native in both modes and listed inline here.
+
 | Step | Command |
 |---|---|
-| Fetch issue | `gh issue view <n> --json number,title,body,labels,comments,url` |
+| Fetch the Epic | mode-specific — `references/<mode>-mode-commands.md` |
+| Post the plan to the Epic | mode-specific — `references/<mode>-mode-commands.md` |
+| Close a sub-issue with evidence | mode-specific — `references/<mode>-mode-commands.md` |
+| File sub-issue under parent | mode-specific — `references/<mode>-mode-commands.md` (see Phase 9) |
+| File standalone follow-up | mode-specific — `references/<mode>-mode-commands.md` (only if truly parallel/new workstream) |
 | Enable conflict-resolution replay | `git config rerere.enabled true` (once, at workstream start) |
 | Sync branch (default) | `git fetch origin && git rebase origin/main` |
 | Sync branch (deep interleave) | `git fetch origin && git merge origin/main` (new-work-as-base; re-verify) |
 | Check mergeability before ready | `gh pr view <n> --json mergeable,mergeStateStatus` |
-| Comment plan | `gh issue comment <n> --body-file planning/issues/<n>/plan.md` |
 | Open draft PR up front | `gh pr create --draft --title "..." --body "..."` |
 | Update PR body | `gh pr edit <n> --body-file ...` (or `gh api PATCH ...` if blocked) |
 | Mark PR ready | `gh pr ready <n>` |
@@ -616,8 +583,6 @@ git merge origin/main    # one holistic resolution instead of N brittle per-comm
 | Verify functionally | `pnpm test`, `pnpm typecheck`, `pnpm build` (per project) |
 | Worktree fork option | `git worktree add .claude/worktrees/<branch>-fork-A -b <branch>-fork-A` |
 | Review comment | `gh api .../pulls/<n>/comments -F line=N -f path=... -f body=...` |
-| File sub-issue under parent | `gh issue create … && gh api …/issues/$PARENT/sub_issues -f sub_issue_id=$ID` (see Phase 9) |
-| File standalone follow-up | `gh issue create --title "..."` (only if truly parallel/new workstream) |
 | Get PR comments | `gh api repos/{o}/{r}/pulls/<n>/comments` |
 
 ## Red flags — STOP and self-correct
@@ -649,7 +614,7 @@ These thoughts mean you're about to violate the workflow:
 | "The PR description can just be the commit list" | Full report or it didn't happen. Why > what. Include verification evidence per phase. |
 | "No need for stumbling points — it went fine" | Then your "Stumbling points" section is "None." But write the section. |
 | "Decisions log is overkill for this issue" | It's overkill *until* you need to write the PR review comments. Then it's the source. |
-| "Initial plan turned out wrong, no need to update" | Edit `plan.md` and edit the issue comment (`gh issue comment --edit-last`). The plan must reflect reality. |
+| "Initial plan turned out wrong, no need to update" | Edit `plan.md` and update the plan on the Epic (see `references/<mode>-mode-commands.md`). The plan must reflect reality. |
 
 ## Common mistakes
 
@@ -689,7 +654,7 @@ Everything above describes the skill running interactively. When **middle-manage
 
 ### You are pointed at an Epic — its sub-issues are your plan phases
 
-middle dispatches **Epics**, not individual issues. The issue you're pointed at is an Epic: it has sub-issues, and **its open sub-issues ARE the phases of your plan**. Don't invent a phase breakdown — fetch the Epic's sub-issues (`gh api /repos/{owner}/{repo}/issues/{epic}/sub_issues`), and each one is a phase. Your `plan.md` Phases list and the PR's Status checkboxes are one-per-sub-issue.
+middle dispatches **Epics**, not individual issues. The Epic you're pointed at has sub-issues, and **its open sub-issues ARE the phases of your plan**. Don't invent a phase breakdown — fetch the Epic's sub-issues (see `references/<mode>-mode-commands.md`: github mode reads the sub-issues REST graph; file mode reads the `<!-- middle:sub-issue id=N -->` blocks in the Epic file), and each one is a phase. Your `plan.md` Phases list and the PR's Status checkboxes are one-per-sub-issue.
 
 One Epic → one worktree → one branch → one PR. You work *down* the sub-issues in dependency order on that single branch, ticking each Status checkbox as its sub-issue's work verifies. Do **not** open a PR per sub-issue, and do **not** wait for review between sub-issues — the whole Epic is reviewed once, as one PR, when every sub-issue is done.
 
@@ -701,7 +666,7 @@ The dispatcher created your worktree and branch and spawned you inside it. Do **
 
 ### Asking a question = write `.middle/blocked.json` and exit (overrides Phase 2's "comment and wait")
 
-You cannot "comment on the issue and wait" — headless, there is nothing to wait *in*. When you genuinely need human input (ambiguous acceptance criteria, a decision CLAUDE.md/skills/docs don't resolve and that isn't worth a fork), write `<worktree>/.middle/blocked.json` containing the question and the context a human needs to answer it, then **exit cleanly**. Middle's exit classifier detects the sentinel, parks the workflow on a `waitFor` signal, and surfaces the question on the issue. Do not guess past a real blocker; do not spin idle.
+You cannot "comment on the Epic and wait" — headless, there is nothing to wait *in*. When you genuinely need human input (ambiguous acceptance criteria, a decision CLAUDE.md/skills/docs don't resolve and that isn't worth a fork), write `<worktree>/.middle/blocked.json` containing the question and the context a human needs to answer it, then **exit cleanly**. The `blocked.json` sentinel is mode-agnostic — you write it the same way in both modes. Middle's exit classifier detects it, parks the workflow on a `waitFor` signal, and surfaces the question on the Epic (github mode: an issue comment; file mode: a `<!-- middle:question -->` block the dispatcher appends to the Epic file via the renderer). The human answers (github mode: a reply comment; file mode: editing the `<!-- middle:answer -->` block, or running `mm resume <repo> <slug> --answer "…"`), and you're re-spawned with the answer. Do not guess past a real blocker; do not spin idle.
 
 ### Complexity is fork branching factor — pause the sub-issue past the ceiling
 
@@ -718,7 +683,7 @@ When a human answers, middle re-spawns you with the answer injected into your pr
 
 ### The plan comment is mechanically gated (reinforces Phase 4)
 
-After your plan step, the dispatcher's **plan-comment guard** verifies a comment by your account containing the plan body exists on the issue. No plan comment → the workflow fails. Phase 4 was always "non-negotiable"; under middle it is literally enforced.
+After your plan step, the dispatcher's **plan-comment guard** verifies the plan body was posted to the Epic (github mode: a comment by your account on the issue; file mode: a plan entry in the Epic file's conversation section, written by the renderer). No plan on the Epic → the workflow fails. Phase 4 was always "non-negotiable"; under middle it is literally enforced.
 
 ### `gh pr ready` is mechanically gated (reinforces Phase 10)
 
