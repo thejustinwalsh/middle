@@ -862,23 +862,55 @@ export function createImplementationWorkflow(
       console.error(`${tag} launching tmux session: ${argv.join(" ")} (cwd=${handle.path})`);
       await deps.tmux.newSession({ sessionName, command: argv, cwd: handle.path, env });
 
-      // Claude pops a bypass-mode warning at boot; SessionStart cannot fire
-      // until it is dismissed. Run the dismisser in *parallel* with the
-      // SessionStart wait — when it detects the prompt it sends Down+Enter and
-      // Claude proceeds past the warning. Fire-and-forget with .catch so a
-      // dismiss-side error never becomes an unhandled rejection.
-      console.error(`${tag} starting bypass-prompt dismisser (parallel to SessionStart wait)`);
-      const dismissPromise = adapter.enterAutoMode({ sessionName }).catch((err: unknown) => {
-        console.error(`${tag} enterAutoMode failed: ${(err as Error).message}`);
+      // The first-prompt text is identical regardless of launch order; only
+      // *when* it is sent relative to the SessionStart wait differs (below).
+      const promptText = adapter.buildPromptText({
+        promptFile: ".middle/prompt.md",
+        kind: promptKind,
+        epicRef: ctx.input.epicRef,
       });
+      const sendPrompt = async (): Promise<void> => {
+        console.error(`${tag} sending prompt (${promptKind}): "${promptText}"`);
+        await deps.tmux.sendText(sessionName, promptText);
+        await deps.tmux.sendEnter(sessionName);
+      };
 
-      // drive: SessionStart yields session_id + transcript_path
-      console.error(`${tag} waiting for SessionStart hook (timeout ${launchTimeout}ms)`);
-      const startPayload = await deps.sessionGate.awaitSessionStart(sessionName, launchTimeout);
+      // drive: SessionStart yields session_id + transcript_path. The launch
+      // order forks on whether the CLI fires SessionStart at boot or only once
+      // the first prompt is submitted (AgentAdapter.startsSessionOnFirstPrompt).
+      let startPayload: HookPayload;
+      if (adapter.startsSessionOnFirstPrompt) {
+        // Prompt-triggered-session adapters (codex 0.133.0): the CLI creates no
+        // session — and fires no SessionStart — until the first prompt arrives.
+        // Dismiss the boot dialogs to completion FIRST (enterAutoMode resolves on
+        // the composer-ready banner; the prompt must land at the input line, not a
+        // dialog), THEN send the prompt, THEN await SessionStart. The hook server
+        // stashes a SessionStart that arrives before we park on the gate, so the
+        // prompt racing ahead of the await is race-safe (#183). enterAutoMode is
+        // awaited (not fire-and-forget): a needs-login throw fails the launch fast
+        // rather than feeding the prompt into a login screen.
+        console.error(`${tag} prompt-first launch: dismissing boot dialogs before prompt`);
+        await adapter.enterAutoMode({ sessionName });
+        await sendPrompt();
+        console.error(`${tag} waiting for SessionStart hook (timeout ${launchTimeout}ms)`);
+        startPayload = await deps.sessionGate.awaitSessionStart(sessionName, launchTimeout);
+      } else {
+        // Boot-triggered-session adapters (claude): SessionStart fires at boot,
+        // but only once the bypass-mode warning is dismissed. Run the dismisser in
+        // *parallel* with the SessionStart wait — when it detects the prompt it
+        // sends Down+Enter and Claude proceeds past the warning. Fire-and-forget
+        // with .catch so a dismiss-side error never becomes an unhandled rejection.
+        console.error(`${tag} starting bypass-prompt dismisser (parallel to SessionStart wait)`);
+        const dismissPromise = adapter.enterAutoMode({ sessionName }).catch((err: unknown) => {
+          console.error(`${tag} enterAutoMode failed: ${(err as Error).message}`);
+        });
+        console.error(`${tag} waiting for SessionStart hook (timeout ${launchTimeout}ms)`);
+        startPayload = await deps.sessionGate.awaitSessionStart(sessionName, launchTimeout);
+        void dismissPromise;
+      }
       console.error(
         `${tag} SessionStart received — session_id=${startPayload.session_id ?? "<missing>"}`,
       );
-      void dismissPromise;
 
       const transcriptPath = adapter.resolveTranscriptPath(startPayload);
       updateWorkflow(deps.db, ctx.executionId, {
@@ -888,14 +920,11 @@ export function createImplementationWorkflow(
         transcriptPath,
       });
 
-      const promptText = adapter.buildPromptText({
-        promptFile: ".middle/prompt.md",
-        kind: promptKind,
-        epicRef: ctx.input.epicRef,
-      });
-      console.error(`${tag} sending prompt (${promptKind}): "${promptText}"`);
-      await deps.tmux.sendText(sessionName, promptText);
-      await deps.tmux.sendEnter(sessionName);
+      // Boot-triggered adapters send the prompt now — after SessionStart and the
+      // running-state commit. Prompt-first adapters already sent it above.
+      if (!adapter.startsSessionOnFirstPrompt) {
+        await sendPrompt();
+      }
 
       // observe: await the Stop boundary, liveness-aware — `awaitNextStop` parks
       // (not fails) when a hung/killed session left a blocked.json. The process

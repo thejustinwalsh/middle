@@ -321,6 +321,128 @@ describe("implementation workflow — terminal stops fall through the waitFor", 
   });
 });
 
+describe("implementation workflow — launch ordering honors startsSessionOnFirstPrompt (#183)", () => {
+  /**
+   * An ordering harness: a shared event log plus a tmux stub, adapter, and
+   * SessionGate that record the launch→drive sequence. `gateMode` controls when
+   * SessionStart resolves:
+   *  - `"immediate"` — resolves at once (a boot-triggered CLI like Claude).
+   *  - `"on-prompt"` — resolves only AFTER the first prompt is sent (a
+   *    prompt-triggered CLI like codex 0.133.0); if the prompt is never sent
+   *    before the gate is awaited, it rejects on the launch timeout (the deadlock
+   *    the flag exists to avoid).
+   */
+  function orderingHarness(opts: {
+    startsSessionOnFirstPrompt?: boolean;
+    gateMode: "immediate" | "on-prompt";
+  }) {
+    const events: string[] = [];
+    const OK = { session_id: "s", transcript_path: "/tmp/s.jsonl" } as HookPayload;
+    let promptSent = false;
+    let resolveStart: ((p: HookPayload) => void) | null = null;
+
+    const created: string[] = [];
+    const killed: string[] = [];
+    const sent: string[] = [];
+    const tmux = {
+      created,
+      killed,
+      sent,
+      ops: {
+        async newSession(o: { sessionName: string }) {
+          created.push(o.sessionName);
+        },
+        async sendText(_s: string, text: string) {
+          sent.push(text);
+          // The launch prompt (buildPromptText) — the send that triggers codex's
+          // session. Other sends (e.g. "continue" nudges) are not the trigger.
+          if (text.includes("prompt.md")) {
+            events.push("send-prompt");
+            promptSent = true;
+            if (resolveStart) resolveStart(OK);
+          }
+        },
+        async sendEnter() {},
+        async killSession(s: string) {
+          killed.push(s);
+        },
+      },
+    };
+
+    const gate: SessionGate = {
+      awaitSessionStart: async (_sessionName: string, timeoutMs: number) => {
+        events.push("await-session-start");
+        if (opts.gateMode === "immediate" || promptSent) return OK;
+        return await new Promise<HookPayload>((resolve, reject) => {
+          resolveStart = resolve;
+          setTimeout(() => reject(new Error("timed out waiting for session.started")), timeoutMs);
+        });
+      },
+      awaitStop: async () => ({ reason: "turn-end" }) as HookPayload,
+    };
+
+    const adapter: AgentAdapter = {
+      // `bare-stop` ends 'completed' without the review-changes park (#298), so a
+      // green run isolates the launch ordering from the post-drive flow.
+      ...makeAdapterStub({ kind: "bare-stop" }),
+      name: "ordering",
+      startsSessionOnFirstPrompt: opts.startsSessionOnFirstPrompt,
+      async enterAutoMode() {
+        events.push("enter-auto-mode");
+      },
+    };
+
+    return { events, tmux, gate, adapter };
+  }
+
+  test("prompt-first adapter sends the prompt BEFORE awaiting SessionStart (codex; no deadlock)", async () => {
+    const h = orderingHarness({ startsSessionOnFirstPrompt: true, gateMode: "on-prompt" });
+    const deps = makeDeps({ tmux: h.tmux.ops, sessionGate: h.gate, getAdapter: () => h.adapter });
+
+    // The on-prompt gate would deadlock under await-first ordering; reaching
+    // 'completed' proves the prompt was sent first and unblocked SessionStart.
+    const id = await start(deps);
+    expect(await awaitSettled(id)).toBe("completed");
+
+    expect(h.events).toEqual(["enter-auto-mode", "send-prompt", "await-session-start"]);
+    expect(h.tmux.sent.some((t) => t.includes("prompt.md"))).toBe(true);
+    expectNoSessionLeak(h.tmux);
+  });
+
+  test("boot-first adapter awaits SessionStart BEFORE sending the prompt (Claude path, unchanged)", async () => {
+    const h = orderingHarness({ gateMode: "immediate" }); // flag absent → default
+    const deps = makeDeps({ tmux: h.tmux.ops, sessionGate: h.gate, getAdapter: () => h.adapter });
+
+    const id = await start(deps);
+    expect(await awaitSettled(id)).toBe("completed");
+
+    // Dismiss in parallel, await SessionStart, THEN send the prompt — today's order.
+    expect(h.events).toEqual(["enter-auto-mode", "await-session-start", "send-prompt"]);
+    expectNoSessionLeak(h.tmux);
+  });
+
+  test("await-first ordering deadlocks a prompt-triggered CLI — why the flag exists", async () => {
+    // A boot-first (flag-absent) adapter against an on-prompt gate: the prompt is
+    // only sent after SessionStart resolves, but SessionStart only resolves after
+    // the prompt — so the launch times out and fails, and no prompt is ever sent.
+    const h = orderingHarness({ gateMode: "on-prompt" });
+    const deps = makeDeps({
+      tmux: h.tmux.ops,
+      sessionGate: h.gate,
+      getAdapter: () => h.adapter,
+      launchTimeoutMs: 250,
+    });
+
+    const id = await start(deps);
+    // The drive throws on the SessionStart timeout; the step fails and the
+    // worktree-prepare is compensated (not a classifyStop 'failed').
+    expect(await awaitSettled(id)).toBe("compensated");
+    expect(h.events).toContain("await-session-start");
+    expect(h.events).not.toContain("send-prompt");
+    expect(h.tmux.sent.some((t) => t.includes("prompt.md"))).toBe(false);
+  });
+});
+
 describe("implementation workflow — prepare-worktree survives a step retry (#108)", () => {
   test("a transient createWorktree failure retries to success — the re-INSERT is a no-op, not a masking UNIQUE", async () => {
     // prepare-worktree runs createWorkflowRecord (INSERT) then createWorktree,
