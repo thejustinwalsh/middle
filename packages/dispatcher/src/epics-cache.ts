@@ -37,6 +37,10 @@ export async function refreshEpics(db: Database, repo: string, github: EpicGatew
   const open = new Set<number>();
   const tx = db.transaction(() => {
     for (const e of epics) {
+      // The browse cache is numeric-keyed (`(repo, number)`); a file-mode Epic has
+      // only a slug (`number === null`) and isn't representable here yet, so skip it.
+      // (File-mode Epic browse is a later phase; github-mode rows are unaffected.)
+      if (e.number === null) continue;
       upsert.run(repo, e.number, e.title, JSON.stringify(e.labels), e.subTotal, e.subClosed, now);
       open.add(e.number);
     }

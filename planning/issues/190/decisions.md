@@ -79,3 +79,34 @@ stringifies it at the `createWorktree` boundary.
 **Why:** The workflow seam now threads a string; the worktree directory must accept it so
 a file-mode slug yields `issue-<slug>` without a numeric coercion. github paths are unchanged.
 **Evidence:** sub-issue #191 (string seam everywhere); worktree layout in root `CLAUDE.md`/spec.
+
+## `EpicListItem` gains `ref`; `number` nullable; numeric epics cache skips file Epics
+**File(s):** `packages/dispatcher/src/github.ts`, `epics-cache.ts`
+**Date:** 2026-06-03
+
+**Decision:** `EpicListItem` gains a required `ref: string` (github: `String(number)`,
+file: slug) and `number` becomes `number | null` (null for a file Epic). `refreshEpics`
+skips rows with `number === null` — the browse cache table is numeric-keyed `(repo, number)`.
+**Why:** `fileEpicGateway.listOpenEpics` must return file Epics, which have only a slug.
+The browse cache is github-only this phase (`refreshEpics` is always called with `ghGitHub`
+in `main.ts`); a file-aware browse cache is a later phase, so skipping null-numbered rows
+keeps the numeric table honest without a schema change. github rows are unaffected.
+**Evidence:** `epics-cache.ts` `(repo, number)` PK; #192 integration scope (dispatch+postComment, not browse).
+
+## File-mode PR-poll resolution (`findPrForEpic`) is a Phase-2 refinement
+**File(s):** `packages/dispatcher/src/epic-store/file-poll-gateway.ts`
+**Date:** 2026-06-03
+
+**Decision:** `filePollGateway.listIssueComments` is fully file-backed (conversation →
+poll comments with `authorIsBot` from the marker — the #178-class closure). `getRateLimit`
+delegates to gh. `findPrForEpic`/`findEpicPrLifecycle` delegate to gh for a numeric ref but
+return `null` for a file-mode slug (no PR yet / Phase-1 limitation) rather than feed a slug
+into gh's `Closes #<number>` search (which `refToIssueNumber` would reject).
+**Why:** github's PR-finders resolve a PR by `Closes #<epicNumber>`, which a file Epic (slug,
+no GitHub issue) can't carry; the file↔PR link is the `<!-- middle:epic <slug> -->` body
+marker + `meta.pr`, and `PollGateway` has no by-PR-number snapshot method to fetch through.
+Spec Phase 1 is "File-Epic dispatch (no watcher)"; review-resume on file mode rides Phase 2's
+watcher work. Returning null is non-throwing and honest; question-resume (the Phase-1 path)
+is unaffected.
+**Evidence:** spec "Phase plan" (Phase 1 vs 2); spec poll-gateway table ("delegate to gh");
+`poller-gateway.ts` `Closes #${epicNumber}` search.

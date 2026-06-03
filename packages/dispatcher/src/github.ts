@@ -30,9 +30,12 @@ export type CommentAuthor = {
   isBot: boolean;
 };
 
-/** An open Epic discovered from GitHub's issues API, with its sub-issue progress. */
+/** An open Epic discovered from a store (GitHub issues or local files), with its sub-issue progress. */
 export type EpicListItem = {
-  number: number;
+  /** Canonical Epic reference: `String(number)` in github mode, the slug in file mode. */
+  ref: string;
+  /** GitHub issue number; `null` for a file-mode Epic (which has only a slug). */
+  number: number | null;
   title: string;
   state: string;
   labels: string[];
@@ -84,6 +87,7 @@ export function parseEpicsList(stdout: string): EpicListItem[] {
     const summary = issue.sub_issues_summary;
     if (!summary || summary.total <= 0) continue;
     out.push({
+      ref: String(issue.number),
       number: issue.number,
       title: issue.title,
       state: issue.state,
