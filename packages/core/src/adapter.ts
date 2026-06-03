@@ -58,6 +58,20 @@ export interface AgentAdapter {
     payload: HookPayload;
     transcriptPath: string;
   }): RateLimitDetection | null;
+
+  /**
+   * Optional: this CLI does not create a session — and so never fires its
+   * `SessionStart`/ready hook — until the **first user prompt is submitted**
+   * (codex 0.133.0 is the case). The dispatcher's launch→drive step honors this:
+   * for a flagged adapter it dismisses the boot dialogs (via `enterAutoMode`),
+   * sends the prompt, *then* awaits the ready hook; for an unflagged adapter
+   * (the default — Claude fires its ready hook at boot) it keeps the original
+   * order, awaiting the ready hook before sending the prompt. Absent/`false`
+   * means the boot-triggered order. The hook server stashes a ready hook that
+   * arrives before the gate is parked, so prompt-first is race-safe. See
+   * `packages/dispatcher/src/workflows/implementation.ts` launch→drive.
+   */
+  readonly startsSessionOnFirstPrompt?: boolean;
 }
 
 /**
