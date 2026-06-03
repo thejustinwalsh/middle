@@ -142,3 +142,34 @@ validation rejected. This makes the dispatch entry mode-agnostic so #193's selec
 is reachable end-to-end; the CLI sends the right field in #194. Existing numeric
 clients are unaffected (the github branch is unchanged).
 **Evidence:** #193 integration criterion (HTTP dispatch with a file-mode slug).
+
+## `mm resume` is overloaded: clear-pause vs answer-a-parked-Epic
+**File(s):** `packages/cli/src/index.ts`, `commands/resume-answer.ts`
+**Date:** 2026-06-03
+
+**Decision:** `mm resume <repo>` keeps its existing meaning (clear the repo's
+auto-dispatch pause). `mm resume <repo> <epic> --answer "<text>"` is the NEW
+answer-resume: it POSTs `/control/resume`, which fires the parked Epic's resume
+signal. The router branches on whether `<epic>`/`--answer` are present (both
+required together).
+**Why:** sub-issue #194 specifies `mm resume <epic> --answer`, but `mm resume`
+already exists (pause-clear) and middle commands always take a `<repo>`. Overloading
+one command with an optional `<epic> --answer` preserves back-compat while adding the
+Phase-1 manual-unblock escape hatch. The daemon's `control.resume` mirrors the
+poller's fire (`engine.signal(workflowId, RESUME_EVENT, …)` + `markSignalFired`) and
+looks up the parked workflow by `epic_ref`, so it works in both modes.
+**Evidence:** existing `runResume` (pause-clear) in `commands/pause.ts`; poller's
+`fireSignal` wiring in `main.ts`.
+
+## `mm dispatch` accepts a slug or number; numeric refs keep the gh label fetch
+**File(s):** `packages/cli/src/commands/dispatch.ts`, `index.ts`
+**Date:** 2026-06-03
+
+**Decision:** `mm dispatch <repo> <epic>` (and `--epic <ref>`) accept a file slug or
+a github issue number. A digit-leading ref must be a whole number ≥ 1 (else rejected);
+a non-digit-leading ref is a slug. Only a numeric ref triggers the `agent:<name>`
+label lookup via gh; a slug skips gh (file-mode Epics carry their adapter in the file
+meta, which the daemon reads). The POST body now sends `epicRef` (string).
+**Why:** file-mode Epics are slugs; the dispatch entry must accept them and avoid a gh
+call for a non-GitHub Epic. github-mode numeric dispatch is unchanged in behavior.
+**Evidence:** sub-issue #194 (slug-or-number positional + `--epic`).

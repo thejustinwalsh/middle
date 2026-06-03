@@ -7,10 +7,12 @@ import { renderLocalConfig, renderRepoPolicy } from "./config-template.ts";
 import { addMiddleIgnore } from "./gitignore.ts";
 import { writeClaudeHookSettings, writeCodexHookConfig } from "./hook-config.ts";
 import { buildInitialStateIssueBody } from "./state-issue-body.ts";
+import { writeFileStoreScaffold } from "./file-store.ts";
 import {
   BOOTSTRAP_VERSION,
   type BootstrapDeps,
   type BootstrapOptions,
+  type EpicStoreMode,
   type InitResult,
   STATE_ISSUE_TITLE,
   type RepoInfo,
@@ -42,7 +44,11 @@ function readExistingConfig(repo: string): ExistingConfig | null {
   return { version, stateIssueNumber: number };
 }
 
-async function validateTarget(repo: string, deps: BootstrapDeps): Promise<RepoInfo> {
+async function validateTarget(
+  repo: string,
+  deps: BootstrapDeps,
+  epicStore: EpicStoreMode,
+): Promise<RepoInfo> {
   if (!existsSync(join(repo, ".git"))) {
     throw new BootstrapError(`"${repo}" is not a git repository`);
   }
@@ -51,6 +57,12 @@ async function validateTarget(repo: string, deps: BootstrapDeps): Promise<RepoIn
   }
   if (!(await deps.getRemoteUrl(repo))) {
     throw new BootstrapError("no `origin` remote — middle needs a GitHub remote to target");
+  }
+  // File mode is offline: it makes ZERO `gh`/GitHub calls, so it skips the
+  // gh-auth gate and resolves the repo identity from the local `origin` remote
+  // (`resolveRepoInfoLocal`) rather than `gh repo view`.
+  if (epicStore === "file") {
+    return deps.resolveRepoInfoLocal(repo);
   }
   if (!(await deps.isGhAuthenticated())) {
     throw new BootstrapError("`gh` is not authenticated — run `gh auth login`");
@@ -70,7 +82,8 @@ export async function initRepo(
   deps: BootstrapDeps,
   opts: BootstrapOptions,
 ): Promise<InitResult> {
-  const info = await validateTarget(repo, deps);
+  const epicStore: EpicStoreMode = opts.epicStore ?? "github";
+  const info = await validateTarget(repo, deps, epicStore);
   const existing = readExistingConfig(repo);
   const mode: InitResult["mode"] =
     existing === null ? "fresh" : existing.version === BOOTSTRAP_VERSION ? "reinit" : "migrate";
@@ -92,37 +105,56 @@ export async function initRepo(
     await writeCodexHookConfig(repo, hookScriptPath);
   }
 
-  // Steps 5-6: resolve the state issue. A local config number is trusted as-is.
-  // Otherwise (fresh install, or a config carrying no usable number) the labeled
-  // GitHub issue is the source of truth — reconcile against it before creating,
-  // so a second machine / fresh clone reuses the repo's existing state issue
-  // instead of filing a duplicate. config.toml only caches the number.
+  // Steps 5-6: resolve the recommender state.
+  //
+  // File mode (#194): the recommender state + Epics live in local files, not a
+  // GitHub issue — so this path makes ZERO `gh`/GitHub calls. Scaffold the Epic
+  // directory (README + .keep), an empty state file carrying the state-issue v1
+  // marker, and the per-repo `[epic_store]` config TOML; the state issue number
+  // stays 0.
   let stateIssue = existing?.stateIssueNumber ?? 0;
-  const needsStateIssue = stateIssue <= 0;
-  if (needsStateIssue) {
-    if (dry) {
-      note("reconcile against GitHub: reuse the existing agent-queue:state issue, else create one");
-    } else {
-      const found = await deps.github.findStateIssues(info);
-      if (found.length > 0) {
-        stateIssue = found[0]!;
-        note(`reuse existing state issue #${stateIssue} (found on GitHub)`);
-        if (found.length > 1) {
-          note(
-            `WARNING: ${found.length} open state issues found (#${found.join(", #")}); ` +
-              `reusing the oldest (#${stateIssue}) — close the duplicates`,
-          );
-        }
-      } else {
-        await deps.github.ensureStateLabel(info);
-        const body = buildInitialStateIssueBody(deps.now());
-        stateIssue = await deps.github.createStateIssue(info, STATE_ISSUE_TITLE, body);
-        note("create the agent-queue:state label (if absent)");
-        note("create the state issue and capture its number");
-      }
+  let needsStateIssue = false;
+  if (epicStore === "file") {
+    note(`scaffold .middle/${info.owner}-${info.name}.toml ([epic_store] mode=file)`);
+    note("scaffold planning/epics/ (README.md + .keep)");
+    note("scaffold .middle/state.md (empty recommender state, v1 marker)");
+    if (!dry) {
+      await writeFileStoreScaffold({ repo, info, now: deps.now() });
     }
   } else {
-    note(`keep existing state issue #${stateIssue}`);
+    // A local config number is trusted as-is. Otherwise (fresh install, or a
+    // config carrying no usable number) the labeled GitHub issue is the source of
+    // truth — reconcile against it before creating, so a second machine / fresh
+    // clone reuses the repo's existing state issue instead of filing a duplicate.
+    // config.toml only caches the number.
+    needsStateIssue = stateIssue <= 0;
+    if (needsStateIssue) {
+      if (dry) {
+        note(
+          "reconcile against GitHub: reuse the existing agent-queue:state issue, else create one",
+        );
+      } else {
+        const found = await deps.github.findStateIssues(info);
+        if (found.length > 0) {
+          stateIssue = found[0]!;
+          note(`reuse existing state issue #${stateIssue} (found on GitHub)`);
+          if (found.length > 1) {
+            note(
+              `WARNING: ${found.length} open state issues found (#${found.join(", #")}); ` +
+                `reusing the oldest (#${stateIssue}) — close the duplicates`,
+            );
+          }
+        } else {
+          await deps.github.ensureStateLabel(info);
+          const body = buildInitialStateIssueBody(deps.now());
+          stateIssue = await deps.github.createStateIssue(info, STATE_ISSUE_TITLE, body);
+          note("create the agent-queue:state label (if absent)");
+          note("create the state issue and capture its number");
+        }
+      }
+    } else {
+      note(`keep existing state issue #${stateIssue}`);
+    }
   }
 
   // Committed repo policy (issue #103). Written ONLY when absent — a re-init or
@@ -160,5 +192,5 @@ export async function initRepo(
   note("add .middle/ to .gitignore");
   if (!dry) await addMiddleIgnore(repo);
 
-  return { dryRun: dry, mode, info, stateIssue, actions };
+  return { dryRun: dry, mode, info, epicStore, stateIssue, actions };
 }

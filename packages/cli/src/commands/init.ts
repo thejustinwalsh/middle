@@ -1,8 +1,25 @@
 import { resolve } from "node:path";
-import { initRepo, realDeps, type BootstrapDeps } from "../bootstrap/index.ts";
+import {
+  FILE_EPICS_DIR,
+  FILE_STATE_FILE,
+  initRepo,
+  realDeps,
+  type BootstrapDeps,
+  type EpicStoreMode,
+} from "../bootstrap/index.ts";
+
+/** A repo's Epic-store config as recorded in the daemon db (mirrors `EpicStoreConfig`). */
+export type EpicStoreRegistration =
+  | { mode: "github" }
+  | { mode: "file"; epicsDir: string; stateFile: string };
 
 export type InitCliOptions = {
   dryRun?: boolean;
+  /**
+   * Epic-store mode (#194): `"github"` (default) keeps today's state-issue flow;
+   * `"file"` scaffolds a local Epic store and makes no GitHub calls.
+   */
+  epicStore?: EpicStoreMode;
   /** Injectable for tests; defaults to the gh/git-backed deps. */
   deps?: BootstrapDeps;
   /**
@@ -11,6 +28,13 @@ export type InitCliOptions = {
    * injectable for tests. Omitted → no registration (e.g. unit tests).
    */
   registerRepo?: (repo: string, repoPath: string) => void;
+  /**
+   * Persist the repo's Epic-store mode to the daemon db (#194) — wired by the CLI
+   * entry to `setEpicStoreConfig`; injectable for tests. Called for every mode
+   * (including `"github"`) so a re-init can flip the mode. Best-effort, like
+   * `registerRepo`. Omitted → no write (e.g. unit tests that don't assert it).
+   */
+  setEpicStore?: (repo: string, cfg: EpicStoreRegistration) => void;
 };
 
 /**
@@ -22,26 +46,33 @@ export async function runInit(pathArg: string, opts: InitCliOptions = {}): Promi
   const repo = resolve(pathArg);
   const deps = opts.deps ?? realDeps;
   try {
-    const result = await initRepo(repo, deps, { dryRun: opts.dryRun ?? false });
+    const result = await initRepo(repo, deps, {
+      dryRun: opts.dryRun ?? false,
+      epicStore: opts.epicStore ?? "github",
+    });
     const slug = `${result.info.owner}/${result.info.name}`;
 
     if (result.dryRun) {
-      console.log(`mm init (dry run) — ${slug} [${result.mode}]\n`);
+      console.log(`mm init (dry run) — ${slug} [${result.mode}, ${result.epicStore}]\n`);
       for (const action of result.actions) console.log(`  • ${action}`);
       console.log("\nno changes made.");
       return 0;
     }
 
-    const issueLine =
-      result.mode === "fresh"
-        ? `state issue created: #${result.stateIssue}`
-        : `state issue: #${result.stateIssue} (kept)`;
     console.log(
       `✓ middle initialized for ${slug}${result.mode === "fresh" ? "" : ` [${result.mode}]`}`,
     );
     console.log("  skills installed at .claude/skills/, .codex/skills/");
     console.log("  hook script at .middle/hooks/hook.sh");
-    console.log(`  ${issueLine}`);
+    if (result.epicStore === "file") {
+      console.log(`  epic store: file (Epics in ${FILE_EPICS_DIR}/, state in ${FILE_STATE_FILE})`);
+    } else {
+      const issueLine =
+        result.mode === "fresh"
+          ? `state issue created: #${result.stateIssue}`
+          : `state issue: #${result.stateIssue} (kept)`;
+      console.log(`  ${issueLine}`);
+    }
     console.log("  config: .middle/config.toml");
     console.log(`  auto-dispatch: OFF (enable with \`mm config ${slug} auto_dispatch true\`)`);
 
@@ -52,6 +83,20 @@ export async function runInit(pathArg: string, opts: InitCliOptions = {}): Promi
       opts.registerRepo?.(slug, repo);
     } catch (error) {
       console.error(`  (note: managed-repo registry write skipped — ${(error as Error).message})`);
+    }
+
+    // Persist the Epic-store mode to the daemon db (#194) so the bootstrap
+    // selector routes this repo to the file- or gh-backed gateways. Best-effort,
+    // for the same reason as the managed-repo registry write above.
+    try {
+      opts.setEpicStore?.(
+        slug,
+        result.epicStore === "file"
+          ? { mode: "file", epicsDir: FILE_EPICS_DIR, stateFile: FILE_STATE_FILE }
+          : { mode: "github" },
+      );
+    } catch (error) {
+      console.error(`  (note: epic-store config write skipped — ${(error as Error).message})`);
     }
     return 0;
   } catch (error) {

@@ -29,6 +29,7 @@ function makeFakeDeps(): { deps: BootstrapDeps; calls: Calls } {
     getRemoteUrl: async () => "git@github.com:acme/widget.git",
     isGhAuthenticated: async () => true,
     resolveRepoInfo: async () => ({ owner: "acme", name: "widget", defaultBranch: "main" }),
+    resolveRepoInfoLocal: async () => ({ owner: "acme", name: "widget", defaultBranch: "main" }),
     github: {
       ensureStateLabel: async () => {
         calls.ensureLabel++;

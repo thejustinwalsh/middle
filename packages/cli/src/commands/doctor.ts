@@ -1,15 +1,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { loadConfig, type MiddleConfig } from "@middle/core";
 import { currentSchemaVersion, openDb } from "@middle/dispatcher/src/db.ts";
+import { type EpicStoreConfig, readEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
 import { collectRetentionStatus, type RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   getTmuxVersion,
   MIN_TMUX_VERSION,
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
-import { defaultPidFile } from "../paths.ts";
+import { defaultPidFile, deriveRepoSlug } from "../paths.ts";
 import {
   BOOTSTRAP_SKILLS_DIR,
   CANONICAL_SKILLS_DIR,
@@ -401,18 +402,86 @@ function checkDatabase(config: MiddleConfig | null): Check {
 }
 
 /**
+ * Best-effort read of the cwd repo's Epic-store mode from `repo_config`. Opens
+ * the db read-only and reads {@link readEpicStoreConfig} for the cwd repo's slug.
+ * Any failure — no db file, db unreadable, slug underivable — resolves to github
+ * mode (the historical default), so a partially-configured machine still runs
+ * the state-issue check rather than erroring. Never throws.
+ */
+async function resolveEpicStore(
+  config: MiddleConfig | null,
+  opts: DoctorOptions,
+): Promise<EpicStoreConfig> {
+  const dbPath = config?.global.dbPath ?? join(homedir(), ".middle", "db.sqlite3");
+  if (!existsSync(dbPath)) return { mode: "github" };
+  let db: ReturnType<typeof openDb> | null = null;
+  try {
+    const repoPath = opts.repoPath ?? process.cwd();
+    const slug = await (opts.resolveSlug ?? deriveRepoSlug)(repoPath);
+    db = openDb(dbPath);
+    return readEpicStoreConfig(db, slug);
+  } catch {
+    return { mode: "github" };
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * The state-store check row, chosen by the cwd repo's Epic-store mode. File-mode
+ * repos keep no GitHub state issue, so the parser round-trip check is irrelevant;
+ * instead we confirm the configured Epic directory exists under the repo
+ * (`✓ epics_dir <path> exists` / `✗ … missing`). GitHub-mode (and any repo whose
+ * mode can't be determined) keeps the existing repo-agnostic `state-issue` check.
+ */
+function checkEpicStore(store: EpicStoreConfig, opts: DoctorOptions): Check {
+  if (store.mode !== "file") {
+    const stateIssue = checkStateIssue();
+    return { name: "state-issue", status: stateIssue.status, detail: stateIssue.detail };
+  }
+  const repoPath = opts.repoPath ?? process.cwd();
+  const absDir = isAbsolute(store.epicsDir) ? store.epicsDir : join(repoPath, store.epicsDir);
+  if (existsSync(absDir)) {
+    return { name: "epics_dir", status: "pass", detail: `${store.epicsDir} exists` };
+  }
+  return {
+    name: "epics_dir",
+    status: "fail",
+    detail: `${store.epicsDir} missing — run \`mm init --epic-store=file\``,
+  };
+}
+
+/**
+ * Overrides for {@link runDoctor} — the repo checkout to resolve the Epic-store
+ * mode against and the slug derivation, so a test can redirect them away from the
+ * live cwd and git remote. All optional; the defaults are `process.cwd()` and the
+ * git-remote derivation.
+ */
+export type DoctorOptions = {
+  /** Run `--fix` actions (PATH repair) after reporting. */
+  fix?: boolean;
+  /** The repo checkout whose Epic-store mode is resolved (defaults to `process.cwd()`). */
+  repoPath?: string;
+  /** Resolve the repo's `owner/name` slug (defaults to the git-remote derivation). */
+  resolveSlug?: (repoPath: string) => Promise<string>;
+};
+
+/**
  * `mm doctor` — full operator health check. Validates the toolchain every
  * dispatch shells out to (`bun`, `tmux` ≥ 3.5, each configured adapter's binary
  * — e.g. `claude`, `codex` — `git`, `gh`, and `gh` auth), that config parses,
- * the dispatcher is reachable, the state-issue parser still round-trips against
- * its v1 schema, and reports SQLite row counts + recent retention status — plus
+ * the dispatcher is reachable, the cwd repo's Epic store is sound (the
+ * state-issue parser round-trips against its v1 schema for a github-mode repo,
+ * or the configured Epic directory exists for a file-mode repo), and reports
+ * SQLite row counts + recent retention status — plus
  * the repo's skills/docs-convention drift warnings. Exits 0 when no check fails;
  * 1 if anything is missing or broken. Warnings (degraded but functional — a
  * missing adapter binary among others present) do not fail the run.
  */
-export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number> {
+export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
+  const { fix } = opts;
   const { check: configCheck, config } = loadDoctorConfig();
-  const stateIssue = checkStateIssue();
+  const epicStore = await resolveEpicStore(config, opts);
   const checks: Check[] = [
     await checkBinary("bun", ["bun", "--version"]),
     await checkBunPath(),
@@ -423,7 +492,7 @@ export async function runDoctor({ fix }: { fix?: boolean } = {}): Promise<number
     await checkGhAuth(),
     configCheck,
     await checkDispatcher(config),
-    { name: "state-issue", status: stateIssue.status, detail: stateIssue.detail },
+    checkEpicStore(epicStore, opts),
     checkDatabase(config),
     checkSkillsDrift(),
     checkModuleIndexFrontmatter(),

@@ -122,19 +122,21 @@ function fakeDaemon(opts: FakeDaemonOpts): {
 }
 
 describe("runDispatch — input validation", () => {
-  test("rejects a non-integer epic number", async () => {
+  test("rejects a malformed numeric epic (digit-leading but not a whole number)", async () => {
+    const repoPath = makeRepo();
     const restore = silenceLogs();
     try {
-      expect(await runDispatch(dir, "not-a-number")).toBe(1);
+      expect(await runDispatch(repoPath, "12abc")).toBe(1);
     } finally {
       restore();
     }
   });
 
   test("rejects an epic number below 1", async () => {
+    const repoPath = makeRepo();
     const restore = silenceLogs();
     try {
-      expect(await runDispatch(dir, "0")).toBe(1);
+      expect(await runDispatch(repoPath, "0")).toBe(1);
     } finally {
       restore();
     }
@@ -167,8 +169,32 @@ describe("runDispatch — control client", () => {
       });
       expect(code).toBe(0);
       expect(spawned).toBe(false); // health was up → never spawned
+      expect(dispatchBodies).toEqual([{ repo: "repo", repoPath, epicRef: "6", adapter: "claude" }]);
+    } finally {
+      restore();
+      server.stop(true);
+    }
+  });
+
+  test("a file-mode slug dispatches with epicRef and skips the gh label fetch", async () => {
+    const repoPath = makeRepo();
+    const { server, dispatchBodies } = fakeDaemon({ states: ["running", "completed"] });
+    const configPath = writeConfig(server.port);
+    let labelFetches = 0;
+    const restore = silenceLogs();
+    try {
+      const code = await runDispatch(repoPath, "rollout-epic-store", {
+        configPath,
+        startDaemon: () => 0,
+        fetchLabels: async () => {
+          labelFetches += 1;
+          return [];
+        },
+      });
+      expect(code).toBe(0);
+      expect(labelFetches).toBe(0); // a slug has no GitHub labels to consult
       expect(dispatchBodies).toEqual([
-        { repo: "repo", repoPath, epicNumber: 6, adapter: "claude" },
+        { repo: "repo", repoPath, epicRef: "rollout-epic-store", adapter: "claude" },
       ]);
     } finally {
       restore();

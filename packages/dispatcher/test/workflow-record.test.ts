@@ -11,6 +11,7 @@ import {
   createWorkflowRecord,
   type CreateWorkflowRecordInput,
   finalizeParkedWorkflow,
+  findParkedWorkflowByRef,
   getCheckboxReconcileState,
   getWorkflow,
   getWorkflowSource,
@@ -457,6 +458,28 @@ describe("hasNonTerminalEpicWorkflow", () => {
       adapter: "claude",
     });
     expect(hasNonTerminalEpicWorkflow(db, "o/r", "9")).toBe(false); // recommender doesn't claim the slot
+  });
+});
+
+describe("findParkedWorkflowByRef", () => {
+  test("finds the waiting-human workflow for a ref (slug or number); null otherwise", () => {
+    createWorkflowRecord(db, {
+      id: "a",
+      kind: "implementation",
+      repo: "o/r",
+      epicRef: "rollout-epic-store",
+      adapter: "claude",
+    });
+    // Not parked yet → no match.
+    expect(findParkedWorkflowByRef(db, "o/r", "rollout-epic-store")).toBeNull();
+    updateWorkflow(db, "a", { state: "waiting-human" });
+    expect(findParkedWorkflowByRef(db, "o/r", "rollout-epic-store")).toBe("a");
+    // Scoped by repo + ref.
+    expect(findParkedWorkflowByRef(db, "x/y", "rollout-epic-store")).toBeNull();
+    expect(findParkedWorkflowByRef(db, "o/r", "other-slug")).toBeNull();
+    // A resumed (non-parked) workflow no longer matches.
+    updateWorkflow(db, "a", { state: "running" });
+    expect(findParkedWorkflowByRef(db, "o/r", "rollout-epic-store")).toBeNull();
   });
 });
 

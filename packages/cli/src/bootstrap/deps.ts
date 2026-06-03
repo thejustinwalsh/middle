@@ -168,6 +168,16 @@ export const realDeps: BootstrapDeps = {
     return { owner: slug.owner, name: slug.name, defaultBranch };
   },
 
+  async resolveRepoInfoLocal(repo: string): Promise<RepoInfo> {
+    // File mode is offline — derive owner/name from the local `origin` URL and
+    // never shell out to `gh`. The default branch isn't knowable without GitHub,
+    // so it falls back to "main" (file mode doesn't depend on it).
+    const url = (await this.getRemoteUrl(repo)) ?? "";
+    const slug = parseRepoSlug(url);
+    if (!slug) throw new Error(`could not parse owner/name from origin remote: "${url}"`);
+    return { owner: slug.owner, name: slug.name, defaultBranch: "main" };
+  },
+
   github: realGithub,
   now: () => new Date(),
 };
