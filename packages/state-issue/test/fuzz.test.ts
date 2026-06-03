@@ -107,9 +107,15 @@ function genBlocked(rng: Rng): BlockedItem {
 
 function genInFlight(rng: Rng): InFlightItem {
   return {
-    // A numeric ref (github mode) or a kebab file-mode slug — both round-trip
-    // through the `#<ref>` shape (#200).
-    issue: rng.bool() ? String(rng.int(1, 9999)) : `epic-${rng.int(1, 9999)}-rollout`,
+    // A numeric ref (github mode) or a file-mode slug — both round-trip through
+    // the `#<ref>` shape (#200). The slug isn't constrained to kebab: the parser
+    // captures any non-space/non-`*` stem, so we fuzz a dotted variant too
+    // (`v1.2-rollout`-style) to pin that broadened capture against truncation.
+    issue: rng.bool()
+      ? String(rng.int(1, 9999))
+      : rng.bool()
+        ? `epic-${rng.int(1, 9999)}-rollout`
+        : `v${rng.int(1, 9)}.${rng.int(0, 9)}-rollout-${rng.int(1, 9999)}`,
     adapter: rng.pick(ADAPTERS),
     progress: rng.bool() ? "running" : `sub-issue ${rng.int(1, 9)}/${rng.int(1, 12)}`,
     lastHeartbeat: `${rng.int(1, 59)}${rng.pick(["s", "m", "h"])} ago`,

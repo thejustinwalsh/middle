@@ -37,6 +37,22 @@ describe("validate", () => {
     expect(validate(bad, config).ok).toBe(false);
   });
 
+  test("accepts a non-numeric file-mode Epic slug as an In-flight ref (rule 4 scopes the numeric check to Ready epics and blocked blockers, not In-flight)", () => {
+    const ok = {
+      ...fullState,
+      inFlight: [
+        {
+          issue: "v1.2-rollout", // dotted file-stem slug — not /#\d+/, intentionally allowed
+          adapter: "claude",
+          progress: "running",
+          lastHeartbeat: "1m ago",
+          tmuxSession: "middle-v1.2-rollout",
+        },
+      ],
+    };
+    expect(validate(ok, config)).toEqual({ ok: true });
+  });
+
   test("fails when generated is not ISO 8601", () => {
     expect(validate({ ...fullState, generated: "not-a-date" }, config).ok).toBe(false);
   });
