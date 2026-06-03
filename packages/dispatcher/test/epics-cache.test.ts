@@ -30,8 +30,16 @@ describe("epics-cache", () => {
       db,
       "o/r",
       fakeGitHub([
-        { number: 10, title: "A", state: "open", labels: ["epic"], subTotal: 3, subClosed: 1 },
-        { number: 20, title: "B", state: "open", labels: [], subTotal: 2, subClosed: 2 },
+        {
+          ref: "10",
+          number: 10,
+          title: "A",
+          state: "open",
+          labels: ["epic"],
+          subTotal: 3,
+          subClosed: 1,
+        },
+        { ref: "20", number: 20, title: "B", state: "open", labels: [], subTotal: 2, subClosed: 2 },
       ]),
     );
     const rows = readEpics(db, "o/r");
@@ -51,7 +59,7 @@ describe("epics-cache", () => {
       db,
       "o/r",
       fakeGitHub([
-        { number: 10, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
+        { ref: "10", number: 10, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
       ]),
     );
     await refreshEpics(db, "o/r", fakeGitHub([])); // 10 no longer open
@@ -68,7 +76,7 @@ describe("epics-cache", () => {
       db,
       "o/r",
       fakeGitHub([
-        { number: 10, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
+        { ref: "10", number: 10, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
       ]),
     );
     // Refresh with empty list — #10 is now closed.
@@ -79,7 +87,7 @@ describe("epics-cache", () => {
       db,
       "o/r",
       fakeGitHub([
-        { number: 10, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
+        { ref: "10", number: 10, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
       ]),
     );
     const rows = readEpics(db, "o/r");
@@ -94,7 +102,9 @@ describe("epics-cache", () => {
     await refreshEpics(
       db,
       "o/a",
-      fakeGitHub([{ number: 1, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 }]),
+      fakeGitHub([
+        { ref: "1", number: 1, title: "A", state: "open", labels: [], subTotal: 1, subClosed: 0 },
+      ]),
     );
     await refreshEpics(db, "o/b", fakeGitHub([]));
     expect(readEpics(db, "o/a").map((r) => r.number)).toEqual([1]);

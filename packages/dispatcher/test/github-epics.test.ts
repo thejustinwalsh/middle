@@ -22,6 +22,7 @@ describe("parseEpicsList", () => {
 
     expect(parseEpicsList(ndjson)).toEqual([
       {
+        ref: "247",
         number: 247,
         title: "OAuth refresh",
         state: "open",
@@ -45,7 +46,7 @@ describe("parseEpicsList", () => {
       sub_issues_summary: { total: 1, completed: 0 },
     });
     expect(parseEpicsList(ndjson)).toEqual([
-      { number: 2, title: "y", state: "open", labels: [], subTotal: 1, subClosed: 0 },
+      { ref: "2", number: 2, title: "y", state: "open", labels: [], subTotal: 1, subClosed: 0 },
     ]);
   });
 });
