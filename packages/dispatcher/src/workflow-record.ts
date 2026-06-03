@@ -29,7 +29,7 @@ export type WorkflowRecord = {
   repo: string;
   epicNumber: number | null;
   /**
-   * The canonical Epic reference (migration 008): `String(epicNumber)` for
+   * The canonical Epic reference (migration 009): `String(epicNumber)` for
    * github-mode rows, a slug for file-mode rows, null when there's no Epic
    * (recommender / documentation). Read straight from the column — the dispatch
    * write path, not this read accessor, is what populates it.

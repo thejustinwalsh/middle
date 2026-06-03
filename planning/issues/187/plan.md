@@ -11,7 +11,7 @@ a blank cell, with github-mode rows rendering exactly as they do today.
 
 ## Approach
 - Plumb `epic_ref` through the read path the dashboard already uses: the
-  workflows-table column (added by migration 008) → `getWorkflow` (for the
+  workflows-table column (added by migration 009) → `getWorkflow` (for the
   bridge) and `db-deps` (for the `/api/*` responses) → the wire types → the UI.
 - Add one small `EpicRef` component that owns the github-vs-file rendering rule,
   and use it in the surfaces the issue cites (the `db-deps.ts:83`-fed plane):
