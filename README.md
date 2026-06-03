@@ -67,7 +67,7 @@ Configuration is optional — middle ships with working defaults. To override, d
 
 ```toml
 [global]
-dispatcher_port = 8822               # the hook server agents report to
+dispatcher_port = 4120               # the hook server + dashboard agents report to
 max_concurrent  = 4                  # how many agents in the office at once
 default_adapter = "claude"
 worktree_root   = "~/.middle/worktrees"
@@ -122,7 +122,7 @@ mm stop                     # everybody go home
 One Bun process. No build step. The dispatcher is `bunqueue` + a hook receiver + a watchdog ticker, all writing to a local SQLite (WAL) and serving a read-only dashboard over HTTP+SSE. GitHub is the source of truth for the work; the dispatcher spawns `tmux` sessions for the agents and `git` worktrees to isolate them.
 
 <p align="center">
-  <img src="docs/diagrams/architecture.svg" alt="middle dispatcher (single process) — bunqueue engine, hook receiver, and watchdog ticker write to SQLite (WAL); Bun.serve fronts HTTP + SSE on :8822 to a read-only dashboard; GitHub on the left is the source of truth; tmux sessions and git worktrees are spawned below." width="720" />
+  <img src="docs/diagrams/architecture.svg" alt="middle dispatcher (single process) — bunqueue engine, hook receiver, and watchdog ticker write to SQLite (WAL); Bun.serve fronts HTTP + SSE on :4120 to a read-only dashboard; GitHub on the left is the source of truth; tmux sessions and git worktrees are spawned below." width="720" />
 </p>
 
 ---
@@ -139,6 +139,12 @@ If you want to see it: browse the open [Epics](https://github.com/thejustinwalsh
 
 ## Going deeper
 
+- **[`docs/operator.md`](docs/operator.md)** — the operator how-to: every `mm` command, the daily run loop, `mm doctor`, backups, and resetting state.
+- **[`docs/architecture.md`](docs/architecture.md)** — how the pieces fit: the daemon, the dispatch lifecycle, the crons, and why SQLite is operational state while GitHub is the system of record.
+- **[`docs/adapters.md`](docs/adapters.md)** — the `AgentAdapter` interface every coding-agent CLI implements.
+- **[`docs/bootstrap.md`](docs/bootstrap.md)** — what `mm init` stamps into a target repo, and how to remove it.
+- **[`docs/skill-enforcement.md`](docs/skill-enforcement.md)** — the gates that hold a dispatched agent to the workflow.
+- **[`docs/dogfooding.md`](docs/dogfooding.md)** — how middle builds itself.
 - **`planning/middle-management-build-spec.md`** — the authoritative design: architecture, the adapter interface, the dispatch lifecycle, the state-issue schema, and the full build sequence (phases 0–11).
 - **`CLAUDE.md`** — the working conventions every contributor and every dispatched agent follows (Conventional Commits, the Epic/PR workflow, the byte-identical state-issue round-trip invariant).
 

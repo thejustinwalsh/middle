@@ -31,6 +31,8 @@ import { startPoller } from "./poller-cron.ts";
 import { ghReconcilerGateway, gitOps, reconcileOpenPRs } from "./reconcilers/pr-divergence.ts";
 import { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
 import { runRecommenderCronPass, startRecommenderCron } from "./recommender-cron.ts";
+import { startRetentionCron } from "./retention-cron.ts";
+import { runRetentionPass } from "./retention.ts";
 import { startAuditCron } from "./audit-cron.ts";
 import { startStalenessCron } from "./staleness-cron.ts";
 import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
@@ -811,6 +813,19 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     console.error(`[recommender-cron] startup pass failed: ${(error as Error).message}`);
   });
 
+  // Retention cron: daily, prune `events` older than 14d and archive `completed`
+  // workflows older than 30d (events dropped, row + final state preserved).
+  // SQLite-only — never touches GitHub. Run one pass at startup too, so a long
+  // downtime doesn't leave stale state unpruned until the first daily tick (and
+  // so `mm doctor` has a recent run to report). Guarded: a failed pass logs and
+  // records itself in `retention_runs` but never blocks startup.
+  const stopRetentionCron = await startRetentionCron({ db });
+  try {
+    runRetentionPass(db);
+  } catch (error) {
+    console.error(`[retention] startup pass failed: ${(error as Error).message}`);
+  }
+
   // Epic-cache refresh: an initial pass + a fixed-cadence sweep over every known
   // repo. Best-effort — a GitHub hiccup logs and the next tick retries.
   // Ticks are fire-and-forget per repo: a GitHub call slower than the interval
@@ -857,6 +872,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       await stopRecommenderCron();
     } catch (error) {
       console.error(`shutdown: stopRecommenderCron failed — ${(error as Error).message}`);
+    }
+    try {
+      await stopRetentionCron();
+    } catch (error) {
+      console.error(`shutdown: stopRetentionCron failed — ${(error as Error).message}`);
     }
     try {
       await stopAuditCron();

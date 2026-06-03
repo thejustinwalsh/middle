@@ -15,7 +15,7 @@ the hook script, session bookkeeping). The crossover commands conflict with that
 in two load-bearing ways:
 
 1. **`mm dispatch . <issue>` nests agents.** It needs the dispatcher process
-   (`mm start`, port 8822), creates a *second* worktree, and spawns a *second*
+   (`mm start`, port 4120), creates a *second* worktree, and spawns a *second*
    `claude`/tmux session. Run from inside a live dispatch it collides with the
    running dispatcher and consumes a slot against itself. It also needs a
    **manually created** Epic to target.
@@ -56,7 +56,7 @@ gh issue list --repo thejustinwalsh/middle --label agent-queue:state
 
 # 5. Dispatch a manually created Epic against middle. `mm dispatch` is
 #    self-contained — it runs its OWN hook server + workflow engine inline — so
-#    do NOT run `mm start` first: both bind the dispatcher port (8822) and a
+#    do NOT run `mm start` first: both bind the dispatcher port (4120) and a
 #    running `mm start` makes `mm dispatch` fail with EADDRINUSE. (`mm start` is
 #    the long-running daemon for Phase 8 auto-dispatch, not manual dispatch.)
 mm dispatch . <epic-number>     # the Epic (see "Creating a dispatchable Epic" below)

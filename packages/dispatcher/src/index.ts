@@ -26,6 +26,8 @@
  *   hook receiver + `/control` + `/health` surface
  * - `startPoller` / `POLLER_INTERVAL_MS`, `startWatchdog` / `WATCHDOG_INTERVAL_MS`
  *   — the reconciliation crons
+ * - `startRetentionCron` / `runRetentionPass` / `collectRetentionStatus` — the
+ *   daily SQLite retention cron + the status `mm doctor` reads
  * - `createDurableEngine` / `recoverEngine` / `reconcileOrphanedSignals` — the
  *   durable workflow engine (persistent store, transient queue) and its boot
  *   recovery: re-arm parked `waiting` executions, reconcile orphaned signals (#116)
@@ -47,6 +49,8 @@
  * - `metrics.ts` — queue observability: the `/metrics` (Prometheus) +
  *   `/control/metrics` (JSON) snapshot exports
  * - `poller*.ts` / `watchdog*.ts` — the GitHub-poll + liveness crons
+ * - `retention.ts` / `retention-cron.ts` — the daily events-prune +
+ *   workflow-archival pass and its cron wrapper
  * - `recovery.ts` — the durable engine factory + boot recovery/reconciliation
  * - `db.ts`, `db/` — SQLite open/migrate + migrations
  * - `tmux.ts`, `worktree.ts` — session + worktree lifecycle
@@ -78,6 +82,17 @@ export { EventHub } from "./event-hub.ts";
 export type { Event, WorkflowEventData } from "./event-hub.ts";
 export { POLLER_INTERVAL_MS, startPoller } from "./poller-cron.ts";
 export { startWatchdog, WATCHDOG_INTERVAL_MS } from "./watchdog-cron.ts";
+export { startRetentionCron } from "./retention-cron.ts";
+export {
+  collectRetentionStatus,
+  EVENTS_MAX_AGE_MS,
+  getLatestRetentionRun,
+  RETENTION_CRON_INTERVAL_MS,
+  type RetentionRun,
+  type RetentionStatus,
+  runRetentionPass,
+  WORKFLOWS_MAX_AGE_MS,
+} from "./retention.ts";
 export { createDurableEngine, recoverEngine, reconcileOrphanedSignals } from "./recovery.ts";
 export type {
   EngineRecoveryResult,
