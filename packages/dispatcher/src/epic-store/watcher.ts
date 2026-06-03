@@ -14,8 +14,8 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { ResumeSignalPayload } from "../poller.ts";
-import { findParkedWorkflowByRef, markSignalFired } from "../workflow-record.ts";
+import { reasonFromSignalName, type ResumeSignalPayload } from "../poller.ts";
+import { findParkedWorkflowByRef, getWaitForSignal, markSignalFired } from "../workflow-record.ts";
 import { readEpicFile, writeEpicFile } from "./epic-file-io.ts";
 
 /** A newly-answered question detected on disk: which Epic, which question, the reply. */
@@ -112,6 +112,12 @@ export async function runFileWatcherTick(
     for (const sig of signals) {
       const workflowId = findParkedWorkflowByRef(deps.db, repo, sig.ref);
       if (workflowId === null) continue;
+      // Only resume a workflow that is actually parked on a question (its armed
+      // signal is the `answered` one) — an answer edit must not resume a workflow
+      // parked for some other reason (e.g. review-changes), mirroring the github
+      // poller's reason-keyed dispatch.
+      const armed = getWaitForSignal(deps.db, workflowId);
+      if (!armed || reasonFromSignalName(armed.signalName) !== "answered-question") continue;
       await deps.fireSignal(workflowId, {
         reason: "answered-question",
         reply: { commentId: sig.questionId, authorLogin: "human", body: sig.body },

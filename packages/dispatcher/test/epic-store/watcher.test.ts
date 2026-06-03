@@ -6,10 +6,20 @@ import {
   collectChangedSince,
   pollFileSignals,
   resolveQuestion,
+  runFileWatcherTick,
 } from "../../src/epic-store/watcher.ts";
 import { readEpicFile } from "../../src/epic-store/epic-file-io.ts";
 import { renderEpicFile } from "../../src/epic-store/epic-file/renderer.ts";
 import type { ConversationEntry, EpicFile } from "../../src/epic-store/epic-file/types.ts";
+import { openAndMigrate } from "../../src/db.ts";
+import {
+  armWaitForSignal,
+  createWorkflowRecord,
+  loadPollableWaits,
+  updateWorkflow,
+} from "../../src/workflow-record.ts";
+import { signalNameFor } from "../../src/workflows/implementation.ts";
+import type { ResumeSignalPayload } from "../../src/poller.ts";
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "middle-watch-"));
@@ -107,5 +117,74 @@ describe("resolveQuestion", () => {
   test("a missing file/question is a no-op", () => {
     const dir = tmpDir();
     expect(() => resolveQuestion(dir, "nope", 1)).not.toThrow();
+  });
+});
+
+describe("runFileWatcherTick", () => {
+  function parkedDb(signalReason: "answered-question" | "review-changes") {
+    const dir = tmpDir();
+    const db = openAndMigrate(join(dir, "db.sqlite3"));
+    createWorkflowRecord(db, {
+      id: "wf1",
+      kind: "implementation",
+      repo: "o/r",
+      epicRef: "rollout",
+      adapter: "claude",
+    });
+    updateWorkflow(db, "wf1", { state: "waiting-human" });
+    armWaitForSignal(db, signalNameFor("rollout", signalReason), "wf1");
+    const epicsDir = tmpDir();
+    writeEpic(epicsDir, "rollout", [Q_OPEN_ANSWERED]);
+    return { db, epicsDir };
+  }
+
+  test("fires the resume + resolves the question for an answered-question park", async () => {
+    const { db, epicsDir } = parkedDb("answered-question");
+    const fired: Array<{ id: string; payload: ResumeSignalPayload }> = [];
+    const n = await runFileWatcherTick(
+      {
+        db,
+        fileModeRepos: () => [{ repo: "o/r", epicsDir }],
+        fireSignal: async (id, payload) => {
+          fired.push({ id, payload });
+        },
+      },
+      0,
+    );
+    expect(n).toBe(1);
+    expect(fired).toEqual([
+      {
+        id: "wf1",
+        payload: {
+          reason: "answered-question",
+          reply: { commentId: 1, authorLogin: "human", body: "Go with A." },
+        },
+      },
+    ]);
+    // The durable wait is marked fired (so the github poll won't re-fire it) and
+    // the question flipped to resolved (so the next watcher tick won't re-fire it).
+    expect(loadPollableWaits(db).find((w) => w.workflowId === "wf1")?.firedAt).not.toBeNull();
+    expect(readEpicFile(epicsDir, "rollout")!.conversation[0]).toMatchObject({
+      status: "resolved",
+    });
+    db.close();
+  });
+
+  test("does NOT resume a workflow parked on a non-answered signal (reason guard)", async () => {
+    const { db, epicsDir } = parkedDb("review-changes");
+    const fired: string[] = [];
+    const n = await runFileWatcherTick(
+      {
+        db,
+        fileModeRepos: () => [{ repo: "o/r", epicsDir }],
+        fireSignal: async (id) => {
+          fired.push(id);
+        },
+      },
+      0,
+    );
+    expect(n).toBe(0);
+    expect(fired).toEqual([]);
+    db.close();
   });
 });
