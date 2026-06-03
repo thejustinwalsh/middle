@@ -72,7 +72,7 @@ describe("backup.sh + reset-db.sh round-trip", () => {
 
     // The restored db is intact: schema migrated, and the seeded row survived.
     const db = openAndMigrate(join(home, "db.sqlite3"));
-    expect(currentSchemaVersion(db)).toBe(7);
+    expect(currentSchemaVersion(db)).toBe(9);
     const row = db.query("SELECT id FROM workflows WHERE id = 'wf-keep'").get();
     expect(row).toEqual({ id: "wf-keep" });
     db.close();
