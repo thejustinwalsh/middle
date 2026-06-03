@@ -18,7 +18,7 @@ import { createWorktree, destroyWorktree } from "./worktree.ts";
 /** The slice of {@link EpicGateway} the deps factory reads. */
 type DepsGitHub = Pick<
   EpicGateway,
-  "findEpicPr" | "getCommentAuthor" | "postComment" | "getIssueLabels"
+  "findEpicPr" | "getCommentAuthor" | "postComment" | "getIssueLabels" | "listIssueComments"
 >;
 
 /** The label a human applies to an Epic to authorize proceeding past a complexity pause. */
@@ -55,6 +55,75 @@ A human resolves this by **scope reduction or clarification** — or applies the
 🙋 **agent question** — the dispatched agent needs input to proceed.
 
 ${body}`;
+}
+
+/**
+ * Post the agent-pause comment on the Epic **idempotently** (the #205 spam fix).
+ *
+ * Lists the Epic's comments, finds the *most recent* agent-comment (the
+ * {@link AGENT_COMMENT_MARKER} prefix every {@link formatPauseComment} carries),
+ * and decides:
+ *  - its body already equals `body` → **no-op** (`"skipped"`): the same question
+ *    is already the open thread, so a repeated park (the recommender re-dispatches
+ *    a stuck Epic every cron tick) must not append a duplicate — this is what
+ *    collapsed #177's 1137 identical comments to one;
+ *  - otherwise → **post a fresh comment** (`"posted"`): a *different* question is
+ *    a new entry in the question history, and we never edit the prior one away
+ *    (acceptance criterion 1 — "questions are a history").
+ *
+ * Comments arrive chronological (oldest→newest, per `ghGitHub.listIssueComments`),
+ * so the last marker-prefixed comment is the most recent agent-comment. The full
+ * rendered `body` is compared (not just the question text) so a complexity pause
+ * and a plain question with the same text correctly read as distinct.
+ */
+export async function postQuestionComment(opts: {
+  github: Pick<EpicGateway, "listIssueComments" | "postComment">;
+  repo: string;
+  epicRef: string;
+  body: string;
+}): Promise<"posted" | "skipped"> {
+  const comments = await opts.github.listIssueComments(opts.repo, opts.epicRef);
+  let latestAgentBody: string | undefined;
+  for (const c of comments) {
+    if (c.body.startsWith(AGENT_COMMENT_MARKER)) latestAgentBody = c.body;
+  }
+  if (latestAgentBody !== undefined && latestAgentBody.trim() === opts.body.trim()) {
+    return "skipped";
+  }
+  await opts.github.postComment(opts.repo, opts.epicRef, opts.body);
+  return "posted";
+}
+
+/**
+ * Build the default `postQuestion` surface — the agent-pause poster the
+ * implementation workflow calls when it parks. file-mode repos append a
+ * `<!-- middle:question -->` block to the Epic file (idempotent per
+ * {@link appendQuestion}); github-mode repos comment on the Epic idempotently via
+ * {@link postQuestionComment}. Extracted so the production path and the
+ * integration test share one implementation (no re-implemented poster).
+ */
+export function makeDefaultPostQuestion(deps: {
+  db: Database;
+  resolveRepoPath: (repo: string) => string;
+  github: Pick<EpicGateway, "listIssueComments" | "postComment">;
+}): NonNullable<ImplementationDeps["postQuestion"]> {
+  return async ({ repo, epicRef, question, context, kind }) => {
+    const cfg = readEpicStoreConfig(deps.db, repo);
+    if (cfg.mode === "file") {
+      appendQuestion(join(deps.resolveRepoPath(repo), cfg.epicsDir), epicRef, {
+        question,
+        context,
+        kind,
+      });
+    } else {
+      await postQuestionComment({
+        github: deps.github,
+        repo,
+        epicRef,
+        body: formatPauseComment({ question, context, kind }),
+      });
+    }
+  };
 }
 
 /** Render the failed gates of a run into the nudge the agent reads (name + why + tail of output). */
@@ -193,22 +262,10 @@ export async function buildImplementationDeps(
     },
     // Default surface: comment the pause on the Epic (framed by kind) via `gh`,
     // so the recommender can classify a complexity pause under `complexity pause`.
+    // Idempotent on a repeated park (#205) — see `makeDefaultPostQuestion`.
     postQuestion:
       args.postQuestion ??
-      (async ({ repo, epicRef, question, context, kind }) => {
-        // file mode: append a `<!-- middle:question -->` block to the Epic file
-        // (the agent-side of #178's class). github mode: comment on the Epic.
-        const cfg = readEpicStoreConfig(args.db, repo);
-        if (cfg.mode === "file") {
-          appendQuestion(join(args.resolveRepoPath(repo), cfg.epicsDir), epicRef, {
-            question,
-            context,
-            kind,
-          });
-        } else {
-          await github.postComment(repo, epicRef, formatPauseComment({ question, context, kind }));
-        }
-      }),
+      makeDefaultPostQuestion({ db: args.db, resolveRepoPath: args.resolveRepoPath, github }),
     resolveComplexityCeiling: args.resolveComplexityCeiling,
     // The repo's Epic-store mode selects which mode-commands reference the brief
     // mirrors into the worktree; read from `repo_config` (defaults to github).

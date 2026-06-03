@@ -214,6 +214,12 @@ export function makeRoutingStateGateway(deps: {
  * file-mode `postQuestion` endpoint (the agent-side of #178's class, structurally
  * distinct from any human-written `<!-- middle:answer -->`). The renderer is the
  * sole writer of the strict marker attributes, so the round-trip survives.
+ *
+ * **Idempotent on a repeated park (#205):** if the most recent question entry
+ * already has the identical body and kind, this is a no-op — the same spam guard
+ * the github-mode poster applies, so a re-dispatch that re-asks the open question
+ * doesn't grow the conversation. A *different* question still appends (questions
+ * are a history).
  */
 export function appendQuestion(
   epicsDir: string,
@@ -223,11 +229,16 @@ export function appendQuestion(
   const epic = readEpicFile(epicsDir, slug);
   if (!epic)
     throw new Error(`cannot post question: no Epic file for slug "${slug}" in ${epicsDir}`);
+  const body = opts.context ? `${opts.question}\n\n${opts.context}` : opts.question;
+  // Most recent question entry (conversation is chronological); skip if identical.
+  const lastQuestion = [...epic.conversation].reverse().find((e) => e.kind === "question");
+  if (lastQuestion && lastQuestion.body === body && lastQuestion.questionKind === opts.kind) {
+    return;
+  }
   const nextId =
     epic.conversation.reduce((max, e) => (e.kind === "question" ? Math.max(max, e.id) : max), 0) +
     1;
   const ts = (opts.now ?? (() => new Date()))().toISOString();
-  const body = opts.context ? `${opts.question}\n\n${opts.context}` : opts.question;
   writeEpicFile(epicsDir, slug, {
     ...epic,
     conversation: [
