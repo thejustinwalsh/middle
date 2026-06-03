@@ -35,7 +35,13 @@ import { startRetentionCron } from "./retention-cron.ts";
 import { runRetentionPass } from "./retention.ts";
 import { startAuditCron } from "./audit-cron.ts";
 import { startStalenessCron } from "./staleness-cron.ts";
-import { isPaused, listManagedRepos, registerManagedRepo } from "./repo-config.ts";
+import {
+  isPaused,
+  listManagedRepos,
+  readEpicStoreConfig,
+  registerManagedRepo,
+} from "./repo-config.ts";
+import { runFileWatcherTick } from "./epic-store/watcher.ts";
 import { getSlotState, hasFreeSlot } from "./slots.ts";
 import { ghStateIssueGateway, readState, type StateGateway } from "./state-issue.ts";
 import { capturePane, killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
@@ -756,6 +762,32 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     }
   }
 
+  // Phase-2 file-watcher (#197): on each poller tick, mtime-poll every file-mode
+  // repo's `epics_dir` and fire the resume signal for any parked Epic whose
+  // `<!-- middle:answer -->` block became non-empty since the last tick — the
+  // file-mode equivalent of a new GitHub comment, on the same 120s cron (no new
+  // cron). Firing flips the question to `resolved` so it never re-fires.
+  let lastWatcherTick = Date.now();
+  const fileWatcherTick = async (): Promise<void> => {
+    const since = lastWatcherTick;
+    const tickStart = Date.now();
+    await runFileWatcherTick(
+      {
+        db,
+        fileModeRepos: () =>
+          listManagedRepos(db).flatMap((m) => {
+            const cfg = readEpicStoreConfig(db, m.repo);
+            return cfg.mode === "file"
+              ? [{ repo: m.repo, epicsDir: join(m.checkoutPath, cfg.epicsDir) }]
+              : [];
+          }),
+        fireSignal: (workflowId, payload) => engine.signal(workflowId, RESUME_EVENT, payload),
+      },
+      since,
+    );
+    lastWatcherTick = tickStart;
+  };
+
   // GitHub poller: every POLLER_INTERVAL_MS (the pinned constant in
   // poller-cron.ts; the dispatcher's CLAUDE.md cadence contract holds it
   // and this doc in sync), for each parked workflow with an armed wait,
@@ -804,6 +836,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         },
         onMergedTransition: (repo) => reconcileOpenPRsForRepo(repo),
       },
+      // Phase-2 file-mode answer watcher (#197), hung off the same cron.
+      fileWatcher: fileWatcherTick,
     },
   );
 

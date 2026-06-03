@@ -42,6 +42,14 @@ export type StartPollerOptions = {
   /** Tick cadence override (default {@link POLLER_INTERVAL_MS}). */
   intervalMs?: number;
   /**
+   * The Phase-2 file-mode answer watcher (#197). When wired, each tick also runs
+   * one mtime-poll pass over file-mode repos' `epics_dir`, firing the resume
+   * signal for any parked Epic whose `<!-- middle:answer -->` block became
+   * non-empty. Hung off the existing cron (no new cron, same 120s cadence).
+   * Omitted → file-mode answers resume only via the manual `mm resume` escape hatch.
+   */
+  fileWatcher?: () => Promise<void>;
+  /**
    * Open-PR divergence reconciler hooks (Epic #168). When provided, each tick
    * runs `perTickSweep` after the resume + merged-parks reconciliation, and
    * `onMergedTransition` is wired into `reconcileMergedParks` so a freshly-merged
@@ -97,6 +105,13 @@ export async function startPoller(
           await runCheckboxRevertPass(opts.checkboxRevert);
         } catch (error) {
           console.error(`[checkbox-revert] pass failed: ${(error as Error).message}`);
+        }
+      }
+      if (opts.fileWatcher) {
+        try {
+          await opts.fileWatcher();
+        } catch (error) {
+          console.error(`[file-watcher] pass failed: ${(error as Error).message}`);
         }
       }
     },

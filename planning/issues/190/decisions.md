@@ -207,3 +207,24 @@ run; the automated parity test covers the same code paths deterministically.
 **Why:** honest integration accounting — claim the automated evidence delivered,
 flag the live-repo smoke as operator-only rather than silently checking it off.
 **Evidence:** parity.test.ts (4 cases green); the dispatch is headless (no live agent).
+
+## File-watcher is an mtime pass hung off the existing poller cron (no new cron)
+**File(s):** `packages/dispatcher/src/epic-store/watcher.ts`, `poller-cron.ts`, `main.ts`
+**Date:** 2026-06-03
+
+**Decision:** Phase 2 adds `collectChangedSince` (mtime poll, no `chokidar`) +
+`pollFileSignals` (open question with a non-empty answer in a changed file) +
+`resolveQuestion` (flip to resolved via the renderer) + `runFileWatcherTick` (the
+per-tick pass). It's wired as an optional `fileWatcher` pass on the EXISTING poller
+cron (`StartPollerOptions.fileWatcher`) — same 120s cadence, no new cron. The daemon
+tracks `lastWatcherTick` and scans each file-mode repo's `epics_dir`; firing the
+resume marks the durable wait fired and flips the question to `resolved` (structural
+dedup — a later tick never re-fires).
+**Why:** file answers can't be detected by the github `createdAt > sinceMs` path (a
+file answer inherits the question's ts, which predates the park) — so file mode needs
+the mtime + open-question-status mechanism. Sharing the cron keeps the cadence
+symmetric with github comment polling and avoids a second timer. `runFileWatcherTick`
+is extracted (not inlined in main.ts) so the daemon and the integration test share one
+implementation — no drift. The github resume poll stays untouched.
+**Evidence:** spec "filePollGateway" file-watcher paragraph; `poller.ts`
+`classifyNewHumanReply` (createdAt-gated); sub-issue #197 "no new cron".
