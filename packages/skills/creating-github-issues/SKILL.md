@@ -190,10 +190,12 @@ The bar for category 3 is high. "I'm not 100% sure how big this is" is category 
 
 For each parent:
 
+**Required label:** every parent issue **must** include `epic` in its label set. The recommender (`recommending-github-issues`) uses `epic` as the discriminator for what to treat as an Epic when reading `gh issue list`. A parent without `epic` is invisible to the recommender — it won't show up in Ready, Needs human input, Blocked, *or* Excluded. It just vanishes from the queue. Children are recognized by their attachment to the parent (via `sub_issues_summary`); only the parent needs `epic`.
+
 ```bash
 gh issue create \
   --title "<verb-led, scoped, ≤72 chars>" \
-  --label "<comma,separated,labels>" \
+  --label "epic,<other,labels>" \
   --body "$(cat <<'EOF'
 ## Context
 <1-3 sentences pointing to the spec section this comes from. Link to the spec
@@ -482,6 +484,8 @@ Middle's controlled labels (applied manually by the user, NOT by this skill — 
 | "I'll @-mention people to assign work" | This skill files unassigned issues. The user (or the recommender) decides assignment. |
 | "Some of these block others — I'll set blockers as I file" | Pass 1 files content with no `#N` cross-refs. The Phase 9 second pass wires every `Related:` / blocker line once all numbers exist. Filing in dependency order is fragile; a second pass isn't. |
 | "I'll use `-f sub_issue_id=...`" | `-f` is string; the endpoint rejects it. Always `-F` (integer) with the child's database ID. |
+| "I'll file this as `needs-design` to be safe" | `needs-design` is the most expensive label in middle's vocabulary — it removes the issue from auto-dispatch entirely until a maintainer un-labels it. Reserve it for the **single** case where you can name ≥2 specific candidate approaches AND say why building each one in a worktree (`superpowers:using-git-worktrees` + a fork-A / fork-B POC per `implementing-github-issues` § "Architectural forks") wouldn't decide between them. If the body has implementation verbs ("wire X to Y", "scan Z for W") with concrete file paths, it's `enhancement`, not `needs-design`. Filing more work ≠ needs-design; covering yourself ≠ needs-design. |
+| "I forgot the `epic` label on the parent" | Middle's recommender uses `epic` as the discriminator for what to treat as an Epic. A parent issue **without** `epic` is invisible to the recommender — it won't appear in Ready, Needs human input, Blocked, or even Excluded. It just vanishes. Every parent issue (Phase 6) MUST carry `epic` in its label set. The children inherit ranking via `sub_issues_summary`; they don't need `epic` themselves. |
 
 ## Common mistakes
 

@@ -608,6 +608,8 @@ These thoughts mean you're about to violate the workflow:
 | "I'll fix this small adjacent thing while I'm here" | File a follow-up. Keep scope tight. But check first: is it Phase-N work for the same parent? Then it's a plan TODO, not a new issue. **Exception:** when *addressing review feedback*, hardening the same class *within the comment's blast radius* (each fix tested) is done in-pass — see "Addressing review feedback". |
 | "Every TODO becomes its own GitHub issue" | Most belong as plan notes for future phases of the same workstream. Standalone issues are the exception, not the default. |
 | "I'll file these standalone — they're 'tech debt'" | If they share a theme and have no parent, *create the parent first*, then file as sub-issues. Standalone is reserved for genuinely cross-workstream work. |
+| "This follow-up is complex enough that I'll label it `needs-design`" | `needs-design` is the most expensive label in middle's vocabulary — it removes the issue from auto-dispatch entirely until a maintainer un-labels it. Reserve it for the **single** case where you can name ≥2 specific candidate approaches AND say why building each one as a worktree-A / worktree-B POC (the "Architectural forks" mechanic above) wouldn't decide between them. "More work than I want to handle in this PR" ≠ needs-design; "I want human ack first" ≠ needs-design; "feels designy" ≠ needs-design. If the follow-up's body has implementation verbs with concrete file paths, it's `enhancement` and the next implementer forks-and-decides. The default is "build to disambiguate"; `needs-design` is the after-both-A-and-B-came-back-tied escape hatch, not the before-you-tried one. |
+| "This feels like a complexity pause" | Feelings aren't forks. Before writing `blocked.json` with `kind=complexity`, write the candidate list — every fork by name with a one-sentence concrete approach (file paths + verbs, not vibes). See "Complexity is fork branching factor" below. If the list comes out as 1 fork, the call was obvious — pick it. If 2-3, worktree them — that's the Architectural forks mechanic, not a complexity pause. Only ≥ `complexity_ceiling + 1` *distinct, concrete* forks with no clear winner is a real pause. Most "complexity pauses" don't survive contact with the list. |
 | "Phase N (core) is complete; the rest can be sub-issues" | If the plan's Phase N acceptance criteria aren't all met, Phase N isn't complete. Adding qualifiers to phase names ("core", "initial", "foundation", "MVP") is the linguistic tell of a unilateral scope cut. Strip the qualifier; stay in draft until the actual phase is done. |
 | "These remaining acceptance items are parallelizable, sub-issues are appropriate" | Acceptance criteria from the plan were never parallelizable scope — they're agreed deliverables. Sub-issues are for items the plan didn't anticipate. Filing the remainder as sub-issues advertises false parallelism and ships the issue partially done. |
 | "The PR is feature-complete enough to mark ready" | "Enough" is the rationalization. The PR is ready when *all* acceptance criteria are met or *all* deferrals carry stakeholder authorization in writing — not before. Phase 10's acceptance gate forbids the soft exit. |
@@ -674,6 +676,22 @@ You cannot "comment on the Epic and wait" — headless, there is nothing to wait
 
 - A decision with **2 or 3** viable candidates and no clear winner from CLAUDE.md / repo skills / docs → use the **Architectural forks** mechanic above: worktree each candidate, build a minimal POC, evaluate against fitness, fold the winner. This is expected and good — don't ask a human what you can A/B/C yourself.
 - A decision that genuinely needs **more candidates than `complexity_ceiling`** to reason about → do **not** fork your way through it and do **not** guess. That many live options means the sub-issue is under-specified. **Pause at that sub-issue**: write `.middle/blocked.json` with the decision, the candidate space, and why it exceeds the ceiling, then exit. The human resolves it by scope reduction or clarification — and may add the `approved` label to let you proceed with a best-judgment call on resume.
+
+**Mandatory before raising a complexity pause: write the candidate list.** In `blocked.json`'s `context`, list every fork **by name** with a one-sentence concrete approach for each — file paths and verbs, not vibes:
+
+```
+Fork A: stringify the slug into the existing numeric `epicNumber` and parse-back at the `gh` boundary. Risk: synthesized number can collide with a real issue's number across repos.
+Fork B: introduce `epicRef: string` end-to-end (workflows, recommender, poller, ~30 callsites). Risk: large mechanical refactor.
+Fork C: keep `epicNumber: number` and gate file-mode behind a parallel `EpicRef`-typed seam that wraps the existing one. Risk: two long-lived parallel surfaces.
+```
+
+If you can't articulate ≥ `complexity_ceiling + 1` concrete forks this way, **it isn't a complexity pause** — you're rationalizing an easy choice as hard. Three honest outcomes follow from the list:
+
+1. **One fork is clearly best after writing the list** — that's the recognition that the answer was obvious from CLAUDE.md / repo skills / the issue body. Pick it, record in `decisions.md`, keep moving. No pause.
+2. **2 or 3 forks are live but you can A/B/C them** — that's the **Architectural forks** mechanic above, not a complexity pause. Worktree them, build POCs, decide. No pause.
+3. **You actually listed ≥ `complexity_ceiling + 1` distinct, concrete approaches and none is clearly best** — *now* it's a complexity pause. The list itself is the artifact that proves you're escalating real complexity, not asking permission for an easy call.
+
+The literal exercise of writing down the forks is the gate. If you skipped it and went straight to pausing because something *felt* complex, the answer is: **delete the pause, write the list, re-read this section**. Most "complexity pauses" don't survive contact with the list.
 
 Completed sub-issues stay done on the branch; only the current one is paused. On resume you continue from there.
 
