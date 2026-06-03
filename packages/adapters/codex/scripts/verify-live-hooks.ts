@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     dispatcherUrl: "PLACEHOLDER", // overwritten by envOverrides below
     sessionName: SESSION,
     sessionToken: "verify-token",
-    epicNumber: 177,
+    epicRef: "177",
   });
 
   // 2. Local dispatcher stand-in.
