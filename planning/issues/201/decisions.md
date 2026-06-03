@@ -33,3 +33,13 @@
 **Decision:** Added `resetHard` to `GitOps`, documented and used **only** to undo a local rebase back to the captured pre-rebase HEAD.
 
 **Why:** `git reset --hard` toward `main`'s tip is the exact operation that caused #182. Adding it as a general op is mild risk, so it's narrowly scoped: the single call site passes a sha captured *before* the rebase mutated anything, restoring prior state. The docstring forbids the reset-toward-main use explicitly so a future edit doesn't repurpose it.
+
+## Internal review: declined ancestry-based guard; adopted null-restore throw + revListCount coverage
+**File(s):** `packages/dispatcher/src/reconcilers/pr-divergence.ts` (`applySuccess`, `tryRebaseOntoMain`)
+**Date:** 2026-06-03
+
+**Decision:** A self-review pass proposed replacing the count-based keystone guard (`remoteAhead > 0 && localAhead == 0`) with an ancestry check ("refuse the push unless `origin/<branch>` is an ancestor of local HEAD") to also catch a hypothetical partial-overwrite. **Declined.** Adopted the pass's two lower-severity items: throw (don't silently proceed) when `originalHead` is null before the restore, and add direct `revListCount` fallback coverage.
+
+**Why declined:** A rebase *rewrites* commit shas, so after a legitimate non-FF rebase the old remote branch tip is **not** an ancestor of the new HEAD. Verified empirically: `git merge-base --is-ancestor origin/middle-issue-32 HEAD` exits 1 after a normal non-FF rebase (the reconciler's core operation). An ancestry guard would therefore false-flag and block every real rebase. The count-based guard is the correct signal for a history-rewriting tool: it catches the catastrophic "emptied to `main`" case (the actual #182 bug) while letting legitimate rebases through (they have `localAhead > 0`). The proposed partial-overwrite case is both (a) unreachable through any in-tree code path (every success path keeps the branch's work in HEAD) and (b) indistinguishable from a legitimate rebase without content-level diffing — so no correct cheap guard exists for it, and the proposed one is actively wrong.
+
+**Evidence:** `/tmp` probe — non-FF rebase yields `--is-ancestor` exit 1, `localAhead=1`, `remoteAhead=1`; the count guard does not trip, an ancestry guard would.

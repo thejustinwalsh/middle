@@ -428,9 +428,16 @@ export async function tryRebaseOntoMain(
   if (aheadBefore > 0 && aheadAfter === 0) {
     // Botched rebase: every commit the PR added was dropped. Restore the
     // worktree (undo the rebase) and signal the orchestrator to escalate.
-    if (originalHead !== null) {
-      await deps.git.resetHard(resolved.worktreePath, originalHead);
+    // `originalHead === null` is a contradiction here — a clean rebase implies
+    // HEAD resolved — but if it ever does, throw rather than leave the worktree
+    // silently emptied (a later tick would then read aheadBefore=0 and the guard
+    // would no longer fire). The orchestrator's per-PR try/catch surfaces it.
+    if (originalHead === null) {
+      throw new Error(
+        `cannot restore worktree after a dropped-all-commits rebase: HEAD did not resolve (${resolved.worktreePath})`,
+      );
     }
+    await deps.git.resetHard(resolved.worktreePath, originalHead);
     return { ok: false, conflictingPaths: [], droppedAllCommits: true };
   }
   return result;
