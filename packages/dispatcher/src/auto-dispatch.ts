@@ -68,12 +68,14 @@ export function didReadState(result: AutoDispatchResult): boolean {
 
 /**
  * Extract the leading `#<ref>` Epic reference from a Ready row's `epic` cell, or
- * null. `<ref>` is `[\w-]+`: a numeric Epic number in github mode (`#42`) or a
- * file-mode Epic slug (`#rollout-epic-store`). The dispatch path is ref-agnostic
- * — `startDispatchImpl` already takes an `epicRef` string (#200).
+ * null. The cell is `#<ref> <title>`, so `<ref>` is everything up to the first
+ * whitespace: a numeric Epic number in github mode (`#42`) or a file-mode Epic
+ * slug (`#rollout-epic-store`, `#v1.2-rollout` — a file stem is not constrained
+ * to `[\w-]`). The dispatch path is ref-agnostic — `startDispatchImpl` already
+ * takes an `epicRef` string (#200).
  */
 function parseEpicRef(epic: string): string | null {
-  const match = /^#([\w-]+)\b/.exec(epic.trim());
+  const match = /^#(\S+)/.exec(epic.trim());
   return match ? match[1]! : null;
 }
 

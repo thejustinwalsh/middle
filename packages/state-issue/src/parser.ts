@@ -189,11 +189,14 @@ function parseBlocked(content: string[]): BlockedItem[] {
   });
 }
 
-// The `#` ref is `[\w-]+` (not `\d+`): a numeric Epic number in github mode OR a
-// file-mode Epic slug (kebab-case file stem). Captured as a string and kept raw
-// so the dispatcher-owned section round-trips a slug unchanged (#200).
+// The `#` ref is one or more non-space, non-`*` chars (not `\d+`): a numeric Epic
+// number in github mode OR a file-mode Epic slug. A file stem isn't constrained
+// to kebab (`v1.2-rollout` is valid), so match any char up to the closing `**`
+// delimiter — that keeps the round-trip exact for whatever slug the file store
+// produced. (Space/`*` can't appear in the ref: the line uses ` · ` separators
+// and `**` bold delimiters.) Captured raw as a string (#200).
 const IN_FLIGHT_RE =
-  /^- \*\*#([\w-]+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
+  /^- \*\*#([^*\s]+)\*\* · (.+?) · (.+?) · last heartbeat (.+?) · \[tmux: (.+?)\]$/;
 
 function parseInFlight(content: string[]): InFlightItem[] {
   // Accepts the canonical "- _no agents in flight_", a generic placeholder, or an

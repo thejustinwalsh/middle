@@ -303,6 +303,10 @@ export async function dispatchRecommender(
       repo: opts.repoSlug,
       stateIssue: opts.stateIssue,
       adapter: opts.adapterName,
+      // Forward the Epic-store mode so the workflow's prompt frames a file-mode
+      // run for the file store (the daemon path forwards it too; this is the
+      // standalone-helper path) — without this it always took the github branch.
+      epicStore: opts.epicStore,
     };
     const handle = await engine.start("recommender", input);
     console.error(`[recommender-run] workflow ${handle.id} enqueued`);

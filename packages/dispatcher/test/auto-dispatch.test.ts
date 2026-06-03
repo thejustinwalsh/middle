@@ -232,6 +232,16 @@ describe("autoDispatch", () => {
     expect(result.reason).toBe("drained");
   });
 
+  test("extracts a non-kebab slug ref up to the first space (#200)", async () => {
+    // A file stem isn't constrained to `[\w-]` — a dotted slug must be captured
+    // whole (up to the title's leading space), not truncated at the dot.
+    const { deps, enqueued } = makeDeps({
+      readState: async () => stateWith([readyRow(1, "v1.2-rollout", "claude")]),
+    });
+    await autoDispatch(deps);
+    expect(enqueued).toEqual([{ repo: "o/r", epicRef: "v1.2-rollout", adapter: "claude" }]);
+  });
+
   test("ignores the empty-state (no ready rows) without enqueuing", async () => {
     const { deps, enqueued } = makeDeps({ readState: async () => stateWith([]) });
     const result = await autoDispatch(deps);
