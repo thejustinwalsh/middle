@@ -830,9 +830,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     expect(fixture.calls.convertPrToDraft).toEqual([182]);
     expect(fixture.calls.reopenIssue.length).toBe(1);
     expect(fixture.calls.reopenIssue[0]?.issueNumber).toBe(50);
-    expect(new Set(fixture.calls.postComment.map((c) => c.issueNumber))).toEqual(
-      new Set([182, 32]),
-    );
+    expect(new Set(fixture.calls.postComment.map((c) => c.ref))).toEqual(new Set(["182", "32"]));
     // The escalation explains the dropped-commits cause (no "conflicting paths").
     for (const c of fixture.calls.postComment) {
       expect(c.body).toContain("dropped **all** of the PR's commits");
