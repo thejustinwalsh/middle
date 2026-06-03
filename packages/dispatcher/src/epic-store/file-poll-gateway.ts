@@ -8,7 +8,7 @@
  *
  * The PR-poll methods are GitHub-native: `getRateLimit` delegates straight to gh.
  * `findPrForEpic`/`findEpicPrLifecycle` delegate for a numeric ref but return
- * `null` for a file-mode slug — github's PR-finders resolve by `Closes #<number>`,
+ * `null` for a file-mode slug — GitHub's PR-finders resolve by `Closes #<number>`,
  * which a file Epic (slug, no GitHub issue) can't carry. File-mode review-resume
  * rides Phase 2's watcher work (see `planning/issues/190/decisions.md`).
  */
@@ -76,6 +76,14 @@ function conversationToPollComments(conversation: ConversationEntry[]): IssueCom
   return out;
 }
 
+/**
+ * Build the file-backed `PollGateway` (plus the Phase-2 `pollFileSignals`) for one
+ * repo's Epic directory. `listIssueComments` reads the Epic file's conversation when
+ * a file exists for the ref (deriving `authorIsBot` structurally from marker kind),
+ * else delegates to the injected `gh` backend. The PR-poll methods (`findPrForEpic`,
+ * `findEpicPrLifecycle`) delegate only for a numeric ref and return `null` for a
+ * file-mode slug (no `Closes #N` linkage); `getRateLimit` always delegates to `gh`.
+ */
 export function makeFilePollGateway(deps: FilePollGatewayDeps): FilePollGateway {
   const { epicsDir, gh } = deps;
   return {

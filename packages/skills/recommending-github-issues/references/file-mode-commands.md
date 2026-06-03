@@ -10,7 +10,7 @@ body are file-backed.
 
 **The renderer is the sole writer of the state body.** You write `state_file` via
 `renderStateIssue` (the same parser + renderer + byte-identical-round-trip
-invariant as github mode's state-issue flow) — **never by hand**. There is no
+invariant as GitHub mode's state-issue flow) — **never by hand**. There is no
 recommender-agent rewriting strict sections out-of-band; this closes #180's class
 entirely for file mode. You compose the state model and render it; you do not
 hand-edit the file's markers or the dispatcher-owned sections (In-flight, Rate

@@ -1,6 +1,6 @@
-# implementing-github-issues — github-mode commands
+# implementing-github-issues — GitHub-mode commands
 
-The concrete `gh` incantations for every Epic/plan/sub-issue/conversation operation the skill body refers to mode-agnostically. **github mode** is the default: the Epic is a GitHub issue, its sub-issues are native GitHub sub-issues, and the agent-↔-human conversation flows through issue comments. PRs, reviews, and CI are GitHub-native here too (and identical in file mode).
+The concrete `gh` incantations for every Epic/plan/sub-issue/conversation operation the skill body refers to mode-agnostically. **GitHub mode** is the default: the Epic is a GitHub issue, its sub-issues are native GitHub sub-issues, and the agent-↔-human conversation flows through issue comments. PRs, reviews, and CI are GitHub-native here too (and identical in file mode).
 
 Throughout, `<epic>` is the Epic's issue number, `<owner>`/`<repo>` the repository.
 

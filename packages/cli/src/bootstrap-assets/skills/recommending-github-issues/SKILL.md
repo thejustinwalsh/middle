@@ -10,7 +10,7 @@ You are the dispatch recommender for a single repository. Your only job is to
 rewrite ONE **state body** with a ranked plan of work to dispatch and a digest
 of items needing human attention.
 
-**Mode-specific commands:** the repo runs in one of two modes. In **github mode**
+**Mode-specific commands:** the repo runs in one of two modes. In **GitHub mode**
 the dispatch units are GitHub issues/Epics and the state body is a GitHub issue
 (the `agent-queue:state` issue). In **file mode** the dispatch units are Epic
 files under `epics_dir` and the state body is the `state_file` on disk. This
@@ -65,19 +65,19 @@ the dispatcher inputs.
 
 Fetch the repo's **dispatch units** and **open PRs**, and resolve each unit's
 sub-issue structure. The exact reads are mode-specific — see
-`references/<mode>-mode-commands.md`. In github mode you list open issues + PRs
+`references/<mode>-mode-commands.md`. In GitHub mode you list open issues + PRs
 and read the native sub-issue graph; in file mode you scan `epics_dir` for Epic
 files, parse each one's `<!-- middle:meta -->` and sub-issue blocks, and still
 list open PRs from GitHub.
 
 Resolve the **dispatch-unit structure**:
 - A unit with sub-issues is an **Epic** — a dispatch unit.
-- A sub-issue (an issue with a parent in github mode; a `<!-- middle:sub-issue -->`
+- A sub-issue (an issue with a parent in GitHub mode; a `<!-- middle:sub-issue -->`
   block inside an Epic file in file mode) is **NOT** a dispatch unit. It is scope
   inside its Epic; never classify or rank it on its own.
 - A unit with neither is a **standalone issue** — a dispatch unit (a one-phase Epic).
 
-**Exclude the state surface itself.** In github mode the issue you are rewriting
+**Exclude the state surface itself.** In GitHub mode the issue you are rewriting
 (and any issue carrying the `agent-queue:state` label) is the dispatcher's surface,
 never a dispatch unit. In file mode the `state_file` is not an Epic file and never
 appears in `epics_dir`. Never classify or rank the state surface.
@@ -167,11 +167,11 @@ Verify before writing:
 ### Phase 6 — Write and log
 
 Write the rendered body to the state surface — see `references/<mode>-mode-commands.md`.
-In github mode it's `gh issue edit <state_issue> --body-file …`. In file mode you
+In GitHub mode it's `gh issue edit <state_issue> --body-file …`. In file mode you
 write `state_file` **via the renderer** (`renderStateIssue`), never by hand — the
 renderer is the sole writer, which closes #180's class for this skill too.
 
-Then log a single diff summary against prior_body. In github mode that's a comment
+Then log a single diff summary against prior_body. In GitHub mode that's a comment
 on the state issue; in file mode the run summary is recorded the same way the
 dispatcher records it (no separate GitHub comment — the state surface is a file):
 
@@ -222,7 +222,7 @@ the problem and stop. Dispatcher will surface to human.
 
 ## Files this skill creates
 
-Mode-dependent (see `references/<mode>-mode-commands.md`). In github mode: none on
+Mode-dependent (see `references/<mode>-mode-commands.md`). In GitHub mode: none on
 filesystem — output is the state issue body via `gh issue edit` plus one diff
 comment. In file mode: the `state_file` on disk, written via `renderStateIssue`
 (the renderer is the sole writer — never hand-edited).
@@ -230,7 +230,7 @@ comment. In file mode: the `state_file` on disk, written via `renderStateIssue`
 ## Files this skill reads
 
 - Schema at the path provided by the dispatcher
-- The repo's dispatch units and their sub-issue structure (github mode: open issues
+- The repo's dispatch units and their sub-issue structure (GitHub mode: open issues
   + the sub-issue graph via `gh`; file mode: Epic files scanned from `epics_dir`)
 - Open PRs via `gh` (GitHub-native in both modes)
 - Recent git log on main

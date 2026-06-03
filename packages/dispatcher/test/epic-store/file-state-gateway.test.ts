@@ -12,7 +12,6 @@ describe("fileStateGateway", () => {
   test("readBody returns the state file contents verbatim", async () => {
     const dir = tmpRepo();
     const stateFile = join(dir, ".middle", "state.md");
-    writeFileSync(join(dir, "x"), ""); // ensure dir exists for the write below
     const gw = makeFileStateGateway({ stateFile });
     await gw.writeBody("o/r", 0, "# state\n\nbody\n");
     expect(await gw.readBody("o/r", 0)).toBe("# state\n\nbody\n");
@@ -41,6 +40,21 @@ describe("fileStateGateway", () => {
     await gw.writeBody("o/r", 0, "second\n");
     expect(readFileSync(stateFile, "utf8")).toBe("second\n");
     expect(readdirSync(stateDir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("writeBody derives the temp sibling from the filename via `basename` (separator-safe)", async () => {
+    const dir = tmpRepo();
+    const stateDir = join(dir, "nested");
+    // A multi-dot filename in a nested dir: the temp must be `.state.snapshot.md.tmp`
+    // (basename of the file), a sibling inside `stateDir` — never derived by raw `/`
+    // slicing of the full path.
+    const stateFile = join(stateDir, "state.snapshot.md");
+    const gw = makeFileStateGateway({ stateFile });
+    await gw.writeBody("o/r", 0, "body\n");
+    expect(readFileSync(stateFile, "utf8")).toBe("body\n");
+    // No stray temp left, and nothing leaked outside the state dir.
+    expect(readdirSync(stateDir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+    expect(readdirSync(dir)).toEqual(["nested"]);
   });
 
   test("writeBody overwrites an existing file", async () => {

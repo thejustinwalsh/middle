@@ -1,6 +1,6 @@
 // File-mode Epic-store scaffolding for `mm init --epic-store=file`. Writes the
 // local Epic directory + recommender state file + per-repo Epic-store config a
-// file-mode repo needs, with ZERO `gh`/GitHub calls. The github-mode path is
+// file-mode repo needs, with ZERO `gh`/GitHub calls. The GitHub-mode path is
 // untouched — this module is only reached when `epicStore === "file"`.
 
 import { mkdir } from "node:fs/promises";
@@ -10,8 +10,9 @@ import type { ParsedState } from "@middle/state-issue";
 import { DEFAULT_EPICS_DIR, DEFAULT_STATE_FILE } from "@middle/dispatcher/src/repo-config.ts";
 import type { RepoInfo } from "./types.ts";
 
-/** Default Epic directory + state file a file-mode repo scaffolds (repo-root relative). */
+/** Default Epic directory a file-mode repo scaffolds (repo-root-relative; from `DEFAULT_EPICS_DIR`). */
 export const FILE_EPICS_DIR = DEFAULT_EPICS_DIR;
+/** Default recommender state file a file-mode repo scaffolds (repo-root-relative; from `DEFAULT_STATE_FILE`). */
 export const FILE_STATE_FILE = DEFAULT_STATE_FILE;
 
 /**
@@ -100,6 +101,10 @@ Why this Epic exists and what "done" looks like.
 `;
 }
 
+/**
+ * Inputs to `writeFileStoreScaffold` — the target repo, its resolved identity (for
+ * naming the per-repo config), and a clock seam for the generated state body.
+ */
 export type FileStoreScaffoldOptions = {
   /** Absolute path to the target repo checkout. */
   repo: string;
