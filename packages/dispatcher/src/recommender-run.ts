@@ -10,7 +10,7 @@ import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import type { SessionGate } from "./hook-server.ts";
 import { ghStateIssueGateway } from "./state-issue.ts";
-import type { StateIssueGateway } from "./state-issue.ts";
+import type { StateGateway } from "./state-issue.ts";
 import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
 import {
   buildRecommenderContext,
@@ -35,7 +35,7 @@ export type RecommenderRunOverrides = {
   tmux?: TmuxOps;
   worktree?: WorktreeOps;
   sessionGate?: SessionGate;
-  stateIssue?: StateIssueGateway;
+  stateIssue?: StateGateway;
   gatherContext?: (repo: string) => RecommenderContext;
   surfaceProblem?: (opts: { repo: string; stateIssue: number; problem: string }) => Promise<void>;
 };

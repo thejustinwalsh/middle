@@ -8,7 +8,7 @@ import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import type { SessionGate } from "../hook-server.ts";
 import { applyDispatcherSections } from "../state-issue.ts";
-import type { DispatcherSections, StateIssueGateway } from "../state-issue.ts";
+import type { DispatcherSections, StateGateway } from "../state-issue.ts";
 import { getRateLimitState } from "../rate-limits.ts";
 import type { RateLimitState } from "../rate-limits.ts";
 import {
@@ -100,7 +100,7 @@ export type RecommenderDeps = {
    * produced body to verify, and the `reapply-dispatcher-sections` overwrite that
    * makes the dispatcher the sole writer of the three owned sections (#180).
    */
-  stateIssue: StateIssueGateway;
+  stateIssue: StateGateway;
   /** Configured adapter names, for `validate()` in the verify step (static-runner path). */
   repoConfig?: RepoConfig;
   /** The `config` block reported to the recommender (static-runner path). */
