@@ -681,6 +681,28 @@ export function hasNonTerminalEpicWorkflow(db: Database, repo: string, epicRef: 
   return row !== null;
 }
 
+/**
+ * The parked (`waiting-human`) implementation workflow for an Epic, by ref — the
+ * `/control/resume` lookup (a human manually answering a parked Epic). Matched on
+ * `epic_ref` so it works for both a github numeric ref and a file slug. Returns
+ * the workflow id, or null when no parked workflow owns that ref.
+ */
+export function findParkedWorkflowByRef(
+  db: Database,
+  repo: string,
+  epicRef: string,
+): string | null {
+  const row = db
+    .query(
+      `SELECT id FROM workflows
+        WHERE kind = 'implementation' AND repo = ? AND epic_ref = ? AND state = 'waiting-human'
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(repo, epicRef) as { id: string } | null;
+  return row?.id ?? null;
+}
+
 /** A non-terminal workflow as the control-plane init-replay reports it. */
 export type NonTerminalWorkflow = {
   id: string;

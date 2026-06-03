@@ -259,9 +259,22 @@ export async function runDispatch(
   epicArg: string,
   opts: DispatchOptions = {},
 ): Promise<number> {
-  const epicNumber = Number(epicArg);
-  if (!Number.isInteger(epicNumber) || epicNumber < 1) {
-    console.error(`mm dispatch: invalid epic number "${epicArg}"`);
+  // The Epic reference is a slug (file mode) OR a numeric issue number (github
+  // mode). A numeric ref additionally drives the `agent:<name>` label lookup via
+  // gh; a slug skips gh entirely (file-mode Epics carry their adapter in the
+  // file's meta, which the daemon reads).
+  const epicRef = epicArg.trim();
+  const isNumeric = /^\d+$/.test(epicRef);
+  if (epicRef === "") {
+    console.error(`mm dispatch: missing epic (pass a slug or an issue number)`);
+    return 1;
+  }
+  // A digit-leading ref must be a whole issue number ≥ 1 (the github contract); a
+  // non-digit-leading ref is a file-mode slug and is accepted as-is.
+  if (/^\d/.test(epicRef) && (!isNumeric || Number(epicRef) < 1)) {
+    console.error(
+      `mm dispatch: invalid epic "${epicArg}" (a numeric ref must be a whole number ≥ 1)`,
+    );
     return 1;
   }
   if (!existsSync(join(repoPath, ".git"))) {
@@ -302,9 +315,10 @@ export async function runDispatch(
     }
     adapterName = opts.adapter;
   } else {
-    const labels = await (opts.fetchLabels ?? fetchEpicLabels)(repoSlug, epicNumber).catch(
-      () => [],
-    );
+    // Only a numeric (github) ref has GitHub labels to consult; a file slug skips gh.
+    const labels = isNumeric
+      ? await (opts.fetchLabels ?? fetchEpicLabels)(repoSlug, Number(epicRef)).catch(() => [])
+      : [];
     try {
       adapterName = selectAdapter({
         labels,
@@ -358,7 +372,7 @@ export async function runDispatch(
         body: JSON.stringify({
           repo: repoSlug,
           repoPath: resolve(repoPath),
-          epicNumber,
+          epicRef,
           adapter: adapterName,
         }),
         signal: ac.signal,
@@ -382,7 +396,7 @@ export async function runDispatch(
       return 1;
     }
 
-    console.log(`mm dispatch: ${repoSlug} epic #${epicNumber} → workflow ${workflowId}`);
+    console.log(`mm dispatch: ${repoSlug} epic ${epicRef} → workflow ${workflowId}`);
     return await followWorkflow(
       base,
       reader,

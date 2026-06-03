@@ -31,8 +31,8 @@ import { runDocs } from "./commands/docs.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { loadConfig } from "@middle/core";
 import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
-import { registerManagedRepo } from "@middle/dispatcher/src/repo-config.ts";
-import { runInit } from "./commands/init.ts";
+import { registerManagedRepo, setEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
+import { runInit, type EpicStoreRegistration } from "./commands/init.ts";
 
 /**
  * Record an initialized repo in the daemon's managed-repo registry (#135) so the
@@ -49,7 +49,23 @@ function registerRepoInDaemonDb(repo: string, repoPath: string): void {
     db.close();
   }
 }
+
+/**
+ * Persist a repo's Epic-store mode to the daemon db (#194) via
+ * `setEpicStoreConfig` so the dispatcher's per-repo gateway selector routes it to
+ * the file- or gh-backed gateways. Best-effort, like {@link registerRepoInDaemonDb}.
+ */
+function setEpicStoreInDaemonDb(repo: string, cfg: EpicStoreRegistration): void {
+  const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
+  const db = openAndMigrate(config.global.dbPath);
+  try {
+    setEpicStoreConfig(db, repo, cfg);
+  } finally {
+    db.close();
+  }
+}
 import { runPause, runResume } from "./commands/pause.ts";
+import { runResumeAnswer } from "./commands/resume-answer.ts";
 import { runRecommender } from "./commands/run-recommender.ts";
 import { runStartCommand } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
@@ -69,11 +85,26 @@ program
   .description("Bootstrap middle into a target repo (skills, hooks, config, state issue)")
   .argument("<path>", "path to the local repo checkout")
   .option("--dry-run", "print planned actions without executing")
-  .action(async (path: string, options: { dryRun?: boolean }) =>
+  .option(
+    "--epic-store <mode>",
+    "where Epics + recommender state live: 'github' (default) or 'file'",
+    "github",
+  )
+  .action(async (path: string, options: { dryRun?: boolean; epicStore?: string }) => {
+    const mode = options.epicStore ?? "github";
+    if (mode !== "github" && mode !== "file") {
+      console.error(`mm init: --epic-store must be 'github' or 'file' (got '${mode}')`);
+      process.exit(1);
+    }
     process.exit(
-      await runInit(path, { dryRun: options.dryRun, registerRepo: registerRepoInDaemonDb }),
-    ),
-  );
+      await runInit(path, {
+        dryRun: options.dryRun,
+        epicStore: mode,
+        registerRepo: registerRepoInDaemonDb,
+        setEpicStore: setEpicStoreInDaemonDb,
+      }),
+    );
+  });
 
 program
   .command("uninit")
@@ -114,13 +145,21 @@ program
   .command("dispatch")
   .description("Force-dispatch an Epic (or standalone issue) through the implementation workflow")
   .argument("<repo>", "path to the local repo checkout")
-  .argument("<epic>", "Epic or standalone issue number")
+  .argument("[epic]", "Epic ref — a file-mode slug or a github issue number (or use --epic)")
+  .option("--epic <ref>", "Epic ref (alternative to the positional <epic>; a slug or a number)")
   .option(
     "--adapter <name>",
     "adapter to dispatch with (overrides the agent:<name> label and default)",
   )
-  .action(async (repo: string, epic: string, opts: { adapter?: string }) =>
-    process.exit(await runDispatch(repo, epic, { adapter: opts.adapter })),
+  .action(
+    async (repo: string, epic: string | undefined, opts: { epic?: string; adapter?: string }) => {
+      const ref = epic ?? opts.epic;
+      if (ref === undefined) {
+        console.error("mm dispatch: provide an epic ref (positional <epic> or --epic <ref>)");
+        process.exit(1);
+      }
+      process.exit(await runDispatch(repo, ref, { adapter: opts.adapter }));
+    },
   );
 
 program
@@ -139,9 +178,24 @@ program
 
 program
   .command("resume")
-  .description("Resume auto-dispatch for a repo (clear its pause)")
+  .description(
+    "Resume a repo's auto-dispatch (clear its pause), or — with <epic> --answer — unblock a parked Epic",
+  )
   .argument("<repo>", "path to the local repo checkout")
-  .action(async (repo: string) => process.exit(await runResume(repo)));
+  .argument("[epic]", "Epic ref to unblock (a slug or number); omit to clear the repo's pause")
+  .option("--answer <text>", "human answer that resumes the parked Epic")
+  .action(async (repo: string, epic: string | undefined, opts: { answer?: string }) => {
+    // `mm resume <repo> <epic> --answer "…"` fires the parked Epic's resume
+    // signal; the bare `mm resume <repo>` keeps clearing the repo's pause.
+    if (epic !== undefined || opts.answer !== undefined) {
+      if (epic === undefined || opts.answer === undefined) {
+        console.error("mm resume: unblocking a parked Epic needs both <epic> and --answer <text>");
+        process.exit(1);
+      }
+      process.exit(await runResumeAnswer(repo, epic, opts.answer));
+    }
+    process.exit(await runResume(repo));
+  });
 
 program
   .command("config")

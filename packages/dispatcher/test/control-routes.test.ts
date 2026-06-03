@@ -302,11 +302,58 @@ describe("HookServer control routes", () => {
     expect((await fetch(`${base}/control/metrics`)).status).toBe(404);
   });
 
+  test("POST /control/resume fires the parked Epic's resume and returns its id", async () => {
+    const resumeCalls: Array<{ repo: string; epicRef: string; answer: string }> = [];
+    startWith(
+      makeControl({
+        resume: async (input) => {
+          resumeCalls.push(input);
+          return input.epicRef === "missing" ? null : "wf-resumed";
+        },
+      }),
+    );
+    const res = await fetch(`${base}/control/resume`, {
+      method: "POST",
+      body: JSON.stringify({ repo: "o/r", epicRef: "rollout-epic-store", answer: "go with A" }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ workflowId: "wf-resumed" });
+    expect(resumeCalls).toEqual([
+      { repo: "o/r", epicRef: "rollout-epic-store", answer: "go with A" },
+    ]);
+  });
+
+  test("POST /control/resume 404s when no parked workflow owns the ref", async () => {
+    startWith(makeControl({ resume: async () => null }));
+    const res = await fetch(`${base}/control/resume`, {
+      method: "POST",
+      body: JSON.stringify({ repo: "o/r", epicRef: "missing", answer: "x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  test("POST /control/resume 400s on a missing epicRef or answer", async () => {
+    startWith(makeControl({ resume: async () => "wf" }));
+    for (const body of [
+      { repo: "o/r", answer: "x" }, // no epicRef
+      { repo: "o/r", epicRef: "s" }, // no answer
+      { epicRef: "s", answer: "x" }, // no repo
+    ]) {
+      const res = await fetch(`${base}/control/resume`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
   test("control routes 404 in gate-only mode (no control plane wired)", async () => {
     startWith(undefined);
     expect((await fetch(`${base}/control/events`)).status).toBe(404);
     const d = await fetch(`${base}/control/dispatch`, { method: "POST", body: "{}" });
     expect(d.status).toBe(404);
+    const r = await fetch(`${base}/control/resume`, { method: "POST", body: "{}" });
+    expect(r.status).toBe(404);
     // The metric exports need the control plane's seam → 404.
     expect((await fetch(`${base}/metrics`)).status).toBe(404);
     // /health is unconditional liveness; version is empty without a control plane.

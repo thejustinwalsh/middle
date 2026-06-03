@@ -45,9 +45,11 @@ import { buildRecommenderContext, createRecommenderWorkflow } from "./workflows/
 import {
   addWorkflowObserver,
   clearWorkflowObservers,
+  findParkedWorkflowByRef,
   getWorkflow,
   hasNonTerminalEpicWorkflow,
   listNonTerminalWorkflows,
+  markSignalFired,
   promotePendingToFailed,
 } from "./workflow-record.ts";
 import type { ControlDispatchInput } from "./hook-server.ts";
@@ -542,6 +544,20 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         adapterRejection: adapterRejectionReason,
         // A route dispatch is a manual `mm dispatch` — recorded `source: 'manual'`.
         startDispatch: (input) => startDispatchImpl(input, "manual"),
+        // `mm resume <repo> <epic> --answer` — fire the parked Epic's resume
+        // signal with the human answer (the Phase-1 manual-unblock, both modes).
+        // Mirrors the poller's fire: signal the execution, then mark the durable
+        // wait fired so the poller doesn't re-fire it.
+        resume: async ({ repo, epicRef, answer }) => {
+          const workflowId = findParkedWorkflowByRef(db, repo, epicRef);
+          if (workflowId === null) return null;
+          await engine.signal(workflowId, RESUME_EVENT, {
+            reason: "answered-question",
+            reply: { commentId: 0, authorLogin: "human", body: answer },
+          });
+          markSignalFired(db, workflowId);
+          return workflowId;
+        },
         // Manual dispatch respects slot limits (the loop does its own accounting).
         slotAvailable,
         // Trigger #4: a manual `mm dispatch` (a route dispatch) re-runs the loop

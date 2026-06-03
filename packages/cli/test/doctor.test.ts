@@ -1,5 +1,10 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterConfig, MiddleConfig } from "@middle/core";
+import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
+import { setEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
 import type { RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   checkAdapterBinaries,
@@ -50,6 +55,78 @@ describe("runDoctor — happy path", () => {
     ]) {
       expect(output).toContain(name);
     }
+  });
+});
+
+describe("runDoctor — mode-aware Epic-store check", () => {
+  const SLUG = "acme/widgets";
+  let tmp: string;
+  let prevMiddleConfig: string | undefined;
+
+  // Seed a migrated db pointed at by a temp global config, so loadDoctorConfig
+  // resolves db_path → our db and resolveEpicStore reads the row we set. The
+  // repo slug is injected (resolveSlug) so no git remote is consulted.
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "mm-doctor-"));
+    const dbPath = join(tmp, "db.sqlite3");
+    openAndMigrate(dbPath).close();
+    const configPath = join(tmp, "config.toml");
+    writeFileSync(configPath, `[global]\ndb_path = "${dbPath}"\n`);
+    prevMiddleConfig = process.env.MIDDLE_CONFIG;
+    process.env.MIDDLE_CONFIG = configPath;
+  });
+
+  afterEach(() => {
+    if (prevMiddleConfig === undefined) delete process.env.MIDDLE_CONFIG;
+    else process.env.MIDDLE_CONFIG = prevMiddleConfig;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const setMode = (cfg: Parameters<typeof setEpicStoreConfig>[2]) => {
+    const db = openAndMigrate(join(tmp, "db.sqlite3"));
+    try {
+      setEpicStoreConfig(db, SLUG, cfg);
+    } finally {
+      db.close();
+    }
+  };
+
+  const run = async (repoPath: string): Promise<string> => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    try {
+      await runDoctor({ repoPath, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    return lines.join("\n");
+  };
+
+  test("file mode + existing epics dir → epics_dir pass, no state-issue row", async () => {
+    mkdirSync(join(tmp, "planning", "epics"), { recursive: true });
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const output = await run(tmp);
+    expect(output).toContain("✓ epics_dir   planning/epics exists");
+    expect(output).not.toContain("state-issue");
+  });
+
+  test("file mode + missing epics dir → epics_dir fail, no state-issue row", async () => {
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const output = await run(tmp);
+    expect(output).toContain("✗ epics_dir");
+    expect(output).toContain("planning/epics missing");
+    expect(output).toContain("mm init --epic-store=file");
+    expect(output).not.toContain("state-issue");
+  });
+
+  test("github mode (no config row) → state-issue row, no epics_dir row", async () => {
+    const output = await run(tmp);
+    expect(output).toContain("state-issue");
+    expect(output).not.toContain("epics_dir");
   });
 });
 

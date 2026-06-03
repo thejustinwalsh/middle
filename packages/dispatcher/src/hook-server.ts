@@ -63,6 +63,15 @@ export type ControlPlane = {
    */
   startDispatch: (input: ControlDispatchInput) => Promise<string | null>;
   /**
+   * Manually resume a parked Epic with a human answer (`mm resume <repo> <epic>
+   * --answer`). Looks up the `waiting-human` workflow by `(repo, epicRef)` and
+   * fires its resume signal with the answer text — the Phase-1 escape hatch
+   * before the file-watcher lands, and the github-mode manual-unblock too.
+   * Resolves the resumed workflow id, or `null` when no parked workflow owns the
+   * ref (the route maps `null` to 404). Absent in gate-only mode.
+   */
+  resume?: (input: { repo: string; epicRef: string; answer: string }) => Promise<string | null>;
+  /**
    * Whether this dispatch has a free slot right now. The route consults it before
    * a manual dispatch so `mm dispatch` respects slot limits (a full queue → 429).
    * Receives the full {@link ControlDispatchInput} — notably `repoPath` — so the
@@ -229,6 +238,9 @@ export class HookServer implements SessionGate {
     }
     if (req.method === "POST" && pathname === "/control/dispatch") {
       return this.#handleControlDispatch(req);
+    }
+    if (req.method === "POST" && pathname === "/control/resume") {
+      return this.#handleControlResume(req);
     }
     if (req.method === "POST" && pathname === "/gates/pr-ready") {
       return this.#handleGate(req);
@@ -451,6 +463,49 @@ export class HookServer implements SessionGate {
     } catch (error) {
       console.error(
         `[hook-server] afterDispatch failed for ${normalizedRepo}: ${(error as Error).message}`,
+      );
+    }
+    return Response.json({ workflowId });
+  }
+
+  /**
+   * `POST /control/resume` — manually answer a parked Epic (`mm resume <repo>
+   * <epic> --answer`). Validates `{ repo, epicRef, answer }` → 400; delegates the
+   * `(repo, epicRef)` lookup + signal fire to `control.resume`, mapping a `null`
+   * (no parked workflow owns the ref) to 404. 404 in gate-only mode. On success
+   * returns `{ workflowId }`.
+   */
+  async #handleControlResume(req: Request): Promise<Response> {
+    const control = this.#control;
+    if (!control?.resume) return new Response("not found", { status: 404 });
+
+    let parsed: unknown;
+    try {
+      parsed = await req.json();
+    } catch {
+      return this.#badRequest("body must be valid JSON");
+    }
+    const body: Record<string, unknown> =
+      typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    const { repo, epicRef, answer } = body;
+    const normalizedRepo = typeof repo === "string" ? repo.trim() : "";
+    if (normalizedRepo === "") return this.#badRequest("repo must be a non-empty string");
+    if (typeof epicRef !== "string" || epicRef.trim() === "") {
+      return this.#badRequest("epicRef must be a non-empty string");
+    }
+    if (typeof answer !== "string" || answer.trim() === "") {
+      return this.#badRequest("answer must be a non-empty string");
+    }
+
+    const workflowId = await control.resume({
+      repo: normalizedRepo,
+      epicRef: epicRef.trim(),
+      answer,
+    });
+    if (workflowId === null) {
+      return Response.json(
+        { error: `no parked workflow for Epic ${epicRef.trim()} in ${normalizedRepo}` },
+        { status: 404 },
       );
     }
     return Response.json({ workflowId });

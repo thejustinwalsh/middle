@@ -44,15 +44,30 @@ export type BootstrapDeps = {
   getRemoteUrl(repo: string): Promise<string | null>;
   /** True iff `gh` is authenticated. */
   isGhAuthenticated(): Promise<boolean>;
-  /** Resolve owner/name/defaultBranch for the repo. */
+  /** Resolve owner/name/defaultBranch for the repo (uses `gh repo view`). */
   resolveRepoInfo(repo: string): Promise<RepoInfo>;
+  /**
+   * Resolve owner/name for the repo from the local `origin` remote only — no
+   * `gh` call. Used by the file-mode init path, which stays fully offline; the
+   * default branch falls back to `"main"` since GitHub isn't consulted.
+   */
+  resolveRepoInfoLocal(repo: string): Promise<RepoInfo>;
   github: GithubGateway;
   /** Clock seam — the state-issue `generated` timestamp and `installed_at`. */
   now(): Date;
 };
 
+/** Where a repo's Epics + recommender state live: GitHub issues, or local files. */
+export type EpicStoreMode = "github" | "file";
+
 export type BootstrapOptions = {
   dryRun: boolean;
+  /**
+   * Epic-store mode for this repo (#194). `"github"` (default) is today's
+   * behavior — a labeled state issue + GitHub-issue Epics. `"file"` scaffolds a
+   * local Epic directory + state file and makes ZERO `gh`/GitHub calls.
+   */
+  epicStore?: EpicStoreMode;
 };
 
 /** What `mm init` did (or, under `--dry-run`, would do). */
@@ -61,6 +76,12 @@ export type InitResult = {
   /** "fresh", "reinit" (matching version), or "migrate" (differing version). */
   mode: "fresh" | "reinit" | "migrate";
   info: RepoInfo;
+  /** The Epic-store mode this init wrote (`"github"` or `"file"`). */
+  epicStore: EpicStoreMode;
+  /**
+   * The resolved state issue number — `0` in file mode (the recommender state
+   * lives in a local file, not a GitHub issue).
+   */
   stateIssue: number;
   /** Human-readable lines describing each performed/planned action. */
   actions: string[];
