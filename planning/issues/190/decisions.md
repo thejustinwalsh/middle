@@ -110,3 +110,35 @@ watcher work. Returning null is non-throwing and honest; question-resume (the Ph
 is unaffected.
 **Evidence:** spec "Phase plan" (Phase 1 vs 2); spec poll-gateway table ("delegate to gh");
 `poller-gateway.ts` `Closes #${epicNumber}` search.
+
+## Per-repo selection is a routing gateway, not a per-repo deps build
+**File(s):** `packages/dispatcher/src/epic-store/index.ts`, `build-deps.ts`
+**Date:** 2026-06-03
+
+**Decision:** The daemon builds ONE `ImplementationDeps` and registers ONE workflow
+(unchanged). Per-repo mode is implemented as a **routing `EpicGateway`**
+(`makeRoutingEpicGateway`) that reads `repo_config` per call and delegates to the
+repo's file or gh backend, keyed on the method's `repo` arg. `build-deps` defaults
+`github`/`planCommentReader` to the router and routes `postQuestion` by mode
+(file → `appendQuestion`, github → `formatPauseComment` via gh).
+**Why:** The spec's "buildImplementationDeps picks the trio" reads as a single
+selection, but the daemon serves many repos through one registration — so the
+selection must happen per-call. Every gateway method already takes `repo` first, so
+a router is the minimal, interface-preserving way to run github repo A and file repo
+B under one daemon. An injected `args.github`/`args.postQuestion` still overrides
+(tests). github-mode repos route to `ghGitHub`, so behavior is byte-identical.
+**Evidence:** spec "Architecture" ("daemon runs both modes simultaneously"); `main.ts`
+registers one workflow with one deps.
+
+## `/control/dispatch` accepts a string `epicRef` (file slug) or numeric `epicNumber`
+**File(s):** `packages/dispatcher/src/hook-server.ts`
+**Date:** 2026-06-03
+
+**Decision:** The control endpoint now accepts either a non-empty string `epicRef`
+(file mode) or an integer `epicNumber` ≥ 1 (github mode, stringified), building the
+string-keyed `ControlDispatchInput.epicRef` from whichever is present.
+**Why:** A file-mode dispatch references a slug, which the prior numeric-only
+validation rejected. This makes the dispatch entry mode-agnostic so #193's selector
+is reachable end-to-end; the CLI sends the right field in #194. Existing numeric
+clients are unaffected (the github branch is unchanged).
+**Evidence:** #193 integration criterion (HTTP dispatch with a file-mode slug).

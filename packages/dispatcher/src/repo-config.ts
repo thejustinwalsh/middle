@@ -111,6 +111,61 @@ export function listManagedRepos(db: Database): ManagedRepo[] {
   return rows.map((r) => ({ repo: r.repo, checkoutPath: r.checkout_path }));
 }
 
+/** Default Epic directory for a file-mode repo (relative to the repo root). */
+export const DEFAULT_EPICS_DIR = "planning/epics";
+/** Default recommender state file for a file-mode repo (relative to the repo root). */
+export const DEFAULT_STATE_FILE = ".middle/state.md";
+
+/**
+ * A repo's Epic-store mode (migration 008). `"github"` is the default for every
+ * existing row; `"file"` carries the repo-root-relative `epicsDir`/`stateFile`
+ * (defaulted when the columns are null). The bootstrap selector reads this to pick
+ * the github-backed vs file-backed gateway trio per repo.
+ */
+export type EpicStoreConfig =
+  | { mode: "github" }
+  | { mode: "file"; epicsDir: string; stateFile: string };
+
+/** Read a repo's {@link EpicStoreConfig}. Absent row or `epic_store !== 'file'` → github mode. */
+export function readEpicStoreConfig(db: Database, repo: string): EpicStoreConfig {
+  const row = db
+    .query("SELECT epic_store, epics_dir, state_file FROM repo_config WHERE repo = ?")
+    .get(repo) as {
+    epic_store: string;
+    epics_dir: string | null;
+    state_file: string | null;
+  } | null;
+  if (!row || row.epic_store !== "file") return { mode: "github" };
+  return {
+    mode: "file",
+    epicsDir: row.epics_dir ?? DEFAULT_EPICS_DIR,
+    stateFile: row.state_file ?? DEFAULT_STATE_FILE,
+  };
+}
+
+/**
+ * Set a repo's Epic-store mode + paths (`mm init` for a file-mode repo). Upserts
+ * like the other config writers, touching only the epic-store columns on conflict.
+ * Pass `mode: "github"` to clear the file-mode paths back to null.
+ */
+export function setEpicStoreConfig(
+  db: Database,
+  repo: string,
+  cfg: EpicStoreConfig,
+  now: number = Date.now(),
+): void {
+  const epicsDir = cfg.mode === "file" ? cfg.epicsDir : null;
+  const stateFile = cfg.mode === "file" ? cfg.stateFile : null;
+  db.run(
+    `INSERT INTO repo_config (repo, config_json, epic_store, epics_dir, state_file, last_synced_at)
+       VALUES (?, '{}', ?, ?, ?, ?)
+     ON CONFLICT(repo) DO UPDATE SET epic_store = excluded.epic_store,
+       epics_dir = excluded.epics_dir, state_file = excluded.state_file,
+       last_synced_at = excluded.last_synced_at`,
+    [repo, cfg.mode, epicsDir, stateFile, now],
+  );
+}
+
 /** When the recommender last ran for a repo (unix-ms), or null if never. */
 export function getLastRecommenderRun(db: Database, repo: string): number | null {
   const row = db.query("SELECT last_recommender_run FROM repo_config WHERE repo = ?").get(repo) as {

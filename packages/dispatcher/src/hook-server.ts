@@ -396,7 +396,7 @@ export class HookServer implements SessionGate {
     const body: Record<string, unknown> =
       typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
 
-    const { repo, repoPath, epicNumber, adapter } = body;
+    const { repo, repoPath, epicNumber, epicRef, adapter } = body;
     // Normalize `repo` up front: a whitespace-only value would otherwise pass an
     // `=== ""` check and seed a malformed workflow-ownership key.
     const normalizedRepo = typeof repo === "string" ? repo.trim() : "";
@@ -406,8 +406,15 @@ export class HookServer implements SessionGate {
     if (typeof repoPath !== "string" || !isAbsolute(repoPath)) {
       return this.#badRequest("repoPath must be an absolute path");
     }
-    if (typeof epicNumber !== "number" || !Number.isInteger(epicNumber) || epicNumber < 1) {
-      return this.#badRequest("epicNumber must be an integer >= 1");
+    // The Epic reference is a string slug (file mode) OR a numeric `epicNumber`
+    // (github mode) stringified — the workflow seam is string-keyed either way.
+    let ref: string;
+    if (typeof epicRef === "string" && epicRef.trim() !== "") {
+      ref = epicRef.trim();
+    } else if (typeof epicNumber === "number" && Number.isInteger(epicNumber) && epicNumber >= 1) {
+      ref = String(epicNumber);
+    } else {
+      return this.#badRequest("provide epicRef (non-empty string) or epicNumber (integer >= 1)");
     }
     if (typeof adapter !== "string") {
       return this.#badRequest("unknown adapter: (missing)");
@@ -417,9 +424,7 @@ export class HookServer implements SessionGate {
       return this.#badRequest(reject);
     }
 
-    // github mode's control API takes a numeric `epicNumber`; the dispatcher seam
-    // is string-keyed, so stringify it into `epicRef` at this boundary.
-    const dispatchInput = { repo: normalizedRepo, repoPath, epicRef: String(epicNumber), adapter };
+    const dispatchInput = { repo: normalizedRepo, repoPath, epicRef: ref, adapter };
 
     // Manual dispatch respects slot limits — refuse with 429 when the repo/adapter
     // has no free slot (build spec → "Auto-dispatch loop": manual force-dispatch
@@ -434,7 +439,7 @@ export class HookServer implements SessionGate {
     const workflowId = await control.startDispatch(dispatchInput);
     if (workflowId === null) {
       return Response.json(
-        { error: `Epic #${epicNumber} in ${normalizedRepo} already has an active workflow` },
+        { error: `Epic ${ref} in ${normalizedRepo} already has an active workflow` },
         { status: 409 },
       );
     }
