@@ -51,7 +51,7 @@ read accessor) only. `createWorkflowRecord` still does not write `epic_ref`.
 bridge (AC3) reads through `getWorkflow`, so the read path must carry `epicRef`;
 populating it on insert is the file-mode dispatch workstream's job (explicitly out
 of scope). github rendering keys on `epic_number`, so a null `epic_ref` on new
-github rows is harmless. Migration 008's comment claims `createWorkflowRecord`
+github rows is harmless. Migration 009's comment claims `createWorkflowRecord`
 populates it — that's not yet true; filed as a follow-up rather than expanded into
 this PR.
 
