@@ -57,3 +57,13 @@
 
 **Decision:** `EpicCard` carries `ref` + nullable `number`; the card renders via the existing `<EpicRef>` (a `#N` label or a `file://planning/epics/<slug>.md` link, shipped in #190); the workflow lookup keys on `epic_ref` (resolves both modes); the force-dispatch **button is disabled for a file Epic** with a title pointing at `mm dispatch <slug>`.
 **Why:** The browse-visibility deliverable is "file Epics appear and are inspectable" — `<EpicRef>` already does the file:// rendering, so the work was plumbing `ref` through the wire + join. In-dashboard force-dispatch goes through a numeric route (`onDispatch(repo, number, adapter)`); a file Epic has no number, and threading a slug through that route is a separate capability (manual `mm dispatch <slug>` already works, per #190). Disabling the button with an explicit pointer is honest — visible but not falsely dispatchable. The ready-row join also switched from number-match to `ref`-match, so a file Epic's recommended-adapter pill works too.
+
+## Self-review fixes (internal CodeRabbit pass)
+**File(s):** `recommender-run.ts`, `epic-store/file-poll-gateway.ts`, `auto-dispatch.ts`, `state-issue/parser.ts`
+**Date:** 2026-06-03
+
+**Decision:** Three robustness fixes from an adversarial self-review before marking ready:
+1. `dispatchRecommender` now forwards `opts.epicStore` into `RecommenderInput` — it was dropped, so the standalone-helper path always took the github prompt branch (the daemon path already forwarded it). Tested by capturing the on-disk prompt of a file-mode run.
+2. `file-poll-gateway` discriminates file vs github by `epicFileExists` (the authoritative check `listIssueComments` already uses), not a `^\d+$` heuristic — so a numeric-named file Epic (`42.md`) resolves via `meta.pr` instead of being mistaken for github issue #42.
+3. The ref regexes (`parseEpicRef` `#(\S+)`, `IN_FLIGHT_RE` `#([^*\s]+)`) match the actual ref grammar (delimited by space / `**`), not `[\w-]` — a file stem isn't constrained to kebab, and a dotted slug (`v1.2-rollout`) would otherwise truncate and break the round-trip invariant.
+**Why:** Resolve-the-class within each finding's blast radius; each fix carries a failing-first test. The class was "ref-shape assumptions" — `[\w-]`/`^\d+$` heuristics for an unconstrained file-stem slug.

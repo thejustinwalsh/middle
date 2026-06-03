@@ -164,6 +164,19 @@ describe("filePollGateway", () => {
     expect(calls.prLifecycle).toEqual([]);
   });
 
+  test("a numeric-named file Epic (e.g. 42.md) resolves via meta.pr, not gh's #42 finder (#200)", async () => {
+    // The discriminator is the Epic file on disk, not a `^\d+$` shape — so a file
+    // Epic whose slug happens to be numeric still resolves its PR from meta.pr
+    // instead of being mistaken for github issue #42.
+    const { gh, calls } = ghStub();
+    const dir = tmpEpicsDir();
+    seedEpic(dir, { ...baseEpic([]), meta: { slug: "42", pr: 88 } });
+    const gw = makeFilePollGateway({ epicsDir: dir, gh });
+    expect(await gw.findPrForEpic("o/r", "42")).toMatchObject({ number: 88 });
+    expect(calls.prSnapshot).toEqual([88]);
+    expect(calls.findPrForEpic).toEqual([]); // never the github `Closes #42` finder
+  });
+
   test("prSnapshot / prLifecycle delegate straight to gh by PR number", async () => {
     const { gh, calls } = ghStub();
     const gw = makeFilePollGateway({ epicsDir: tmpEpicsDir(), gh });

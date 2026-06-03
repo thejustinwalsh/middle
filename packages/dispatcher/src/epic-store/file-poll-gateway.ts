@@ -35,12 +35,6 @@ export type FilePollGatewayDeps = {
   gh: PollGateway;
 };
 
-/** `true` when the ref is a numeric string — the only kind gh's `Closes #N`
- *  PR-finders can resolve (a file-mode slug is not). */
-function isNumericRef(ref: string): boolean {
-  return /^\d+$/.test(ref.trim());
-}
-
 /** Map an Epic file's conversation into the poller's `IssueComment[]`, with
  *  `authorIsBot` discriminated by marker kind. */
 function conversationToPollComments(conversation: ConversationEntry[]): IssueComment[] {
@@ -106,15 +100,19 @@ export function makeFilePollGateway(deps: FilePollGatewayDeps): FilePollGateway 
     },
 
     async findPrForEpic(repo, epicRef): Promise<PrSnapshot | null> {
-      // Numeric ref → gh's `Closes #<n>` finder. File-mode slug → resolve the PR
-      // from the Epic file's `meta.pr` stamp and fetch it by number.
-      if (isNumericRef(epicRef)) return gh.findPrForEpic(repo, epicRef);
+      // Authoritative discriminator (the same `epicFileExists` check
+      // `listIssueComments` uses): a file Epic is one with an Epic file on disk —
+      // resolve its PR from the file's `meta.pr` stamp. Otherwise the ref is a
+      // github number → gh's `Closes #<n>` finder. Keying on the file (not a
+      // `^\d+$` shape) means a numeric-named file Epic (`123.md`) still resolves
+      // via meta.pr rather than being mistaken for github issue #123.
+      if (!epicFileExists(epicsDir, epicRef)) return gh.findPrForEpic(repo, epicRef);
       const prNumber = stampedPr(epicRef);
       return prNumber === null ? null : gh.prSnapshot(repo, prNumber);
     },
 
     async findEpicPrLifecycle(repo, epicRef): Promise<EpicPrLifecycle | null> {
-      if (isNumericRef(epicRef)) return gh.findEpicPrLifecycle(repo, epicRef);
+      if (!epicFileExists(epicsDir, epicRef)) return gh.findEpicPrLifecycle(repo, epicRef);
       const prNumber = stampedPr(epicRef);
       return prNumber === null ? null : gh.prLifecycle(repo, prNumber);
     },

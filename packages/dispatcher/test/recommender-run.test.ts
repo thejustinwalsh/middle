@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HookPayload, MiddleConfig } from "@middle/core";
 import { renderStateIssue, STATE_ISSUE_SCHEMA_PATH } from "@middle/state-issue";
 import { openAndMigrate } from "../src/db.ts";
+import { createWorktree, destroyWorktree } from "../src/worktree.ts";
 import type { SessionGate } from "../src/hook-server.ts";
 import {
   dispatchRecommender,
@@ -191,6 +192,34 @@ describe("dispatchRecommender — enqueues a recommender workflow (read-only)", 
     const result = await dispatchRecommender(opts);
     expect(result.state).toBe("completed");
     expect(calls).toEqual([{ repo: "thejustinwalsh/middle", stateIssue: 99 }]);
+  });
+
+  test("forwards epicStore so a file-mode run frames the prompt for the file store (#200)", async () => {
+    // Regression guard: dispatchRecommender must thread opts.epicStore into the
+    // RecommenderInput, or the workflow always takes the github prompt branch.
+    const dbPath = join(scratch, "db.sqlite3");
+    let writtenPrompt = "";
+    const opts = baseOptions(
+      dbPath,
+      makeOverrides({
+        worktree: {
+          createWorktree,
+          destroyWorktree: async (handle) => {
+            const p = join(handle.path, ".middle", "prompt.md");
+            if (existsSync(p)) writtenPrompt = readFileSync(p, "utf8");
+            return destroyWorktree(handle);
+          },
+        },
+      }),
+    );
+    opts.stateIssue = 0; // file mode: sentinel
+    opts.epicStore = { mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" };
+    const result = await dispatchRecommender(opts);
+    expect(result.state).toBe("completed");
+    // The file-mode framing reached the on-disk prompt (proves the forward).
+    expect(writtenPrompt).toContain("file-backed");
+    expect(writtenPrompt).toContain("epics_dir: `planning/epics`");
+    expect(writtenPrompt).not.toContain("state issue #0");
   });
 
   test("does not fire triggerAutoDispatch when auto_dispatch is off, even if wired", async () => {

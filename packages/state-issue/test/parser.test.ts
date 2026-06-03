@@ -75,6 +75,31 @@ describe("parseStateIssue", () => {
     expect(parsed).toEqual(fullState);
   });
 
+  test("round-trips a file-mode in-flight ref, including a non-kebab slug (#200)", () => {
+    // A file Epic's slug is an unconstrained file stem — it can contain a dot
+    // (`v1.2-rollout`). The in-flight `#<ref>` must round-trip it byte-identically,
+    // not truncate at the first non-`[\w-]` char (which would break the invariant).
+    const state = {
+      ...emptyState,
+      inFlight: [
+        {
+          issue: "v1.2-rollout",
+          adapter: "claude",
+          progress: "running",
+          lastHeartbeat: "5s ago",
+          tmuxSession: "middle-v1.2-rollout",
+        },
+      ],
+    };
+    const rendered = renderStateIssue(state);
+    expect(rendered).toContain("- **#v1.2-rollout** · claude · running");
+    const parsed = parseStateIssue(rendered);
+    expect(isParseError(parsed)).toBe(false);
+    expect(parsed).toEqual(state);
+    // Byte-identical re-render (the hard invariant).
+    expect(renderStateIssue(parsed as typeof state)).toBe(rendered);
+  });
+
   test("returns ParseError when the open marker is missing", () => {
     const body = renderStateIssue(emptyState).replace("<!-- AGENT-QUEUE-STATE v1 -->\n", "");
     expect(isParseError(parseStateIssue(body))).toBe(true);
