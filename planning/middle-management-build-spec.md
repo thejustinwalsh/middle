@@ -439,7 +439,9 @@ Body PASSES iff:
 1. Both markers present
 2. All 7 sections in order
 3. Ready table has exact column header
-4. All #N references match /#\d+/
+4. Numeric `#N` references match /#\d+/ — scoped to Ready row epics and Blocked
+   issue blockers; In-flight `<ref>` is exempt (may be a file-mode Epic slug). See
+   `schemas/state-issue.v1.md` rule 4 for the authoritative wording.
 5. Adapter names are configured
 6. Empty sections use documented empty state
 7. Metadata `generated` parses as ISO 8601

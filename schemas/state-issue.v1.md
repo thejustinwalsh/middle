@@ -45,10 +45,13 @@ Bulleted list. `- **#<n>** waiting on #<blocker> · <context>`
 
 `- **#<ref>** · <adapter> · <progress> · last heartbeat <rel> · [tmux: <session>]`
 `<ref>` is the dispatched Epic: a numeric Epic/issue number in github mode, or a
-file-mode Epic **slug** (kebab-case, e.g. `rollout-epic-store`) for a repo whose
-Epic store is file-backed — a file Epic has no GitHub issue number, so its
-in-flight row carries the slug. Progress: `sub-issue <m>/<n>` (which phase of the
-Epic the agent is on) or `running`
+file-mode Epic **slug** for a repo whose Epic store is file-backed — a file Epic
+has no GitHub issue number, so its in-flight row carries the slug. The slug is a
+file-stem token, not strictly kebab-case: the parser captures any run of
+non-space, non-`*` characters (so dots and mixed tokens are valid, e.g.
+`rollout-epic-store` or `v1.2-rollout`) to keep the round-trip byte-exact for
+whatever stem the file store produced. Progress: `sub-issue <m>/<n>` (which phase
+of the Epic the agent is on) or `running`
 Empty: `- _no agents in flight_`
 
 ### 5. ## Excluded
@@ -76,7 +79,9 @@ Body PASSES iff:
 1. Both markers present
 2. All 7 sections in order
 3. Ready table has exact column header
-4. All #N references match /#\d+/
+4. Numeric `#N` references match /#\d+/ — scoped to **Ready** row epics and
+   **Blocked** issue blockers. In-flight `<ref>` is exempt: it may be a file-mode
+   Epic slug (see In-flight above), so it is not constrained to /#\d+/.
 5. Adapter names are configured
 6. Empty sections use documented empty state
 7. Metadata `generated` parses as ISO 8601
