@@ -5,6 +5,7 @@ import type { EpicCard } from "../src/wire.ts";
 
 const card = (over: Partial<EpicCard> = {}): EpicCard => ({
   repo: "o/r",
+  ref: "247",
   number: 247,
   title: "OAuth refresh",
   progress: { closed: 2, total: 4 },
@@ -36,6 +37,22 @@ describe("Epics", () => {
       <Epics epics={[]} adapters={["claude"]} onDispatch={() => {}} onOpenInspector={() => {}} />,
     );
     expect(out).toContain("No open Epics for this repo.");
+  });
+
+  test("a file-mode Epic renders a file:// slug link and disables in-dashboard dispatch (#200)", () => {
+    const out = html(
+      card({ number: null, ref: "rollout-epic-store", title: "Roll out the store" }),
+    );
+    // Browsable: the slug renders as a file:// link to the on-disk Epic file.
+    expect(out).toContain('href="file://planning/epics/rollout-epic-store.md"');
+    expect(out).toContain("rollout-epic-store");
+    expect(out).toContain("Roll out the store");
+    // No phantom `#null`.
+    expect(out).not.toContain("#null");
+    // Force-dispatch is CLI-only for a file Epic — the button is disabled and
+    // points at the working path.
+    expect(out).toContain("disabled");
+    expect(out).toContain("mm dispatch rollout-epic-store");
   });
 
   test("disables dispatch when in flight", () => {

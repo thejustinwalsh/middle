@@ -43,3 +43,17 @@
 
 **Decision:** Parse `[epic_store]` into `MiddleConfig.epicStore`; `resolveRecommenderOptions` no longer rejects a file-mode repo (uses sentinel `0`); the recommender prompt reframes for the file store (rank Epic files under `epics_dir`, rewrite `state_file`, refs are slugs) instead of pointing at a phantom `#0` issue; `surface` skips the gh comment for sentinel 0.
 **Why:** Routing the recommender's state I/O is moot if the run can't even start for a file repo (the pre-existing `config.stateIssue?.number` gate blocked it — a constraint the gap didn't name). The wiring is unit/integration-tested (resolution returns ok + sentinel; prompt framing asserted). The recommender agent's *live ranking quality* over file Epics is verified by operator smoke, matching #190's "operator-only live smoke" precedent for file-mode dispatch — it can't be gated in CI (a live agent run).
+
+## Re-key the Epic browse cache (repo, number) → (repo, ref) [migration 010]
+**File(s):** `packages/dispatcher/src/db/migrations/010_epics_ref_key.sql`, `packages/dispatcher/src/epics-cache.ts`
+**Date:** 2026-06-03
+
+**Decision:** Rebuild the `epics` table keyed on `(repo, ref)` with `number` nullable + a new `ref` column; `refreshEpics` upserts by ref and routes through the routing Epic gateway; `readEpics` orders `number DESC, ref ASC` (github Epics newest-first, file Epics — null number — after). The old `if (e.number === null) continue;` skip is gone.
+**Why:** A file-mode Epic has no GitHub number, so a numeric PK couldn't represent it — it was explicitly skipped, invisible in the dashboard. Ref-keying mirrors migration 009's `workflows.epic_ref` exactly (`ref = CAST(number AS TEXT)` backfill), so the two canonical-ref columns stay consistent. SQLite can't change a PK in place; the migration rebuilds the table (the runner disables FK enforcement around the loop for exactly this). `EpicListItem` was already ref-first (shipped in #190), so `refreshEpics` needed no gateway-shape change — just the routing gateway instead of hardcoded `ghGitHub`.
+
+## Dashboard: render file Epics, gate in-dashboard dispatch
+**File(s):** `packages/dashboard/src/wire.ts` (`EpicCard.ref`), `db-deps.ts` (`workflowForEpic` by `epic_ref`), `app/components/Epics.tsx`
+**Date:** 2026-06-03
+
+**Decision:** `EpicCard` carries `ref` + nullable `number`; the card renders via the existing `<EpicRef>` (a `#N` label or a `file://planning/epics/<slug>.md` link, shipped in #190); the workflow lookup keys on `epic_ref` (resolves both modes); the force-dispatch **button is disabled for a file Epic** with a title pointing at `mm dispatch <slug>`.
+**Why:** The browse-visibility deliverable is "file Epics appear and are inspectable" — `<EpicRef>` already does the file:// rendering, so the work was plumbing `ref` through the wire + join. In-dashboard force-dispatch goes through a numeric route (`onDispatch(repo, number, adapter)`); a file Epic has no number, and threading a slug through that route is a separate capability (manual `mm dispatch <slug>` already works, per #190). Disabling the button with an explicit pointer is honest — visible but not falsely dispatchable. The ready-row join also switched from number-match to `ref`-match, so a file Epic's recommended-adapter pill works too.

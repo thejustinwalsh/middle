@@ -58,8 +58,8 @@ test("api.epics reads Epic cards from a live server", async () => {
   const { db, cleanup } = makeDb();
   try {
     db.run(
-      `INSERT INTO epics (repo, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
-       VALUES ('o/r', 247, 'OAuth refresh', 'open', '[]', 4, 2, 0)`,
+      `INSERT INTO epics (repo, ref, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
+       VALUES ('o/r', '247', 247, 'OAuth refresh', 'open', '[]', 4, 2, 0)`,
     );
     seedWorkflow(db, {
       id: "wf1",

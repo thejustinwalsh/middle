@@ -21,9 +21,25 @@ function seedEpic(
   labels: string[] = [],
 ): void {
   db.run(
-    `INSERT INTO epics (repo, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
-     VALUES (?, ?, ?, 'open', ?, ?, ?, 0)`,
-    [repo, number, title, JSON.stringify(labels), total, closed],
+    `INSERT INTO epics (repo, ref, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
+     VALUES (?, ?, ?, ?, 'open', ?, ?, ?, 0)`,
+    [repo, String(number), number, title, JSON.stringify(labels), total, closed],
+  );
+}
+
+/** Seed a file-mode Epic row (slug ref, null number) into the browse cache. */
+function seedFileEpic(
+  repo: string,
+  ref: string,
+  title: string,
+  total: number,
+  closed: number,
+  labels: string[] = [],
+): void {
+  db.run(
+    `INSERT INTO epics (repo, ref, number, title, state, labels_json, sub_total, sub_closed, last_refreshed)
+     VALUES (?, ?, NULL, ?, 'open', ?, ?, ?, 0)`,
+    [repo, ref, title, JSON.stringify(labels), total, closed],
   );
 }
 
@@ -177,6 +193,30 @@ describe("createDbDeps.listEpics", () => {
       label: "blocked",
       oneLiner: "waiting on #42 · dependency not yet merged",
     });
+  });
+
+  test("surfaces a file-mode Epic (slug ref, null number) and resolves its runner by ref (#200)", async () => {
+    seedFileEpic("o/r", "rollout-epic-store", "Roll out the store", 5, 2, ["epic"]);
+    seedWorkflow(db, {
+      id: "wf-file",
+      repo: "o/r",
+      epicRef: "rollout-epic-store", // file-mode slug, no numeric epicNumber
+      adapter: "claude",
+      state: "running",
+      sessionName: "o-r-rollout",
+      currentSubIssue: 3,
+    });
+    const deps = createDbDeps({ db, config: makeConfig() });
+    const cards = await deps.listEpics("o/r");
+    expect(cards).toHaveLength(1);
+    const c = cards[0]!;
+    // The card carries the slug ref and a null number (renders as a file:// link).
+    expect(c.ref).toBe("rollout-epic-store");
+    expect(c.number).toBeNull();
+    expect(c.progress).toEqual({ closed: 2, total: 5 });
+    // The runner is resolved by epic_ref, not epic_number.
+    expect(c.runner).toMatchObject({ adapter: "claude", state: "running", currentSubIssue: 3 });
+    expect(c.dispatch.inFlight).toBe(true);
   });
 
   test("dispatchEpic + refreshEpics delegate to the injected callbacks", async () => {
