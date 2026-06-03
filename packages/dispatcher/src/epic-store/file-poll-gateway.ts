@@ -16,7 +16,14 @@
 import type { EpicPrLifecycle, IssueComment, PollGateway, PrSnapshot } from "../poller.ts";
 import { FILE_AGENT_LOGIN, FILE_HUMAN_LOGIN } from "./file-epic-gateway.ts";
 import { epicFileExists, readEpicFile } from "./epic-file-io.ts";
+import { type FileAnswerSignal, pollFileSignals } from "./watcher.ts";
 import type { ConversationEntry } from "./epic-file/types.ts";
+
+/** The file poll gateway plus the Phase-2 file-watcher method (not on the shared interface). */
+export type FilePollGateway = PollGateway & {
+  /** Newly-answered questions (open question → non-empty answer) in files changed since `sinceMs`. */
+  pollFileSignals(sinceMs: number): FileAnswerSignal[];
+};
 
 export type FilePollGatewayDeps = {
   /** Absolute path to this repo's Epic directory (`planning/epics`). */
@@ -69,9 +76,10 @@ function conversationToPollComments(conversation: ConversationEntry[]): IssueCom
   return out;
 }
 
-export function makeFilePollGateway(deps: FilePollGatewayDeps): PollGateway {
+export function makeFilePollGateway(deps: FilePollGatewayDeps): FilePollGateway {
   const { epicsDir, gh } = deps;
   return {
+    pollFileSignals: (sinceMs) => pollFileSignals(epicsDir, sinceMs),
     async listIssueComments(repo, ref): Promise<IssueComment[]> {
       if (!epicFileExists(epicsDir, ref)) return gh.listIssueComments(repo, ref);
       const epic = readEpicFile(epicsDir, ref);
