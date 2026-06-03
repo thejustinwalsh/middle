@@ -62,23 +62,26 @@ export interface AgentAdapter {
 
 /**
  * Args for {@link AgentAdapter.buildPromptText}. A discriminated union on
- * `kind` so the `kind`/`epicNumber` coupling is enforced at compile time: every
- * dispatched-issue kind (`initial`/`resume`/`answer`) carries an `epicNumber`,
+ * `kind` so the `kind`/`epicRef` coupling is enforced at compile time: every
+ * dispatched-issue kind (`initial`/`resume`/`answer`) carries an `epicRef`,
  * and the repo-level kinds (`recommender`, `docs`) — which have no Epic — must
- * omit it. A bare `epicNumber?: number` across the whole union let
+ * omit it. A bare `epicRef?: string` across the whole union let
  * `kind: "initial"` compile without an Epic and produce a malformed launch
  * prompt (`implement #undefined`).
+ *
+ * `epicRef` is a string: the stringified issue number in github mode, a file
+ * slug in file mode (the canonical Epic reference in both).
  */
 export type BuildPromptOpts =
   | {
       promptFile: string; // path, relative to the worktree
       kind: "initial" | "resume" | "answer";
-      epicNumber: number; // the dispatched Epic/issue number
+      epicRef: string; // the dispatched Epic/issue reference
     }
   | {
       promptFile: string; // path, relative to the worktree
       kind: "recommender" | "docs";
-      epicNumber?: never; // the recommender / docs bot run against no Epic
+      epicRef?: never; // the recommender / docs bot run against no Epic
     };
 
 export type InstallHookOpts = {
@@ -87,7 +90,7 @@ export type InstallHookOpts = {
   dispatcherUrl: string; // http://127.0.0.1:4120
   sessionName: string;
   sessionToken: string; // HMAC token for hook auth
-  epicNumber: number; // the Epic (or standalone issue) being dispatched
+  epicRef: string; // the Epic (or standalone issue) being dispatched
 };
 
 export type LaunchOpts = {

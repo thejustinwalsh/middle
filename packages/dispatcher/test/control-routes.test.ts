@@ -10,8 +10,8 @@ import { type ControlPlane, HookServer, SSE_IDLE_TIMEOUT_SECONDS } from "../src/
 
 let server: HookServer;
 let base: string;
-let startCalls: Array<{ repo: string; repoPath: string; epicNumber: number; adapter: string }>;
-let collisionEpics: Set<number>;
+let startCalls: Array<{ repo: string; repoPath: string; epicRef: string; adapter: string }>;
+let collisionEpics: Set<string>;
 let hub: EventHub;
 
 function makeControl(overrides: Partial<ControlPlane> = {}): ControlPlane {
@@ -23,7 +23,7 @@ function makeControl(overrides: Partial<ControlPlane> = {}): ControlPlane {
     startDispatch: async (input) => {
       // `startDispatch` is the single source of truth for the 409 guard: a
       // colliding Epic resolves `null`. The stub drives that off `collisionEpics`.
-      if (collisionEpics.has(input.epicNumber)) return null;
+      if (collisionEpics.has(input.epicRef)) return null;
       startCalls.push(input);
       return "wf-abc";
     },
@@ -74,7 +74,7 @@ describe("HookServer control routes", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ workflowId: "wf-abc" });
     expect(startCalls).toEqual([
-      { repo: "o/r", repoPath: "/abs/checkout", epicNumber: 7, adapter: "claude" },
+      { repo: "o/r", repoPath: "/abs/checkout", epicRef: "7", adapter: "claude" },
     ]);
   });
 
@@ -188,7 +188,7 @@ describe("HookServer control routes", () => {
 
   test("POST /control/dispatch rejects a colliding Epic with 409", async () => {
     startWith(makeControl());
-    collisionEpics.add(7);
+    collisionEpics.add("7");
     const res = await fetch(`${base}/control/dispatch`, {
       method: "POST",
       body: JSON.stringify({
@@ -207,15 +207,15 @@ describe("HookServer control routes", () => {
     // for the live-engine race test); here the stub emulates a single-winner
     // reserve to pin that the *route* faithfully relays it — it must not
     // reintroduce a non-atomic pre-check that lets both requests through.
-    const reserved = new Set<number>();
+    const reserved = new Set<string>();
     startWith(
       makeControl({
         startDispatch: async (input) => {
-          if (reserved.has(input.epicNumber)) return null; // sync check + add: no await between
-          reserved.add(input.epicNumber);
+          if (reserved.has(input.epicRef)) return null; // sync check + add: no await between
+          reserved.add(input.epicRef);
           await Bun.sleep(5); // hold so the two requests genuinely overlap
           startCalls.push(input);
-          return `wf-${input.epicNumber}`;
+          return `wf-${input.epicRef}`;
         },
       }),
     );

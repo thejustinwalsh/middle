@@ -34,7 +34,7 @@ function seedParked(epic: number, worktreePath: string = `/wt/issue-${epic}`): s
     id,
     kind: "implementation",
     repo: REPO,
-    epicNumber: epic,
+    epicRef: String(epic),
     adapter: "claude",
   });
   updateWorkflow(db, id, { state: "waiting-human", worktreePath });
@@ -50,8 +50,8 @@ function makeDeps(
   const deps = {
     db,
     github: {
-      async findEpicPrLifecycle(_repo: string, epic: number) {
-        return lifecycleByEpic[epic] ?? null;
+      async findEpicPrLifecycle(_repo: string, epicRef: string) {
+        return lifecycleByEpic[Number(epicRef)] ?? null;
       },
       async getRateLimit() {
         return { remaining: opts.remaining ?? 5000, resetAt: 0 };

@@ -215,7 +215,8 @@ function expectNoSessionLeak(tmux: { created: string[]; killed: string[] }): voi
 }
 
 const EPIC = 6;
-const INPUT = { repo: "thejustinwalsh/middle", epicNumber: EPIC, adapter: "stub" };
+const EPIC_REF = String(EPIC);
+const INPUT = { repo: "thejustinwalsh/middle", epicRef: EPIC_REF, adapter: "stub" };
 
 async function start(deps: ImplementationDeps): Promise<string> {
   engine.register(createImplementationWorkflow(deps));
@@ -633,7 +634,7 @@ describe("implementation workflow — dispatch source (#53)", () => {
     expect(getWorkflowSource(db, manual.id)).toBe("manual");
 
     // A fresh dispatch with no source defaults to 'auto'.
-    const auto = await engine.start("implementation", { ...INPUT, epicNumber: 99 });
+    const auto = await engine.start("implementation", { ...INPUT, epicRef: "99" });
     await awaitParked(auto.id);
     expect(getWorkflowSource(db, auto.id)).toBe("auto");
   });
@@ -643,7 +644,7 @@ describe("implementation workflow — asked-question park → answer → resume 
   test("parks on asked-question, a human reply resumes a fresh continuation with the answer injected", async () => {
     const tmux = makeTmuxStub();
     const prompts: string[] = [];
-    const postQuestionCalls: Array<{ epicNumber: number; question: string; context?: string }> = [];
+    const postQuestionCalls: Array<{ epicRef: string; question: string; context?: string }> = [];
     // One shared stub instance so its classification sequence advances across
     // both executions: initial → asked-question, the continuation → done.
     const adapter = makeAdapterStub(
@@ -662,7 +663,7 @@ describe("implementation workflow — asked-question park → answer → resume 
       getAdapter: () => adapter,
       postQuestion: async (opts) => {
         postQuestionCalls.push({
-          epicNumber: opts.epicNumber,
+          epicRef: opts.epicRef,
           question: opts.question,
           context: opts.context,
         });
@@ -673,11 +674,11 @@ describe("implementation workflow — asked-question park → answer → resume 
     // Parked: waiting-human, the epic-scoped 'answered' signal armed, worktree kept.
     await awaitParked(id0);
     expect(getWaitForSignal(db, id0)).toEqual({
-      signalName: signalNameFor(EPIC, "answered-question"),
+      signalName: signalNameFor(EPIC_REF, "answered-question"),
       payloadJson: JSON.stringify({ reason: "answered-question" }),
     });
     expect(postQuestionCalls).toEqual([
-      { epicNumber: EPIC, question: "Option A or B?", context: "Both compile." },
+      { epicRef: EPIC_REF, question: "Option A or B?", context: "Both compile." },
     ]);
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
     expect(prompts).toEqual(["initial"]); // continuation not yet driven
@@ -703,7 +704,7 @@ describe("implementation workflow — asked-question park → answer → resume 
     expect(brief).toContain("@alice");
     // An answered question does not advance the review counter; it parks on review.
     expect(getWaitForSignal(db, id1)).toEqual({
-      signalName: signalNameFor(EPIC, "review-changes"),
+      signalName: signalNameFor(EPIC_REF, "review-changes"),
       payloadJson: JSON.stringify({ reason: "review-changes" }),
     });
 
@@ -728,7 +729,7 @@ describe("implementation workflow — done park → review-changes → resume (e
 
     await awaitParked(id0);
     expect(getWaitForSignal(db, id0)).toEqual({
-      signalName: signalNameFor(EPIC, "review-changes"),
+      signalName: signalNameFor(EPIC_REF, "review-changes"),
       payloadJson: JSON.stringify({ reason: "review-changes" }),
     });
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
@@ -855,10 +856,10 @@ function makeWorktreeStub(planBody: string | null) {
   return {
     handles,
     ops: {
-      async createWorktree(opts: { repoPath: string; repo: string; issueNumber?: number }) {
+      async createWorktree(opts: { repoPath: string; repo: string; epicRef?: string }) {
         const path = realpathSync(mkdtempSync(join(tmpdir(), "middle-wt-stub-")));
         if (planBody !== null) {
-          const dir = join(path, "planning", "issues", String(opts.issueNumber));
+          const dir = join(path, "planning", "issues", String(opts.epicRef));
           mkdirSync(dir, { recursive: true });
           writeFileSync(join(dir, "plan.md"), planBody);
         }
@@ -867,7 +868,7 @@ function makeWorktreeStub(planBody: string | null) {
           path,
           branch: "stub-branch",
           repo: opts.repo,
-          unit: `issue-${opts.issueNumber}`,
+          unit: `issue-${opts.epicRef}`,
         };
         handles.push(handle);
         return handle;
@@ -1175,7 +1176,7 @@ describe("implementation workflow — durable recovery across daemon restart (#1
     const { id: id0 } = await e1.start("implementation", INPUT);
     await awaitParkedOn(e1, id0);
     expect(getWaitForSignal(db, id0)).toEqual({
-      signalName: signalNameFor(EPIC, "review-changes"),
+      signalName: signalNameFor(EPIC_REF, "review-changes"),
       payloadJson: JSON.stringify({ reason: "review-changes" }),
     });
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);

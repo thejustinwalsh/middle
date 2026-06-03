@@ -41,7 +41,7 @@ describe("buildImplementationDeps", () => {
     const db = openAndMigrate(dbPath);
     try {
       const epicPr: PullRequest = { number: 7, body: "Closes #5", isDraft: false };
-      const findEpicPrCalls: Array<[string, number]> = [];
+      const findEpicPrCalls: Array<[string, string]> = [];
       const getAdapter = (name: string): AgentAdapter => {
         if (name !== "claude") throw new Error(`unknown adapter: ${name}`);
         return fakeAdapter();
@@ -92,9 +92,9 @@ describe("buildImplementationDeps", () => {
       expect(deps.getAdapter).toBe(getAdapter);
 
       // epicPrReadiness delegates to github.findEpicPr.
-      const readiness = await deps.epicPrReadiness!("o/r", 5);
+      const readiness = await deps.epicPrReadiness!("o/r", "5");
       expect(readiness).toEqual({ exists: true, isDraft: false });
-      expect(findEpicPrCalls).toEqual([["o/r", 5]]);
+      expect(findEpicPrCalls).toEqual([["o/r", "5"]]);
     } finally {
       db.close();
     }
@@ -119,7 +119,7 @@ describe("buildImplementationDeps", () => {
         },
         bindServer: () => ({ sessionGate: noopGate, dispatcherUrl: "http://127.0.0.1:1" }),
       });
-      expect(await deps.epicPrReadiness!("o/r", 9)).toEqual({ exists: false, isDraft: false });
+      expect(await deps.epicPrReadiness!("o/r", "9")).toEqual({ exists: false, isDraft: false });
       expect(deps.agentLogin).toBeUndefined();
     } finally {
       db.close();
@@ -133,7 +133,7 @@ describe("buildImplementationDeps", () => {
   });
 
   test("the default postQuestion posts a gh comment framed by pause kind", async () => {
-    const posted: Array<{ repo: string; issue: number; body: string }> = [];
+    const posted: Array<{ repo: string; issue: string; body: string }> = [];
     const db = openAndMigrate(dbPath);
     try {
       const { deps } = await buildImplementationDeps({
@@ -155,14 +155,14 @@ describe("buildImplementationDeps", () => {
       });
       await deps.postQuestion!({
         repo: "o/r",
-        epicNumber: 7,
+        epicRef: "7",
         question: "4 designs, no winner",
         context: "A/B/C/D",
         kind: "complexity",
       });
       expect(posted).toHaveLength(1);
       expect(posted[0]!.repo).toBe("o/r");
-      expect(posted[0]!.issue).toBe(7);
+      expect(posted[0]!.issue).toBe("7");
       // The complexity-pause framing the recommender keys off for its label.
       expect(posted[0]!.body).toContain("complexity pause");
       expect(posted[0]!.body).toContain("4 designs, no winner");

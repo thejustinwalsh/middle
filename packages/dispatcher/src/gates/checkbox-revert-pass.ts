@@ -108,7 +108,7 @@ export async function runCheckboxRevertPass(deps: CheckboxRevertPassDeps): Promi
       const config = loadConfig(wf.worktreePath);
       if (!config) continue; // no gates to enforce → nothing to revert
 
-      const pr = await deps.github.findEpicPr(wf.repo, wf.epicNumber);
+      const pr = await deps.github.findEpicPr(wf.repo, wf.epicRef);
       if (!pr) continue; // PR not opened yet
 
       const previous = getCheckboxReconcileState(deps.db, wf.id);
@@ -135,7 +135,7 @@ export async function runCheckboxRevertPass(deps: CheckboxRevertPassDeps): Promi
           await deps.github.editPullRequestBody(wf.repo, pr.number, next);
         },
         postComment: async (text) => {
-          await deps.github.postComment(wf.repo, pr.number, text);
+          await deps.github.postComment(wf.repo, String(pr.number), text);
         },
         runGates,
         getPreviousState: async () => previous.state,
@@ -149,7 +149,7 @@ export async function runCheckboxRevertPass(deps: CheckboxRevertPassDeps): Promi
       reverted += result.reverted.length;
     } catch (error) {
       console.error(
-        `[checkbox-revert] pass failed for workflow ${wf.id} (${wf.repo}#${wf.epicNumber}): ${(error as Error).message}`,
+        `[checkbox-revert] pass failed for workflow ${wf.id} (${wf.repo}#${wf.epicRef}): ${(error as Error).message}`,
       );
     }
   }

@@ -37,7 +37,7 @@ describe("detectSpecDrift", () => {
 
 /** An in-memory gateway recording closes + created issues. */
 function fakeGithub(opts: { open: IssueSummary[]; merged: MergedPrRef[] }) {
-  const closed: { n: number; comment: string }[] = [];
+  const closed: { ref: string; comment: string }[] = [];
   const created: NewIssue[] = [];
   let nextNumber = 1000;
   return {
@@ -45,8 +45,8 @@ function fakeGithub(opts: { open: IssueSummary[]; merged: MergedPrRef[] }) {
     created,
     listOpenIssues: async () => opts.open,
     listMergedPrsClosingRefs: async () => opts.merged,
-    closeIssue: async (_repo: string, n: number, comment: string) => {
-      closed.push({ n, comment });
+    closeIssue: async (_repo: string, ref: string, comment: string) => {
+      closed.push({ ref, comment });
     },
     createIssue: async (_repo: string, issue: NewIssue) => {
       created.push(issue);

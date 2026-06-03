@@ -60,7 +60,11 @@ export type SeedWorkflow = {
   id: string;
   repo: string;
   epicNumber?: number | null;
-  /** File-mode Epic slug. Set directly (createWorkflowRecord doesn't write it). */
+  /**
+   * File-mode Epic slug. When omitted, a numeric `epicNumber` is stringified into
+   * the ref (github mode writes both `epic_number` and `epic_ref`); set this
+   * explicitly for a file-mode slug or a blank-ref edge case.
+   */
   epicRef?: string | null;
   adapter?: string;
   state?: WorkflowState;
@@ -76,11 +80,17 @@ export type SeedWorkflow = {
 
 /** Insert an implementation workflow row with the given fields set. */
 export function seedWorkflow(db: Database, w: SeedWorkflow): void {
+  // The ref is the source of truth: an explicit `epicRef` (file-mode slug or
+  // blank-ref edge) wins; otherwise a numeric `epicNumber` is stringified (github
+  // mode). createWorkflowRecord derives `epic_number` from a numeric ref and
+  // leaves it null for a slug — exactly the dual-column contract production uses.
+  const ref =
+    w.epicRef !== undefined ? w.epicRef : w.epicNumber != null ? String(w.epicNumber) : null;
   createWorkflowRecord(db, {
     id: w.id,
     kind: "implementation",
     repo: w.repo,
-    epicNumber: w.epicNumber ?? null,
+    epicRef: ref,
     adapter: w.adapter ?? "claude",
   });
   updateWorkflow(db, w.id, {
@@ -91,9 +101,6 @@ export function seedWorkflow(db: Database, w: SeedWorkflow): void {
     worktreePath: w.worktreePath,
   });
   // Columns updateWorkflow doesn't cover — set directly.
-  if (w.epicRef !== undefined) {
-    db.run("UPDATE workflows SET epic_ref = ? WHERE id = ?", [w.epicRef, w.id]);
-  }
   if (w.currentSubIssue !== undefined) {
     db.run("UPDATE workflows SET current_sub_issue = ? WHERE id = ?", [w.currentSubIssue, w.id]);
   }

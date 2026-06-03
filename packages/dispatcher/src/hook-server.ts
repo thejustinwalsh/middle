@@ -23,7 +23,12 @@ export const SSE_IDLE_TIMEOUT_SECONDS = Math.ceil((DEFAULT_HEARTBEAT_MS / 1000) 
 export type ControlDispatchInput = {
   repo: string;
   repoPath: string;
-  epicNumber: number;
+  /**
+   * The Epic reference threaded into the dispatch (the workflow seam is
+   * string-keyed). In github mode the control route validates a numeric
+   * `epicNumber` in the request body and stringifies it here.
+   */
+  epicRef: string;
   adapter: string;
 };
 
@@ -412,7 +417,9 @@ export class HookServer implements SessionGate {
       return this.#badRequest(reject);
     }
 
-    const dispatchInput = { repo: normalizedRepo, repoPath, epicNumber, adapter };
+    // github mode's control API takes a numeric `epicNumber`; the dispatcher seam
+    // is string-keyed, so stringify it into `epicRef` at this boundary.
+    const dispatchInput = { repo: normalizedRepo, repoPath, epicRef: String(epicNumber), adapter };
 
     // Manual dispatch respects slot limits — refuse with 429 when the repo/adapter
     // has no free slot (build spec → "Auto-dispatch loop": manual force-dispatch

@@ -37,7 +37,7 @@ export type ResumeInput = {
 /** A dispatch unit: an Epic (or standalone issue) pointed at one adapter. */
 export type ImplementationInput = {
   repo: string;
-  epicNumber: number;
+  epicRef: string;
   adapter: string;
   /**
    * How the dispatch was initiated: `"manual"` (`mm dispatch`) or `"auto"` (the
@@ -71,10 +71,10 @@ export type ResumeReason = "answered-question" | "review-changes";
 export const RESUME_EVENT = "resume";
 
 /** The durable, poller-facing signal name for a workflow's armed wait. */
-export function signalNameFor(epicNumber: number, reason: ResumeReason): string {
+export function signalNameFor(epicRef: string, reason: ResumeReason): string {
   return reason === "review-changes"
-    ? `epic-${epicNumber}-review-resolved`
-    : `epic-${epicNumber}-answered`;
+    ? `epic-${epicRef}-review-resolved`
+    : `epic-${epicRef}-answered`;
 }
 
 /** Default cadence for the drive's session-liveness probe (production). */
@@ -190,7 +190,7 @@ export type ImplementationDeps = {
    */
   postQuestion?: (opts: {
     repo: string;
-    epicNumber: number;
+    epicRef: string;
     question: string;
     context?: string;
     kind: "question" | "complexity";
@@ -209,7 +209,7 @@ export type ImplementationDeps = {
    * best-judgment call instead of pausing (#53). Reflected in the dispatch brief.
    * Optional + injectable; defaults to `false` (not approved) when unwired.
    */
-  isEpicApproved?: (repo: string, epicNumber: number) => boolean | Promise<boolean>;
+  isEpicApproved?: (repo: string, epicRef: string) => boolean | Promise<boolean>;
   /**
    * Enqueue a continuation execution for the next round (a resume). Injected so
    * the workflow stays free of the engine: in prod the dispatcher wires this to
@@ -232,7 +232,7 @@ export type ImplementationDeps = {
    */
   epicPrReadiness?: (
     repo: string,
-    epicNumber: number,
+    epicRef: string,
   ) => Promise<{ exists: boolean; isDraft: boolean }>;
   /** Max "continue" nudges on a bare-stop before parking in waiting-human. */
   maxNudges?: number;
@@ -277,7 +277,7 @@ const DEFAULT_VERIFY_ROUND_CAP = 3;
  */
 function sessionNameFor(input: ImplementationInput): string {
   const repoSlug = input.repo.replace(/[^A-Za-z0-9_-]/g, "-");
-  return `middle-${repoSlug}-${input.epicNumber}`;
+  return `middle-${repoSlug}-${input.epicRef}`;
 }
 
 /**
@@ -289,7 +289,7 @@ function sessionNameFor(input: ImplementationInput): string {
  */
 function ensurePromptFile(
   worktreePath: string,
-  epicNumber: number,
+  epicRef: string,
   complexityCeiling: number,
   approved: boolean,
 ): void {
@@ -297,7 +297,7 @@ function ensurePromptFile(
   const promptPath = join(middleDir, "prompt.md");
   if (existsSync(promptPath)) return;
   mkdirSync(middleDir, { recursive: true });
-  writeFileSync(promptPath, defaultDispatchBrief(epicNumber, complexityCeiling, approved));
+  writeFileSync(promptPath, defaultDispatchBrief(epicRef, complexityCeiling, approved));
 }
 
 /**
@@ -309,7 +309,7 @@ function ensurePromptFile(
  * "Complexity and architectural forks"; #53).
  */
 function defaultDispatchBrief(
-  epicNumber: number,
+  epicRef: string,
   complexityCeiling: number,
   approved: boolean,
 ): string {
@@ -322,7 +322,7 @@ function defaultDispatchBrief(
   decision needing more than ${complexityCeiling} candidate forks (the complexity
   ceiling) to resolve. To pause, write \`.middle/blocked.json\` and exit; for a
   complexity overrun include \`"kind": "complexity"\` in it.`;
-  return `# middle dispatch brief — Epic #${epicNumber}
+  return `# middle dispatch brief — Epic #${epicRef}
 
 You are running autonomously under middle. There is no human watching in real
 time. Operating rules for this dispatch:
@@ -357,7 +357,7 @@ ${complexityRule}
  */
 function writeResumeBrief(
   worktreePath: string,
-  epicNumber: number,
+  epicRef: string,
   resume: ResumeInput,
   reviewRoundCap: number,
 ): void {
@@ -380,7 +380,7 @@ function writeResumeBrief(
       : "(the human's reply text was unavailable — check the Epic thread on GitHub)";
     writeFileSync(
       promptPath,
-      `# middle dispatch brief — Epic #${epicNumber} (resumed: a human answered)
+      `# middle dispatch brief — Epic #${epicRef} (resumed: a human answered)
 
 A human answered the open question you parked on. Their reply:
 
@@ -403,7 +403,7 @@ ${operatingRules}`,
   if (decision === CI_FAILED_DECISION) {
     writeFileSync(
       promptPath,
-      `# middle dispatch brief — Epic #${epicNumber} (resumed: CI is failing — round ${resume.round} of ${reviewRoundCap})
+      `# middle dispatch brief — Epic #${epicRef} (resumed: CI is failing — round ${resume.round} of ${reviewRoundCap})
 
 The PR's CI is **red** — a PR can't be reviewed until it builds. Investigate and
 fix the failing checks now:
@@ -426,7 +426,7 @@ ${operatingRules}`,
 
   writeFileSync(
     promptPath,
-    `# middle dispatch brief — Epic #${epicNumber} (resumed: address review — round ${resume.round} of ${reviewRoundCap})
+    `# middle dispatch brief — Epic #${epicRef} (resumed: address review — round ${resume.round} of ${reviewRoundCap})
 
 A reviewer requested changes on the PR${decision ? ` (decision: ${decision})` : ""}. Address this
 review pass now, following the \`implementing-github-issues\` skill's
@@ -470,10 +470,10 @@ function reasonFor(kind: DriveOutcome["kind"]): ResumeReason {
 }
 
 /** Read the workstream's committed plan from the worktree (for the plan-comment guard). */
-function readPlanBody(worktreePath: string, epicNumber: number): string {
+function readPlanBody(worktreePath: string, epicRef: string): string {
   try {
     return readFileSync(
-      join(worktreePath, "planning", "issues", String(epicNumber), "plan.md"),
+      join(worktreePath, "planning", "issues", String(epicRef), "plan.md"),
       "utf8",
     );
   } catch {
@@ -606,12 +606,12 @@ export function createImplementationWorkflow(
     sessionName: string;
     worktree: string;
     repo: string;
-    epicNumber: number;
+    epicRef: string;
     classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
   }): Promise<DriveOutcome> {
     const readiness = deps.epicPrReadiness!;
     for (let nudges = 0; ; nudges += 1) {
-      const pr = await readiness(args.repo, args.epicNumber);
+      const pr = await readiness(args.repo, args.epicRef);
       if (pr.exists && !pr.isDraft) {
         console.error(`${args.tag} positive done-signal: ready Epic PR — completing`);
         return { kind: "done" };
@@ -648,7 +648,7 @@ export function createImplementationWorkflow(
     sessionName: string;
     worktree: string;
     repo: string;
-    epicNumber: number;
+    epicRef: string;
     classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
   }): Promise<DriveOutcome> {
     const runVerify = deps.runVerifyGates!;
@@ -695,7 +695,7 @@ export function createImplementationWorkflow(
             sessionName: args.sessionName,
             worktree: args.worktree,
             repo: args.repo,
-            epicNumber: args.epicNumber,
+            epicRef: args.epicRef,
             classifyAt: args.classifyAt,
           });
           if (settled.kind !== "done") return settled;
@@ -712,7 +712,7 @@ export function createImplementationWorkflow(
       id: ctx.executionId,
       kind: "implementation",
       repo: ctx.input.repo,
-      epicNumber: ctx.input.epicNumber,
+      epicRef: ctx.input.epicRef,
       adapter: ctx.input.adapter,
       source: ctx.input.source ?? "auto",
     });
@@ -722,7 +722,7 @@ export function createImplementationWorkflow(
       // no new branch, no new PR) and re-prime the brief for this resume reason.
       const handle = resume.worktree;
       updateWorkflow(deps.db, ctx.executionId, { worktreePath: handle.path });
-      writeResumeBrief(handle.path, ctx.input.epicNumber, resume, reviewRoundCap);
+      writeResumeBrief(handle.path, ctx.input.epicRef, resume, reviewRoundCap);
       return { handle };
     }
     // NB: a *terminal* failure of this (first) step strands the row at `pending`
@@ -735,7 +735,7 @@ export function createImplementationWorkflow(
     const handle = await deps.worktree.createWorktree({
       repoPath: deps.resolveRepoPath(ctx.input.repo),
       repo: ctx.input.repo,
-      issueNumber: ctx.input.epicNumber,
+      epicRef: ctx.input.epicRef,
       worktreeRoot: deps.worktreeRoot,
     });
     updateWorkflow(deps.db, ctx.executionId, { worktreePath: handle.path });
@@ -785,14 +785,14 @@ export function createImplementationWorkflow(
             complexityCeiling = await deps.resolveComplexityCeiling(ctx.input.repo);
           }
           if (deps.isEpicApproved) {
-            approved = await deps.isEpicApproved(ctx.input.repo, ctx.input.epicNumber);
+            approved = await deps.isEpicApproved(ctx.input.repo, ctx.input.epicRef);
           }
         } catch (error) {
           console.error(
             `${tag} brief-context resolution failed, using defaults (ceiling=${DEFAULT_COMPLEXITY_CEILING}, approved=false): ${(error as Error).message}`,
           );
         }
-        ensurePromptFile(handle.path, ctx.input.epicNumber, complexityCeiling, approved);
+        ensurePromptFile(handle.path, ctx.input.epicRef, complexityCeiling, approved);
       }
 
       console.error(`${tag} installing hooks in ${handle.path}`);
@@ -802,7 +802,7 @@ export function createImplementationWorkflow(
         dispatcherUrl: deps.dispatcherUrl,
         sessionName,
         sessionToken,
-        epicNumber: ctx.input.epicNumber,
+        epicRef: ctx.input.epicRef,
       });
 
       const { argv, env } = adapter.buildLaunchCommand({
@@ -811,7 +811,7 @@ export function createImplementationWorkflow(
         sessionToken,
         envOverrides: {
           MIDDLE_DISPATCHER_URL: deps.dispatcherUrl,
-          MIDDLE_EPIC: String(ctx.input.epicNumber),
+          MIDDLE_EPIC: String(ctx.input.epicRef),
         },
       });
       // Clear any orphaned session of the same name left by a prior dispatch
@@ -851,7 +851,7 @@ export function createImplementationWorkflow(
       const promptText = adapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: promptKind,
-        epicNumber: ctx.input.epicNumber,
+        epicRef: ctx.input.epicRef,
       });
       console.error(`${tag} sending prompt (${promptKind}): "${promptText}"`);
       await deps.tmux.sendText(sessionName, promptText);
@@ -886,7 +886,7 @@ export function createImplementationWorkflow(
           sessionName,
           worktree: handle.path,
           repo: ctx.input.repo,
-          epicNumber: ctx.input.epicNumber,
+          epicRef: ctx.input.epicRef,
           classifyAt,
         });
       }
@@ -894,11 +894,11 @@ export function createImplementationWorkflow(
       // if the agent posted its plan as an Epic comment. Demote an unposted
       // `done` to `failed` here so it never enters the review-resolve park.
       if (outcome.kind === "done" && deps.planCommentReader) {
-        const planBody = readPlanBody(handle.path, ctx.input.epicNumber);
+        const planBody = readPlanBody(handle.path, ctx.input.epicRef);
         const guard = await verifyPlanComment({
           gh: deps.planCommentReader,
           repo: ctx.input.repo,
-          epicNumber: ctx.input.epicNumber,
+          epicRef: ctx.input.epicRef,
           planBody,
           agentLogin: deps.agentLogin,
         });
@@ -917,7 +917,7 @@ export function createImplementationWorkflow(
           sessionName,
           worktree: handle.path,
           repo: ctx.input.repo,
-          epicNumber: ctx.input.epicNumber,
+          epicRef: ctx.input.epicRef,
           classifyAt,
         });
       }
@@ -963,7 +963,7 @@ export function createImplementationWorkflow(
     if (!isWaitForArmed(deps.db, ctx.executionId)) {
       armWaitForSignal(
         deps.db,
-        signalNameFor(ctx.input.epicNumber, reason),
+        signalNameFor(ctx.input.epicRef, reason),
         ctx.executionId,
         JSON.stringify({ reason }),
       );
@@ -976,7 +976,7 @@ export function createImplementationWorkflow(
       try {
         await deps.postQuestion({
           repo: ctx.input.repo,
-          epicNumber: ctx.input.epicNumber,
+          epicRef: ctx.input.epicRef,
           question: outcome.sentinel?.question ?? "(question text unavailable)",
           context: outcome.sentinel?.context,
           kind,
@@ -1097,7 +1097,7 @@ export function createImplementationWorkflow(
     // changed, so the poller retries cleanly on its next pass.
     await deps.enqueueContinuation({
       repo: ctx.input.repo,
-      epicNumber: ctx.input.epicNumber,
+      epicRef: ctx.input.epicRef,
       adapter: ctx.input.adapter,
       source: ctx.input.source, // a continuation keeps the origin of its workstream
       resume: { reason: payload.reason, round: nextRound, worktree: handle, payload },

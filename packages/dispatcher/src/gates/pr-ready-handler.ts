@@ -17,10 +17,10 @@ import {
 } from "./pr-ready.ts";
 
 export type PrReadyGateDeps = {
-  /** Map a session name to its workflow's repo + Epic number, or null. */
-  resolveSession: (sessionName: string) => { repo: string; epicNumber: number } | null;
+  /** Map a session name to its workflow's repo + Epic ref, or null. */
+  resolveSession: (sessionName: string) => { repo: string; epicRef: string } | null;
   /** The open Epic PR (its body carries the union of sub-issue criteria), or null. */
-  findEpicPr: (repo: string, epicNumber: number) => Promise<{ body: string } | null>;
+  findEpicPr: (repo: string, epicRef: string) => Promise<{ body: string } | null>;
   /** Resolve a deferral comment's author (for the non-bot check). */
   resolveCommentAuthor: CommentAuthorResolver;
 };
@@ -44,11 +44,11 @@ export function makePrReadyGateHandler(deps: PrReadyGateDeps): PrReadyGateHandle
       };
     }
 
-    const pr = await deps.findEpicPr(workflow.repo, workflow.epicNumber);
+    const pr = await deps.findEpicPr(workflow.repo, workflow.epicRef);
     if (!pr) {
       return {
         decision: "deny",
-        reason: `PR-ready guard: no open Epic PR found for #${workflow.epicNumber}.`,
+        reason: `PR-ready guard: no open Epic PR found for #${workflow.epicRef}.`,
       };
     }
 

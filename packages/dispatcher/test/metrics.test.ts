@@ -28,7 +28,7 @@ function seed(
   adapter: string,
   state: Parameters<typeof updateWorkflow>[2]["state"],
 ): void {
-  createWorkflowRecord(db, { id, kind, repo, epicNumber: 1, adapter });
+  createWorkflowRecord(db, { id, kind, repo, epicRef: "1", adapter });
   if (state) updateWorkflow(db, id, { state });
 }
 

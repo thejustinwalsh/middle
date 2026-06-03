@@ -47,14 +47,14 @@ function writeRepoConfig(checkout: string, toml: string): void {
 
 function fakeGithub(open: IssueSummary[], merged: MergedPrRef[]) {
   const created: NewIssue[] = [];
-  const closed: number[] = [];
+  const closed: string[] = [];
   return {
     created,
     closed,
     listOpenIssues: async () => open,
     listMergedPrsClosingRefs: async () => merged,
-    closeIssue: async (_r: string, n: number) => {
-      closed.push(n);
+    closeIssue: async (_r: string, ref: string) => {
+      closed.push(ref);
     },
     createIssue: async (_r: string, issue: NewIssue) => {
       created.push(issue);

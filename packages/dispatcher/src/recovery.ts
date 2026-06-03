@@ -91,7 +91,7 @@ export async function recoverEngine(engine: Engine): Promise<EngineRecoveryResul
 export type OrphanedSignal = {
   workflowId: string;
   repo: string;
-  epicNumber: number | null;
+  epicRef: string | null;
   signalName: string;
 };
 
@@ -134,7 +134,7 @@ export async function reconcileOrphanedSignals(
     const orphan: OrphanedSignal = {
       workflowId: wait.workflowId,
       repo: wait.repo,
-      epicNumber: wait.epicNumber,
+      epicRef: wait.epicRef,
       signalName: wait.signalName,
     };
     orphans.push(orphan);

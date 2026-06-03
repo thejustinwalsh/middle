@@ -61,7 +61,7 @@ describe("buildPromptText", () => {
       claudeAdapter.buildPromptText({
         promptFile: ".middle/prompt.md",
         kind: "initial",
-        epicNumber: 14,
+        epicRef: "14",
       }),
     ).toBe("/implementing-github-issues implement #14");
   });
@@ -70,7 +70,7 @@ describe("buildPromptText", () => {
     const text = claudeAdapter.buildPromptText({
       promptFile: ".middle/resume.md",
       kind: "resume",
-      epicNumber: 14,
+      epicRef: "14",
     });
     expect(text).toContain("@.middle/resume.md");
     expect(text.toLowerCase()).toContain("resum");
@@ -80,7 +80,7 @@ describe("buildPromptText", () => {
     const text = claudeAdapter.buildPromptText({
       promptFile: ".middle/answer.md",
       kind: "answer",
-      epicNumber: 14,
+      epicRef: "14",
     });
     expect(text).toContain("@.middle/answer.md");
     expect(text.toLowerCase()).toContain("answer");
@@ -102,25 +102,25 @@ describe("buildPromptText", () => {
     expect(text).toBe("/documenting-the-repo @.middle/prompt.md");
   });
 
-  // Compile-time contract (enforced by `bun run typecheck`): the `kind`/`epicNumber`
+  // Compile-time contract (enforced by `bun run typecheck`): the `kind`/`epicRef`
   // coupling is a discriminated union, so a dispatched-issue kind cannot omit its
   // Epic and `recommender` cannot carry one. If the union regresses to a bare
-  // optional `epicNumber`, these `@ts-expect-error`s go unused and typecheck fails.
-  test("type contract: dispatched-issue kinds require an epicNumber; recommender forbids one", () => {
-    // @ts-expect-error — 'initial' must carry an epicNumber
+  // optional `epicRef`, these `@ts-expect-error`s go unused and typecheck fails.
+  test("type contract: dispatched-issue kinds require an epicRef; recommender forbids one", () => {
+    // @ts-expect-error — 'initial' must carry an epicRef
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "initial" });
-    // @ts-expect-error — 'resume' must carry an epicNumber
+    // @ts-expect-error — 'resume' must carry an epicRef
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "resume" });
-    // @ts-expect-error — 'answer' must carry an epicNumber
+    // @ts-expect-error — 'answer' must carry an epicRef
     claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "answer" });
-    // @ts-expect-error — 'recommender' runs against no Epic, so epicNumber is forbidden
+    // @ts-expect-error — 'recommender' runs against no Epic, so epicRef is forbidden
     claudeAdapter.buildPromptText({
       promptFile: ".middle/prompt.md",
       kind: "recommender",
-      epicNumber: 1,
+      epicRef: "1",
     });
-    // @ts-expect-error — 'docs' runs against no Epic, so epicNumber is forbidden
-    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "docs", epicNumber: 1 });
+    // @ts-expect-error — 'docs' runs against no Epic, so epicRef is forbidden
+    claudeAdapter.buildPromptText({ promptFile: ".middle/prompt.md", kind: "docs", epicRef: "1" });
     expect(true).toBe(true);
   });
 });
@@ -400,7 +400,7 @@ describe("installHooks", () => {
       dispatcherUrl: "http://127.0.0.1:8822",
       sessionName: "middle-6",
       sessionToken: "tok",
-      epicNumber: 6,
+      epicRef: "6",
     });
   }
 

@@ -85,7 +85,7 @@ describe("verification gates wired into checkbox-revert (end to end)", () => {
         w.state.body = body;
       },
       async postComment(body) {
-        await w.github.postComment("o/r", 99, body);
+        await w.github.postComment("o/r", "99", body);
       },
       runGates,
       async getPreviousState() {
@@ -204,7 +204,7 @@ describe("verification gates wired into checkbox-revert (end to end)", () => {
             w.state.body = b;
           },
           async postComment(b) {
-            await w.github.postComment("o/r", 99, b);
+            await w.github.postComment("o/r", "99", b);
           },
           runGates,
           async getPreviousState() {
@@ -252,7 +252,7 @@ describe("verification gates wired into checkbox-revert (end to end)", () => {
           w.state.body = b;
         },
         async postComment(b) {
-          await w.github.postComment("o/r", 99, b);
+          await w.github.postComment("o/r", "99", b);
         },
         runGates,
         async getPreviousState() {

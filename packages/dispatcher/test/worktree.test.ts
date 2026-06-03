@@ -68,7 +68,7 @@ describe("createWorktree → listWorktrees → destroyWorktree", () => {
     const handle = await createWorktree({
       repoPath,
       repo: "thejustinwalsh/middle",
-      issueNumber: 6,
+      epicRef: "6",
       worktreeRoot,
     });
     expect(handle.path).toBe(join(worktreeRoot, "thejustinwalsh/middle", "issue-6"));
@@ -88,15 +88,15 @@ describe("createWorktree → listWorktrees → destroyWorktree", () => {
   });
 
   test("list enumerates active worktrees under the root", async () => {
-    await createWorktree({ repoPath, repo: "o/r", issueNumber: 6, worktreeRoot });
-    await createWorktree({ repoPath, repo: "o/r", issueNumber: 7, worktreeRoot });
+    await createWorktree({ repoPath, repo: "o/r", epicRef: "6", worktreeRoot });
+    await createWorktree({ repoPath, repo: "o/r", epicRef: "7", worktreeRoot });
     const listed = await listWorktrees({ repoPath, worktreeRoot });
     expect(listed.map((w) => w.unit).sort()).toEqual(["issue-6", "issue-7"]);
     expect(listed.every((w) => w.repo === "o/r")).toBe(true);
   });
 
   test("destroy removes the worktree directory and its branch", async () => {
-    const handle = await createWorktree({ repoPath, repo: "o/r", issueNumber: 6, worktreeRoot });
+    const handle = await createWorktree({ repoPath, repo: "o/r", epicRef: "6", worktreeRoot });
     await destroyWorktree(handle);
     expect(existsSync(handle.path)).toBe(false);
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
@@ -110,13 +110,13 @@ describe("createWorktree → listWorktrees → destroyWorktree", () => {
 
 describe("idempotency", () => {
   test("creating an already-existing worktree returns the handle without throwing", async () => {
-    const first = await createWorktree({ repoPath, repo: "o/r", issueNumber: 6, worktreeRoot });
-    const second = await createWorktree({ repoPath, repo: "o/r", issueNumber: 6, worktreeRoot });
+    const first = await createWorktree({ repoPath, repo: "o/r", epicRef: "6", worktreeRoot });
+    const second = await createWorktree({ repoPath, repo: "o/r", epicRef: "6", worktreeRoot });
     expect(second).toEqual(first);
   });
 
   test("destroying an already-removed worktree is a no-op, not a throw", async () => {
-    const handle = await createWorktree({ repoPath, repo: "o/r", issueNumber: 6, worktreeRoot });
+    const handle = await createWorktree({ repoPath, repo: "o/r", epicRef: "6", worktreeRoot });
     await destroyWorktree(handle);
     await destroyWorktree(handle); // must not throw
     expect(existsSync(handle.path)).toBe(false);
@@ -130,7 +130,7 @@ describe("branch reuse (issue #179)", () => {
     const handle = await createWorktree({
       repoPath,
       repo: "o/r",
-      issueNumber: 9,
+      epicRef: "9",
       worktreeRoot,
     });
     expect(handle.branch).toBe("middle-issue-9");
@@ -149,7 +149,7 @@ describe("branch reuse (issue #179)", () => {
     const headSha = await gitOut(repoPath, ["rev-parse", "HEAD"]);
     expect(headSha).not.toBe(firstSha);
 
-    const handle = await createWorktree({ repoPath, repo: "o/r", issueNumber: 9, worktreeRoot });
+    const handle = await createWorktree({ repoPath, repo: "o/r", epicRef: "9", worktreeRoot });
     expect(await gitOut(handle.path, ["rev-parse", "HEAD"])).toBe(firstSha);
   });
 
@@ -160,7 +160,7 @@ describe("branch reuse (issue #179)", () => {
     );
     expect(await branchCheck.exited).not.toBe(0); // precondition: no such branch
 
-    const handle = await createWorktree({ repoPath, repo: "o/r", issueNumber: 9, worktreeRoot });
+    const handle = await createWorktree({ repoPath, repo: "o/r", epicRef: "9", worktreeRoot });
     expect(handle.branch).toBe("middle-issue-9");
     expect(
       await gitOut(repoPath, ["rev-parse", "--verify", "refs/heads/middle-issue-9"]),
@@ -170,7 +170,7 @@ describe("branch reuse (issue #179)", () => {
   test("dispatch → prune (branch survives) → re-dispatch all succeed", async () => {
     // pruneWorktreeAt deliberately leaves the local branch (the reconciler path),
     // so the second createWorktree must reuse it rather than re-creating with -b.
-    const first = await createWorktree({ repoPath, repo: "o/r", issueNumber: 9, worktreeRoot });
+    const first = await createWorktree({ repoPath, repo: "o/r", epicRef: "9", worktreeRoot });
     await pruneWorktreeAt(repoPath, first.path);
     expect(existsSync(first.path)).toBe(false);
     // Branch still exists after the prune.
@@ -178,7 +178,7 @@ describe("branch reuse (issue #179)", () => {
       await gitOut(repoPath, ["rev-parse", "--verify", "refs/heads/middle-issue-9"]),
     ).toBeTruthy();
 
-    const second = await createWorktree({ repoPath, repo: "o/r", issueNumber: 9, worktreeRoot });
+    const second = await createWorktree({ repoPath, repo: "o/r", epicRef: "9", worktreeRoot });
     expect(second).toEqual(first);
     expect(existsSync(second.path)).toBe(true);
   });
@@ -187,7 +187,7 @@ describe("branch reuse (issue #179)", () => {
 describe("failure surfacing", () => {
   test("create against a non-git directory throws WorktreeError", async () => {
     await expect(
-      createWorktree({ repoPath: scratch, repo: "o/r", issueNumber: 6, worktreeRoot }),
+      createWorktree({ repoPath: scratch, repo: "o/r", epicRef: "6", worktreeRoot }),
     ).rejects.toBeInstanceOf(WorktreeError);
   });
 });

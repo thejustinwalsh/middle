@@ -28,7 +28,7 @@ function seedSession(sessionName: string, token: string): string {
     id,
     kind: "implementation",
     repo: "thejustinwalsh/middle",
-    epicNumber: 14,
+    epicRef: "14",
     adapter: "claude",
   });
   updateWorkflow(db, id, { state: "running", sessionName, sessionToken: token });

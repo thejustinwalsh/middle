@@ -338,8 +338,8 @@ describe("applySuccess — fixture repo", () => {
    * `EpicGateway` subset {@link applySuccess} consumes.
    */
   function makeCommentSpy(): {
-    listIssueComments: (repo: string, prNumber: number) => Promise<{ body: string }[]>;
-    postComment: (repo: string, prNumber: number, body: string) => Promise<void>;
+    listIssueComments: (repo: string, ref: string) => Promise<{ body: string }[]>;
+    postComment: (repo: string, ref: string, body: string) => Promise<void>;
     posted: string[];
   } {
     const posted: string[] = [];
@@ -497,11 +497,11 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       getMainCommitSha: 0,
       getMergeability: 0 as number,
       getPrHeadRef: 0 as number,
-      postComment: [] as { issueNumber: number; body: string }[],
+      postComment: [] as { ref: string; body: string }[],
       convertPrToDraft: [] as number[],
       reopenIssue: [] as { issueNumber: number; comment: string | undefined }[],
     };
-    const comments = new Map<number, string[]>();
+    const comments = new Map<string, string[]>();
     const drafts = new Set<number>();
     const gateway: ReconcilerGateway = {
       async listOpenManagedPrs() {
@@ -533,14 +533,14 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       async reopenIssue(_repo, issueNumber, options) {
         calls.reopenIssue.push({ issueNumber, comment: options?.comment });
       },
-      async listIssueComments(_repo, issueNumber) {
-        return (comments.get(issueNumber) ?? []).map((body) => ({ body }));
+      async listIssueComments(_repo, ref) {
+        return (comments.get(ref) ?? []).map((body) => ({ body }));
       },
-      async postComment(_repo, issueNumber, body) {
-        calls.postComment.push({ issueNumber, body });
-        const bucket = comments.get(issueNumber) ?? [];
+      async postComment(_repo, ref, body) {
+        calls.postComment.push({ ref, body });
+        const bucket = comments.get(ref) ?? [];
         bucket.push(body);
-        comments.set(issueNumber, bucket);
+        comments.set(ref, bucket);
       },
     };
     return { gateway, calls, comments, drafts };
@@ -579,7 +579,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     expect(r1).toEqual({ reconciled: 1, passed: 0, failed: 0, skippedForBudget: false });
     // The rebase moved feature on top of main; applySuccess pushed and posted.
     expect(fixture.calls.postComment.length).toBe(1);
-    expect(fixture.calls.postComment[0]?.issueNumber).toBe(100);
+    expect(fixture.calls.postComment[0]?.ref).toBe("100");
     expect(fixture.calls.postComment[0]?.body).toContain("(rebased)");
     expect(getDivergenceState(db, "o/r", 100)?.state).toBe("CLEAN");
 
@@ -687,9 +687,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
     expect(fixture.calls.convertPrToDraft).toEqual([102]);
     expect(fixture.calls.reopenIssue.length).toBe(1);
     expect(fixture.calls.reopenIssue[0]?.issueNumber).toBe(50);
-    expect(new Set(fixture.calls.postComment.map((c) => c.issueNumber))).toEqual(
-      new Set([102, 32]),
-    );
+    expect(new Set(fixture.calls.postComment.map((c) => c.ref))).toEqual(new Set(["102", "32"]));
     for (const c of fixture.calls.postComment) {
       expect(c.body).toContain("<!-- middle-divergence-demoted: 32 -->");
     }
@@ -778,7 +776,7 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
 
     // PR 200 got an applySuccess comment; PR 201 (CLEAN) got nothing.
     expect(fixture.calls.postComment.length).toBe(1);
-    expect(fixture.calls.postComment[0]?.issueNumber).toBe(200);
+    expect(fixture.calls.postComment[0]?.ref).toBe("200");
     // Both rows are persisted reflecting their classified state.
     expect(getDivergenceState(db, "o/r", 200)?.state).toBe("CLEAN" satisfies DivergenceState); // applySuccess wrote CLEAN
     expect(getDivergenceState(db, "o/r", 201)?.state).toBe("CLEAN" satisfies DivergenceState); // classifier wrote CLEAN

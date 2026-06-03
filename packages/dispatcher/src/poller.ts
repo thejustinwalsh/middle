@@ -82,15 +82,15 @@ export type EpicPrLifecycle = { number: number; state: "OPEN" | "MERGED" | "CLOS
 
 /** The read-only GitHub surface the poller needs — injectable so tests need no `gh`. */
 export type PollGateway = {
-  listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
+  listIssueComments(repo: string, ref: string): Promise<IssueComment[]>;
   /** The Epic's one open PR, or null if it hasn't been opened yet. */
-  findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null>;
+  findPrForEpic(repo: string, epicRef: string): Promise<PrSnapshot | null>;
   /**
    * The Epic's PR lifecycle across every state (open/merged/closed), or null if
    * no PR references the Epic. Unlike {@link findPrForEpic} (open-only), this
    * sees a merged/closed PR so a parked workflow can be reconciled to terminal.
    */
-  findEpicPrLifecycle(repo: string, epicNumber: number): Promise<EpicPrLifecycle | null>;
+  findEpicPrLifecycle(repo: string, epicRef: string): Promise<EpicPrLifecycle | null>;
   /**
    * Current REST budget. Read from `gh api rate_limit`, whose own request does
    * not consume quota — so the poller can consult it every pass for free.
@@ -292,14 +292,14 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
   // gate + burst cap apply to the real workload (the skipped ones below cost
   // nothing).
   type PollableWait = ReturnType<typeof loadPollableWaits>[number];
-  const actionable: Array<{ wait: PollableWait; reason: ResumeReason; epicNumber: number }> = [];
+  const actionable: Array<{ wait: PollableWait; reason: ResumeReason; epicRef: string }> = [];
   for (const wait of loadPollableWaits(deps.db)) {
-    if (wait.firedAt !== null || wait.epicNumber === null) continue;
+    if (wait.firedAt !== null || wait.epicRef === null) continue;
     const reason = reasonFromSignalName(wait.signalName);
     if (reason === null) continue;
-    // epicNumber is narrowed to `number` past the guard above; capture it so the
+    // epicRef is narrowed to `string` past the guard above; capture it so the
     // gh calls in the loop below don't see the row's nullable type again.
-    actionable.push({ wait, reason, epicNumber: wait.epicNumber });
+    actionable.push({ wait, reason, epicRef: wait.epicRef });
   }
   if (actionable.length === 0) return 0;
 
@@ -314,10 +314,10 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
 
   let fired = 0;
   // Burst cap: bound the calls fired in one tick; the rest wait for next pass.
-  for (const { wait, reason, epicNumber } of actionable.slice(0, maxPerPass)) {
+  for (const { wait, reason, epicRef } of actionable.slice(0, maxPerPass)) {
     try {
       if (reason === "answered-question") {
-        const comments = await deps.github.listIssueComments(wait.repo, epicNumber);
+        const comments = await deps.github.listIssueComments(wait.repo, epicRef);
         const reply = classifyNewHumanReply(comments, wait.createdAt);
         if (!reply) continue;
         await deps.fireSignal(wait.workflowId, {
@@ -325,7 +325,7 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
           reply: { commentId: reply.id, authorLogin: reply.authorLogin, body: reply.body },
         });
       } else {
-        const pr = await deps.github.findPrForEpic(wait.repo, epicNumber);
+        const pr = await deps.github.findPrForEpic(wait.repo, epicRef);
         if (!pr) continue;
         const verdict = classifyReviewOutcome(pr, wait.createdAt);
         if (!verdict) continue;
@@ -412,7 +412,7 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
   const mergedRepos = new Set<string>();
   for (const wf of parked.slice(0, maxPerPass)) {
     try {
-      const life = await deps.github.findEpicPrLifecycle(wf.repo, wf.epicNumber);
+      const life = await deps.github.findEpicPrLifecycle(wf.repo, wf.epicRef);
       // Open PR (a live review park) or no PR yet (a pending question) → leave it
       // for `runPoller` / the human; only a landed/abandoned PR is reconciled.
       if (!life || life.state === "OPEN") continue;
@@ -423,7 +423,7 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
       if (!finalizeParkedWorkflow(deps.db, wf.id, finalState)) continue;
       reconciled++;
       console.error(
-        `[reconcile] ${wf.repo}#${wf.epicNumber} PR ${life.state} → ${finalState} (workflow ${wf.id})`,
+        `[reconcile] ${wf.repo}#${wf.epicRef} PR ${life.state} → ${finalState} (workflow ${wf.id})`,
       );
       if (deps.removeWorktree) {
         try {
@@ -451,7 +451,7 @@ export async function reconcileMergedParks(deps: ReconcileDeps): Promise<number>
       }
     } catch (error) {
       console.error(
-        `[reconcile] failed for workflow ${wf.id} (${wf.repo}#${wf.epicNumber}): ${(error as Error).message}`,
+        `[reconcile] failed for workflow ${wf.id} (${wf.repo}#${wf.epicRef}): ${(error as Error).message}`,
       );
     }
   }

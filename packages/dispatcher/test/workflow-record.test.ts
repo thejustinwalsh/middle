@@ -42,18 +42,18 @@ afterEach(() => {
 
 describe("getWorkflow epic_ref (#187)", () => {
   test("reads back epic_ref straight from the column (slug, number-string, or null)", () => {
-    // github-mode: createWorkflowRecord writes only epic_number; epic_ref stays null
-    // until the dispatch write path populates it. getWorkflow reflects the column verbatim.
+    // github-mode: createWorkflowRecord writes a numeric-string epic_ref (and the
+    // back-compat epic_number derived from it). getWorkflow reflects the column verbatim.
     createWorkflowRecord(db, {
       id: "gh",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 7,
+      epicRef: "7",
       adapter: "claude",
     });
-    expect(getWorkflow(db, "gh")!.epicRef).toBeNull();
+    expect(getWorkflow(db, "gh")!.epicRef).toBe("7");
 
-    // A row whose epic_ref is set (file-mode slug, or a github-mode backfill) round-trips.
+    // A row whose epic_ref is set to a slug (file-mode, or a github-mode backfill) round-trips.
     db.run("UPDATE workflows SET epic_ref = ? WHERE id = ?", ["rollout-epic-store", "gh"]);
     expect(getWorkflow(db, "gh")!.epicRef).toBe("rollout-epic-store");
 
@@ -62,7 +62,7 @@ describe("getWorkflow epic_ref (#187)", () => {
       id: "file",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     db.run("UPDATE workflows SET epic_ref = ? WHERE id = ?", ["another-slug", "file"]);
@@ -78,7 +78,7 @@ describe("dispatch source (#53)", () => {
       id: "m",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
       source: "manual",
     });
@@ -86,7 +86,7 @@ describe("dispatch source (#53)", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 2,
+      epicRef: "2",
       adapter: "claude",
       source: "auto",
     });
@@ -94,7 +94,7 @@ describe("dispatch source (#53)", () => {
       id: "none",
       kind: "recommender",
       repo: "o/r",
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     expect(getWorkflowSource(db, "m")).toBe("manual");
@@ -110,7 +110,7 @@ describe("workflow meta_json accessors", () => {
       id: "w",
       kind: "recommender",
       repo: "o/r",
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     expect(readWorkflowMeta(db, "absent")).toEqual({});
@@ -127,7 +127,7 @@ describe("workflow meta_json accessors", () => {
       id: "w",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
       source: "manual",
     });
@@ -154,7 +154,7 @@ describe("workflow meta_json accessors", () => {
       id: "w",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     const before = getWorkflow(db, "w")!.updatedAt;
@@ -168,7 +168,7 @@ describe("workflow meta_json accessors", () => {
       id: "w",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     expect(getCheckboxReconcileState(db, "w")).toEqual({ headSha: null, state: {} });
@@ -187,7 +187,7 @@ describe("workflow meta_json accessors", () => {
       id: "w",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     const setMeta = (meta: unknown) =>
@@ -222,7 +222,7 @@ describe("listRunningImplementationWorkflows", () => {
     opts: {
       kind?: "implementation" | "recommender" | "documentation";
       state?: "running" | "waiting-human" | "pending";
-      epicNumber?: number | null;
+      epicRef?: string | null;
       worktreePath?: string | null;
     } = {},
   ) => {
@@ -230,7 +230,7 @@ describe("listRunningImplementationWorkflows", () => {
       id,
       kind: opts.kind ?? "implementation",
       repo: "o/r",
-      epicNumber: opts.epicNumber === undefined ? 1 : opts.epicNumber,
+      epicRef: opts.epicRef === undefined ? "1" : opts.epicRef,
       adapter: "claude",
     });
     const patch: Parameters<typeof updateWorkflow>[2] = { state: opts.state ?? "running" };
@@ -243,14 +243,14 @@ describe("listRunningImplementationWorkflows", () => {
     seed("run-2", { worktreePath: "/wt/2" });
     seed("parked", { state: "waiting-human" });
     seed("pending", { state: "pending" });
-    seed("recommender", { kind: "recommender", epicNumber: null });
-    seed("no-epic", { epicNumber: null });
+    seed("recommender", { kind: "recommender", epicRef: null });
+    seed("no-epic", { epicRef: null });
     seed("no-worktree", { worktreePath: null });
 
     const ids = listRunningImplementationWorkflows(db).map((r) => r.id);
     expect(ids).toEqual(["run-1", "run-2"]);
     const first = listRunningImplementationWorkflows(db)[0]!;
-    expect(first).toEqual({ id: "run-1", repo: "o/r", epicNumber: 1, worktreePath: "/wt/1" });
+    expect(first).toEqual({ id: "run-1", repo: "o/r", epicRef: "1", worktreePath: "/wt/1" });
   });
 });
 
@@ -260,7 +260,7 @@ describe("createWorkflowRecord", () => {
       id: "exec-1",
       kind: "implementation",
       repo: "thejustinwalsh/middle",
-      epicNumber: 6,
+      epicRef: "6",
       adapter: "claude",
     });
     const row = getWorkflow(db, "exec-1");
@@ -281,7 +281,7 @@ describe("createWorkflowRecord", () => {
       id: "exec-retry",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 6,
+      epicRef: "6",
       adapter: "claude",
     });
     // Advance the row the way prepare-worktree does after the INSERT, so we can
@@ -294,7 +294,7 @@ describe("createWorkflowRecord", () => {
         id: "exec-retry",
         kind: "recommender",
         repo: "other/repo",
-        epicNumber: 99,
+        epicRef: "99",
         adapter: "codex",
       }),
     ).not.toThrow();
@@ -318,7 +318,7 @@ describe("createWorkflowRecord", () => {
         id: "exec-bad-kind",
         kind: "nonsense" as CreateWorkflowRecordInput["kind"],
         repo: "o/r",
-        epicNumber: 1,
+        epicRef: "1",
         adapter: "claude",
       }),
     ).toThrow();
@@ -332,7 +332,14 @@ describe("countActiveImplementationSlots", () => {
     kind: "implementation" | "recommender",
     adapter: string,
     epic: number | null,
-  ) => createWorkflowRecord(db, { id, kind, repo: "o/r", epicNumber: epic, adapter });
+  ) =>
+    createWorkflowRecord(db, {
+      id,
+      kind,
+      repo: "o/r",
+      epicRef: epic === null ? null : String(epic),
+      adapter,
+    });
 
   test("counts non-terminal implementation rows, grouped by adapter", () => {
     mk("a", "implementation", "claude", 1);
@@ -365,7 +372,7 @@ describe("updateWorkflow", () => {
       id: "exec-1",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 6,
+      epicRef: "6",
       adapter: "claude",
     });
     const before = getWorkflow(db, "exec-1")!.updatedAt;
@@ -381,7 +388,7 @@ describe("updateWorkflow", () => {
       id: "exec-1",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 6,
+      epicRef: "6",
       adapter: "claude",
     });
     updateWorkflow(db, "exec-1", { worktreePath: "/wt/issue-6" });
@@ -404,7 +411,7 @@ describe("updateWorkflow", () => {
       id: "exec-1",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 6,
+      epicRef: "6",
       adapter: "claude",
     });
     updateWorkflow(db, "exec-1", {});
@@ -424,12 +431,12 @@ describe("hasNonTerminalEpicWorkflow", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 7,
+      epicRef: "7",
       adapter: "claude",
     });
-    expect(hasNonTerminalEpicWorkflow(db, "o/r", 7)).toBe(true);
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", "7")).toBe(true);
     updateWorkflow(db, "a", { state: "completed" });
-    expect(hasNonTerminalEpicWorkflow(db, "o/r", 7)).toBe(false);
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", "7")).toBe(false);
   });
 
   test("scopes by repo and epic; a recommender row never collides", () => {
@@ -437,19 +444,19 @@ describe("hasNonTerminalEpicWorkflow", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 7,
+      epicRef: "7",
       adapter: "claude",
     });
-    expect(hasNonTerminalEpicWorkflow(db, "o/r", 8)).toBe(false); // different epic
-    expect(hasNonTerminalEpicWorkflow(db, "x/y", 7)).toBe(false); // different repo
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", "8")).toBe(false); // different epic
+    expect(hasNonTerminalEpicWorkflow(db, "x/y", "7")).toBe(false); // different repo
     createWorkflowRecord(db, {
       id: "rec",
       kind: "recommender",
       repo: "o/r",
-      epicNumber: 9,
+      epicRef: "9",
       adapter: "claude",
     });
-    expect(hasNonTerminalEpicWorkflow(db, "o/r", 9)).toBe(false); // recommender doesn't claim the slot
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", "9")).toBe(false); // recommender doesn't claim the slot
   });
 });
 
@@ -459,14 +466,14 @@ describe("listActiveImplementationWorkflows (#180)", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     createWorkflowRecord(db, {
       id: "b",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 2,
+      epicRef: "2",
       adapter: "claude",
     });
     touchHeartbeat(db, "b", 1_700_000_000_000);
@@ -484,21 +491,21 @@ describe("listNonTerminalWorkflows", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     createWorkflowRecord(db, {
       id: "b",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 2,
+      epicRef: "2",
       adapter: "claude",
     });
     createWorkflowRecord(db, {
       id: "rec",
       kind: "recommender",
       repo: "o/r",
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     updateWorkflow(db, "a", { state: "waiting-human" });
@@ -514,7 +521,7 @@ describe("workflow observers", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     const seen: Array<{ id: string; state?: string }> = [];
@@ -538,7 +545,7 @@ describe("workflow observers", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     const dispose = addWorkflowObserver(() => {
@@ -557,7 +564,7 @@ describe("workflow observers", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     const seenA: Array<{ id: string; state?: string }> = [];
@@ -586,7 +593,7 @@ describe("workflow observers", () => {
       id: "a",
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
     updateWorkflow(db, "a", { state: "waiting-human" });
@@ -610,7 +617,7 @@ describe("promotePendingToFailed — orphaned prepare-worktree (issue #179)", ()
       id,
       kind: "implementation",
       repo: "o/r",
-      epicNumber: 1,
+      epicRef: "1",
       adapter: "claude",
     });
   }
@@ -621,7 +628,7 @@ describe("promotePendingToFailed — orphaned prepare-worktree (issue #179)", ()
     expect(promotePendingToFailed(db, "a")).toBe(true);
     expect(getWorkflow(db, "a")!.state).toBe("failed");
     // A terminal row no longer blocks the Epic's next dispatch (the 409 guard).
-    expect(hasNonTerminalEpicWorkflow(db, "o/r", 1)).toBe(false);
+    expect(hasNonTerminalEpicWorkflow(db, "o/r", "1")).toBe(false);
   });
 
   test("no-ops on a row already past pending (e.g. a later step's compensated failure)", () => {
@@ -647,7 +654,7 @@ describe("promotePendingToFailed — orphaned prepare-worktree (issue #179)", ()
       id: "rec",
       kind: "recommender",
       repo: "o/r",
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     expect(promotePendingToFailed(db, "rec")).toBe(false);
@@ -659,7 +666,7 @@ describe("promotePendingToFailed — orphaned prepare-worktree (issue #179)", ()
       id: "doc",
       kind: "documentation",
       repo: "o/r",
-      epicNumber: null,
+      epicRef: null,
       adapter: "claude",
     });
     expect(promotePendingToFailed(db, "doc")).toBe(false);

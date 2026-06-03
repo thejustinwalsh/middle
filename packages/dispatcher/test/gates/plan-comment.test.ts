@@ -25,7 +25,7 @@ describe("verifyPlanComment", () => {
     const result = await verifyPlanComment({
       gh: reader([{ authorLogin: "agentbot", body: PLAN, url: "u1" }]),
       repo: "o/r",
-      epicNumber: 27,
+      epicRef: "27",
       planBody: PLAN,
       agentLogin: "agentbot",
     });
@@ -36,7 +36,7 @@ describe("verifyPlanComment", () => {
     const result = await verifyPlanComment({
       gh: reader([{ authorLogin: "agentbot", body: "lgtm, shipping", url: "u1" }]),
       repo: "o/r",
-      epicNumber: 27,
+      epicRef: "27",
       planBody: PLAN,
       agentLogin: "agentbot",
     });
@@ -50,7 +50,7 @@ describe("verifyPlanComment", () => {
     const result = await verifyPlanComment({
       gh: reader([{ authorLogin: "someone-else", body: PLAN, url: "u1" }]),
       repo: "o/r",
-      epicNumber: 27,
+      epicRef: "27",
       planBody: PLAN,
       agentLogin: "agentbot",
     });
@@ -62,7 +62,7 @@ describe("verifyPlanComment", () => {
     const result = await verifyPlanComment({
       gh: reader([{ authorLogin: "agentbot", body: crlf, url: "u1" }]),
       repo: "o/r",
-      epicNumber: 27,
+      epicRef: "27",
       planBody: PLAN,
       agentLogin: "agentbot",
     });
@@ -73,7 +73,7 @@ describe("verifyPlanComment", () => {
     const result = await verifyPlanComment({
       gh: reader([{ authorLogin: "whoever", body: `prefix\n\n${PLAN}`, url: "u1" }]),
       repo: "o/r",
-      epicNumber: 27,
+      epicRef: "27",
       planBody: PLAN,
     });
     expect(result.ok).toBe(true);
@@ -83,7 +83,7 @@ describe("verifyPlanComment", () => {
     const result = await verifyPlanComment({
       gh: reader([{ authorLogin: "agentbot", body: "anything at all", url: "u1" }]),
       repo: "o/r",
-      epicNumber: 27,
+      epicRef: "27",
       planBody: "   \n  \n",
       agentLogin: "agentbot",
     });

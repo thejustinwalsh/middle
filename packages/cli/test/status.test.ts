@@ -43,14 +43,14 @@ describe("runStatus", () => {
       id: "w1",
       kind: "implementation",
       repo: "thejustinwalsh/middle",
-      epicNumber: 6,
+      epicRef: "6",
       adapter: "claude",
     });
     createWorkflowRecord(db, {
       id: "w2",
       kind: "implementation",
       repo: "thejustinwalsh/middle",
-      epicNumber: 7,
+      epicRef: "7",
       adapter: "claude",
     });
     updateWorkflow(db, "w2", { state: "completed" });

@@ -56,7 +56,7 @@ function scratchWorktree(): string {
 }
 
 /** In-memory GitHub stub: a mutable Epic PR (body + headSha) and a comment log. */
-function fakeGithub(opts: { body: string; headSha?: string; epicNumber?: number }) {
+function fakeGithub(opts: { body: string; headSha?: string; epicRef?: string }) {
   const pr: PullRequest = {
     number: PR_NUMBER,
     body: opts.body,
@@ -72,7 +72,7 @@ function fakeGithub(opts: { body: string; headSha?: string; epicNumber?: number 
   const github: EpicGateway = {
     async findEpicPr(_repo, epic) {
       findCalls++;
-      return epic === (opts.epicNumber ?? 1) ? pr : null;
+      return epic === (opts.epicRef ?? "1") ? pr : null;
     },
     async editPullRequestBody(_repo, _num, body) {
       pr.body = body;
@@ -112,12 +112,12 @@ function fakeGithub(opts: { body: string; headSha?: string; epicNumber?: number 
 }
 
 /** Seed a running implementation workflow on the given worktree. */
-function seedRunning(id: string, worktreePath: string, epicNumber = 1): void {
+function seedRunning(id: string, worktreePath: string, epicRef = "1"): void {
   createWorkflowRecord(db, {
     id,
     kind: "implementation",
     repo: REPO,
-    epicNumber,
+    epicRef,
     adapter: "claude",
   });
   updateWorkflow(db, id, { state: "running", worktreePath });
@@ -269,17 +269,17 @@ describe("runCheckboxRevertPass", () => {
     const wtBad = scratchWorktree();
     const wtGood = scratchWorktree();
     try {
-      seedRunning("bad", wtBad, 1);
-      seedRunning("good", wtGood, 2);
+      seedRunning("bad", wtBad, "1");
+      seedRunning("good", wtGood, "2");
       const good = fakeGithub({
         body: STATUS(["- [x] #101 — fails"]),
         headSha: "sha1",
-        epicNumber: 2,
+        epicRef: "2",
       });
       const github: EpicGateway = {
         ...good.github,
         async findEpicPr(repo, epic) {
-          if (epic === 1) throw new Error("GitHub down");
+          if (epic === "1") throw new Error("GitHub down");
           return good.github.findEpicPr(repo, epic);
         },
       };
@@ -300,7 +300,7 @@ describe("runCheckboxRevertPass", () => {
         id: "w",
         kind: "implementation",
         repo: REPO,
-        epicNumber: 1,
+        epicRef: "1",
         adapter: "claude",
       });
       updateWorkflow(db, "w", { state: "waiting-human", worktreePath: wt });

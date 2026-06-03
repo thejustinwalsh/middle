@@ -7,6 +7,7 @@ import type {
   PrSnapshot,
   RateLimitStatus,
 } from "./poller.ts";
+import { refToIssueNumber } from "./github.ts";
 
 /**
  * One `statusCheckRollup` entry as `gh pr view` returns it. A **CheckRun**
@@ -76,7 +77,8 @@ function isBotLogin(login: string, type: string | undefined): boolean {
 }
 
 export const ghPollGateway: PollGateway = {
-  async listIssueComments(repo: string, issueNumber: number): Promise<IssueComment[]> {
+  async listIssueComments(repo: string, ref: string): Promise<IssueComment[]> {
+    const issueNumber = refToIssueNumber(ref);
     // `--slurp` wraps the per-page arrays into one outer array; `gh` without it
     // emits one JSON array *per page*, which `JSON.parse` chokes on past page 1.
     const out = await gh([
@@ -104,7 +106,8 @@ export const ghPollGateway: PollGateway = {
     }));
   },
 
-  async findPrForEpic(repo: string, epicNumber: number): Promise<PrSnapshot | null> {
+  async findPrForEpic(repo: string, epicRef: string): Promise<PrSnapshot | null> {
+    const epicNumber = refToIssueNumber(epicRef);
     // The Epic's one PR closes the Epic — find the open PR referencing it.
     // The server-side search is a prefix match, so `Closes #3` also surfaces
     // `Closes #30`/`#300`; re-confirm the exact closing reference client-side on
@@ -175,7 +178,8 @@ export const ghPollGateway: PollGateway = {
     };
   },
 
-  async findEpicPrLifecycle(repo: string, epicNumber: number): Promise<EpicPrLifecycle | null> {
+  async findEpicPrLifecycle(repo: string, epicRef: string): Promise<EpicPrLifecycle | null> {
+    const epicNumber = refToIssueNumber(epicRef);
     // Same `Closes #<epic>` linkage as findPrForEpic, but across ALL states so a
     // merged/closed PR is visible. The server-side search is a prefix match, so
     // re-confirm the exact closing reference client-side (anchored boundary).

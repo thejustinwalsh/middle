@@ -17,12 +17,12 @@ const WEAK = "## Acceptance criteria\n- [ ] it works\n- [ ] unit tests pass";
 
 /** An in-memory GitHub gateway recording label writes. */
 function fakeGithub(issues: IssueSummary[]) {
-  const labelled: { n: number; label: string }[] = [];
+  const labelled: { ref: string; label: string }[] = [];
   return {
     labelled,
     listOpenIssues: async () => issues,
-    addLabel: async (_repo: string, n: number, label: string) => {
-      labelled.push({ n, label });
+    addLabel: async (_repo: string, ref: string, label: string) => {
+      labelled.push({ ref, label });
     },
   };
 }
@@ -36,7 +36,7 @@ describe("runBacklogAudit", () => {
     ]);
     const { flagged } = await runBacklogAudit({ repo: "o/r", github: gh });
     expect(flagged).toEqual([2]);
-    expect(gh.labelled).toEqual([{ n: 2, label: NEEDS_DESIGN_LABEL }]);
+    expect(gh.labelled).toEqual([{ ref: "2", label: NEEDS_DESIGN_LABEL }]);
   });
 
   test("does not re-label an issue already marked needs-design", async () => {
@@ -67,9 +67,9 @@ describe("runBacklogAudit", () => {
         { number: 1, title: "Weak A", body: WEAK, labels: ["enhancement"] },
         { number: 2, title: "Weak B", body: WEAK, labels: ["enhancement"] },
       ],
-      addLabel: async (_repo: string, n: number) => {
-        if (n === 1) throw new Error("boom");
-        gh.labelled.push(n);
+      addLabel: async (_repo: string, ref: string) => {
+        if (ref === "1") throw new Error("boom");
+        gh.labelled.push(Number(ref));
       },
     };
     const { flagged } = await runBacklogAudit({ repo: "o/r", github: gh });

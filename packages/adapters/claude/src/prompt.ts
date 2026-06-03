@@ -20,7 +20,7 @@ import type { BuildPromptOpts } from "@middle/core";
 export function buildPromptText(opts: BuildPromptOpts): string {
   switch (opts.kind) {
     case "initial":
-      return `/implementing-github-issues implement #${opts.epicNumber}`;
+      return `/implementing-github-issues implement #${opts.epicRef}`;
     case "resume":
       return `Resuming this workstream — re-read the linked context and continue. @${opts.promptFile}`;
     case "answer":
