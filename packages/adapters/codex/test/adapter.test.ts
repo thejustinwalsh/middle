@@ -9,6 +9,7 @@ import {
   detectDirTrustPrompt,
   detectHooksTrustPrompt,
   detectNeedsLogin,
+  detectReadyForInput,
 } from "../src/index.ts";
 
 let dir: string;
@@ -725,6 +726,37 @@ describe("detectDirTrustPrompt", () => {
   test("does not match a normal pane or the hooks-trust dialog", () => {
     expect(detectDirTrustPrompt("> ")).toBe(false);
     expect(detectDirTrustPrompt("Hooks need review")).toBe(false);
+  });
+});
+
+describe("detectReadyForInput", () => {
+  test("matches the live composer-ready welcome banner (codex 0.133.0)", () => {
+    // Captured off a real codex 0.133.0 launch, right after the boot dialogs cleared.
+    const pane = [
+      "╭───────────────────────────────────────╮",
+      "│ >_ OpenAI Codex (v0.133.0)            │",
+      "│                                       │",
+      "│ model:     gpt-5.5   /model to change │",
+      "│ directory: /tmp/worktree              │",
+      "╰───────────────────────────────────────╯",
+      "› Find and fix a bug in @filename",
+      "  gpt-5.5 default · /tmp/worktree",
+    ].join("\n");
+    expect(detectReadyForInput(pane)).toBe(true);
+  });
+
+  test("does not match a boot dialog (so a dialog is answered before we treat it as ready)", () => {
+    expect(detectReadyForInput("> ")).toBe(false);
+    expect(
+      detectReadyForInput(["  Hooks need review", "  2. Trust all and continue"].join("\n")),
+    ).toBe(false);
+    expect(detectReadyForInput("Do you trust the contents of this directory?")).toBe(false);
+  });
+});
+
+describe("startsSessionOnFirstPrompt", () => {
+  test("codex sets the prompt-triggered-session flag (it fires no SessionStart until a prompt)", () => {
+    expect(codexAdapter.startsSessionOnFirstPrompt).toBe(true);
   });
 });
 
