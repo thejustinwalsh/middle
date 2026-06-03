@@ -240,6 +240,17 @@ describe("tryRebaseOntoMain — fixture repo", () => {
     expect((await git(remote, ["rev-parse", "middle-issue-32"])).stdout.trim()).toBe(featureSha);
   });
 
+  test("gitOps.revListCount: counts a resolvable range and falls back to 0 on an unresolvable one (the guard's conservative semantics)", async () => {
+    // One commit ahead of the seed on the feature branch.
+    await writeAndCommit(worktree, "f.txt", "x\n", "feature: add");
+    // A resolvable range returns the real count…
+    expect(await gitOps.revListCount(worktree, "origin/main..HEAD")).toBe(1);
+    // …an unresolvable range (bad ref) returns 0, not a throw or a raw string —
+    // the guard relies on this to fail conservatively ("can't prove ahead → 0").
+    expect(await gitOps.revListCount(worktree, "does-not-exist-ref..HEAD")).toBe(0);
+    expect(await gitOps.revListCount(worktree, "totally..bogus..range")).toBe(0);
+  });
+
   test("a non-managed head ref (not middle-issue-*) → ok:false with empty paths (skip signal)", async () => {
     const skipDeps = {
       ...deps(),
