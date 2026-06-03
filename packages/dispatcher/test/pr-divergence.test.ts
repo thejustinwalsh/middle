@@ -463,6 +463,38 @@ describe("applyDemoteToWork", () => {
     expect(new Set(spy.calls.postComment.map((c) => c.ref))).toEqual(new Set(["99"]));
   });
 
+  test("a supplied reason (#201 data-loss) replaces the conflict narrative in the escalation comment", async () => {
+    const spy = makeDemoteSpy();
+    const reason =
+      "A `git rebase origin/main` dropped **all** of the PR's commits — investigate manually.";
+    await applyDemoteToWork(
+      {
+        db,
+        github: spy.gateway,
+        enqueueEpic: async () => {},
+        now: () => 100,
+      },
+      REPO,
+      99,
+      [], // no conflicting paths — this isn't a conflict
+      { reason },
+    );
+    expect(spy.calls.postComment.length).toBe(2);
+    for (const post of spy.calls.postComment) {
+      // The specific reason is present…
+      expect(post.body).toContain("dropped **all** of the PR's commits");
+      // …and the default "Both autonomous attempts failed" narrative is NOT.
+      expect(post.body).not.toContain("Both autonomous attempts failed");
+      // The escalation still flips to draft + reopens (the standard remediation).
+      expect(post.body).toContain("flipped back to **draft**");
+      expect(post.body).toContain("<!-- middle-divergence-demoted: 32 -->");
+    }
+    // Standard demote side effects still occur.
+    expect(spy.calls.convertPrToDraft).toEqual([[REPO, 99]]);
+    expect(spy.calls.reopenIssue.length).toBe(1);
+    expect(getDivergenceState(db, REPO, 99)?.state).toBe("DEMOTED");
+  });
+
   test("PR doesn't exist (gateway returns null) → no-op", async () => {
     const spy = makeDemoteSpy();
     // Override getPullRequest to return null.

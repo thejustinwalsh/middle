@@ -11,6 +11,15 @@ import { createWorktree, type WorktreeHandle } from "../worktree.ts";
  * `-X ours` merge fallback (CLAUDE.md's *new-work-as-base*), then demote-to-work
  * if both autonomous attempts fail.
  *
+ * **Non-destructive invariant (#201).** No step may force-push a result that
+ * empties the PR branch. A clean rebase that drops *all* of the PR's commits
+ * (each became empty against the new `main`) is treated as a botched rebase, not
+ * a fast-forward: the worktree is restored to its pre-rebase HEAD and the PR is
+ * escalated (demoted to draft) rather than pushed. `applySuccess` carries a
+ * keystone last-line guard that refuses to push whenever the remote branch has
+ * commits ahead of `main` but the local HEAD has none. This closes the #182
+ * data-loss, where an approved branch was force-reset to `main`'s tip.
+ *
  * Helpers are pure functions over an injected gateway so they unit-test without
  * `gh` or the daemon; the trigger sibling (`reconcileOpenPRs`) is what wires
  * them into the poller's tick.
@@ -139,9 +148,22 @@ export function getDivergenceState(
 
 // ── Phase 2: rebase helper ──────────────────────────────────────────────────
 
-/** Outcome of a rebase or merge attempt. Conflict surfaces the file paths so
- *  the demote-to-work path can name them in its escalation comment. */
-export type GitResolutionResult = { ok: true } | { ok: false; conflictingPaths: string[] };
+/**
+ * Outcome of a rebase or merge attempt. Conflict surfaces the file paths so
+ * the demote-to-work path can name them in its escalation comment.
+ *
+ * `droppedAllCommits` flags the *non-conflict* failure mode that caused #201:
+ * a clean (`exit 0`) rebase that dropped **every** commit the PR added — each
+ * became empty against the new `main`, leaving `HEAD == origin/main`. That is
+ * not a real fast-forward; pushing it would empty the branch (the data-loss).
+ * The flag rides the `ok: false` variant with empty `conflictingPaths` so the
+ * orchestrator can route it straight to escalation (never the merge fallback,
+ * never a push). The producing helper restores the worktree to its pre-rebase
+ * HEAD before returning, so the branch is left exactly as it was.
+ */
+export type GitResolutionResult =
+  | { ok: true }
+  | { ok: false; conflictingPaths: string[]; droppedAllCommits?: boolean };
 
 /** Convention from the rest of the daemon (`createWorktree`): the dispatch
  *  unit for an Epic with number N is the branch `middle-issue-N`. */
@@ -184,6 +206,16 @@ export type GitOps = {
   /** `git rev-parse <ref>` — the SHA the ref points at, or null if it doesn't
    *  resolve (e.g. no remote-tracking ref yet). */
   revParse(cwd: string, ref: string): Promise<string | null>;
+  /** `git rev-list --count <range>` — how many commits the range contains, or 0
+   *  if it resolves to none / can't be computed. The data-loss guard (#201) uses
+   *  `origin/main..HEAD` (and `origin/main..origin/<branch>`) to detect a
+   *  reconcile that dropped all of the PR's ahead-commits before it is pushed. */
+  revListCount(cwd: string, range: string): Promise<number>;
+  /** `git reset --hard <ref>` — restore the worktree to a prior state. Used
+   *  ONLY to undo a local rebase that dropped all commits, back to the *captured
+   *  pre-rebase HEAD* — never to reset a branch toward `main` (that reset-to-main
+   *  is the exact data-loss #201 exists to prevent). Throws on failure. */
+  resetHard(cwd: string, ref: string): Promise<void>;
   /** `git push --force-with-lease origin <branch>` — agent-managed branches only.
    *  Throws on push failure (a real conflict caught by the lease, or a permission
    *  / network error); `applySuccess` propagates so the trigger sibling retries
@@ -268,6 +300,21 @@ export const gitOps: GitOps = {
     const sha = r.stdout.trim();
     return sha === "" ? null : sha;
   },
+  async revListCount(cwd: string, range: string): Promise<number> {
+    const r = await spawnGit(cwd, ["rev-list", "--count", range]);
+    // A non-zero exit (e.g. an unresolvable range) reads as "0 commits" — the
+    // guard treats "can't prove the branch is ahead" conservatively, and a real
+    // git/transport failure surfaces from the surrounding fetch/rebase calls.
+    if (r.exitCode !== 0) return 0;
+    const n = Number(r.stdout.trim());
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+  },
+  async resetHard(cwd: string, ref: string): Promise<void> {
+    const r = await spawnGit(cwd, ["reset", "--hard", ref]);
+    if (r.exitCode !== 0) {
+      throw new Error(`git reset --hard ${ref} failed: ${r.stderr.trim()}`);
+    }
+  },
   async pushForceWithLease(cwd: string, branch: string): Promise<void> {
     const r = await spawnGit(cwd, ["push", "--force-with-lease", "origin", branch]);
     if (r.exitCode !== 0) {
@@ -349,6 +396,15 @@ export async function resolveWorktreePath(
  * `middle-issue-<N>` branch, the function reports `ok: false` with empty
  * `conflictingPaths` so the caller skips this PR — distinguishable from an
  * actual conflict because no paths are surfaced.
+ *
+ * **Data-loss guard (#201).** A clean (`exit 0`) rebase can still drop *every*
+ * commit the PR added when each becomes empty against the new `main`, leaving
+ * `HEAD == origin/main`. That is not a real fast-forward — pushing it would
+ * empty the branch (the #182 incident). After a clean rebase we compare the
+ * branch's ahead-count before vs. after: if it had commits ahead of `main` and
+ * now has none, we **restore the worktree to its pre-rebase HEAD** and return
+ * `{ ok: false, conflictingPaths: [], droppedAllCommits: true }` so the
+ * orchestrator escalates (never pushes, never merge-falls-back).
  */
 export async function tryRebaseOntoMain(
   deps: WorktreeOpsDeps,
@@ -358,7 +414,26 @@ export async function tryRebaseOntoMain(
   const resolved = await resolveWorktreePath(deps, repo, prNumber);
   if (!resolved) return { ok: false, conflictingPaths: [] };
   await deps.git.fetch(resolved.worktreePath, "main");
-  return deps.git.rebase(resolved.worktreePath, "origin/main");
+
+  // Capture the pre-rebase state so a dropped-all-commits rebase can be undone
+  // atomically (the branch is left exactly as it was), and so we know whether
+  // the branch had any commits to lose in the first place.
+  const originalHead = await deps.git.revParse(resolved.worktreePath, "HEAD");
+  const aheadBefore = await deps.git.revListCount(resolved.worktreePath, "origin/main..HEAD");
+
+  const result = await deps.git.rebase(resolved.worktreePath, "origin/main");
+  if (!result.ok) return result;
+
+  const aheadAfter = await deps.git.revListCount(resolved.worktreePath, "origin/main..HEAD");
+  if (aheadBefore > 0 && aheadAfter === 0) {
+    // Botched rebase: every commit the PR added was dropped. Restore the
+    // worktree (undo the rebase) and signal the orchestrator to escalate.
+    if (originalHead !== null) {
+      await deps.git.resetHard(resolved.worktreePath, originalHead);
+    }
+    return { ok: false, conflictingPaths: [], droppedAllCommits: true };
+  }
+  return result;
 }
 
 /**
@@ -455,11 +530,33 @@ export async function applySuccess(
   if (!resolved) return;
   const branch = `${HEAD_REF_PREFIX}${resolved.epicNumber}`;
 
-  // Sync the remote-tracking ref so the local-vs-remote comparison reflects
-  // the live origin state, not whatever was last cached.
+  // Sync the remote-tracking refs so the local-vs-remote comparison and the
+  // data-loss guard below reflect live origin state, not a stale cache.
   await deps.git.fetch(resolved.worktreePath, branch);
+  await deps.git.fetch(resolved.worktreePath, "main");
   const localSha = await deps.git.revParse(resolved.worktreePath, "HEAD");
   const remoteSha = await deps.git.revParse(resolved.worktreePath, `refs/remotes/origin/${branch}`);
+
+  // Keystone non-destructive guard (#201). This is the last line before the
+  // force-push: never push a reconcile that emptied the branch. If the remote
+  // branch still has commits ahead of `main` (the PR's approved work) but the
+  // local HEAD has none, the reconcile dropped all of it — pushing would
+  // overwrite the approved commits with `main`'s tip (the #182 data-loss).
+  // Refuse: throw so the orchestrator's per-PR try/catch logs it as a failure
+  // and the remote branch is left intact. Gated on the *remote having commits
+  // to lose* (not a blanket `localAhead > 0`) so a legitimate pure-behind
+  // fast-forward of a PR with no own commits is not false-flagged.
+  const remoteAhead = await deps.git.revListCount(
+    resolved.worktreePath,
+    `origin/main..refs/remotes/origin/${branch}`,
+  );
+  const localAhead = await deps.git.revListCount(resolved.worktreePath, "origin/main..HEAD");
+  if (remoteAhead > 0 && localAhead === 0) {
+    throw new Error(
+      `refusing to push reconcile of PR #${prNumber} (${branch}): local HEAD is 0 commits ahead of main but the remote branch has ${remoteAhead} — pushing would empty the branch (data-loss guard, #201)`,
+    );
+  }
+
   if (localSha !== null && localSha !== remoteSha) {
     await deps.git.pushForceWithLease(resolved.worktreePath, branch);
   }
@@ -529,20 +626,27 @@ function renderDemoteEscalation(
   epicNumber: number,
   prNumber: number,
   conflictingPaths: string[],
+  reason?: string,
 ): string {
-  const pathsLine =
-    conflictingPaths.length > 0
-      ? conflictingPaths.map((p) => `- \`${p}\``).join("\n")
-      : "_(no conflicting paths reported — the rebase and merge fallback both failed without surfacing unmerged files; investigate manually)_";
+  // The cause block: either a specific reason (e.g. the data-loss guard tripped
+  // — there is no conflict to report) or the default "both attempts failed +
+  // conflicting paths" narrative.
+  const causeBlock = reason
+    ? [`Reason the reconciler could not proceed safely:`, ``, reason]
+    : [
+        `Both autonomous attempts failed:`,
+        `1. \`git rebase origin/main\` — conflicts`,
+        `2. \`git merge -X ours origin/main\` (new-work-as-base) — residual conflict`,
+        ``,
+        `Conflicting paths:`,
+        conflictingPaths.length > 0
+          ? conflictingPaths.map((p) => `- \`${p}\``).join("\n")
+          : "_(no conflicting paths reported — the rebase and merge fallback both failed without surfacing unmerged files; investigate manually)_",
+      ];
   return [
     `🛑 **Reconciliation escalation:** PR #${prNumber} for Epic #${epicNumber} could not be auto-reconciled with \`main\`.`,
     ``,
-    `Both autonomous attempts failed:`,
-    `1. \`git rebase origin/main\` — conflicts`,
-    `2. \`git merge -X ours origin/main\` (new-work-as-base) — residual conflict`,
-    ``,
-    `Conflicting paths:`,
-    pathsLine,
+    ...causeBlock,
     ``,
     `The PR has been flipped back to **draft** and the most-recently-closed sub-issue reopened so a fresh agent can pick up conflict resolution. The Epic has been re-enqueued through the recommender's ranking — it will be dispatched again when slots free up.`,
     ``,
@@ -588,12 +692,18 @@ function renderSubIssueReopenComment(prNumber: number, epicNumber: number): stri
  *
  * Non-managed head refs (the PR isn't `middle-issue-<N>`) short-circuit as a
  * no-op — the reconciler is never the right hand for those.
+ *
+ * `options.reason`, when supplied, replaces the default "both attempts failed +
+ * conflicting paths" narrative in the escalation comment. The data-loss guard
+ * (#201) uses it to explain that the rebase dropped all of the PR's commits —
+ * a case with no conflict to report.
  */
 export async function applyDemoteToWork(
   deps: ApplyDemoteDeps,
   repo: string,
   prNumber: number,
   conflictingPaths: string[],
+  options?: { reason?: string },
 ): Promise<void> {
   const headRef = await deps.github.getPrHeadRef(repo, prNumber);
   if (!headRef) return;
@@ -632,7 +742,12 @@ export async function applyDemoteToWork(
   }
 
   // Dual-surface escalation. Same marker on both surfaces gates re-posts.
-  const escalationBody = renderDemoteEscalation(epicNumber, prNumber, conflictingPaths);
+  const escalationBody = renderDemoteEscalation(
+    epicNumber,
+    prNumber,
+    conflictingPaths,
+    options?.reason,
+  );
 
   for (const issueNumber of [prNumber, epicNumber]) {
     const existing =
@@ -798,6 +913,31 @@ export async function reconcileOpenPRs(
         // applySuccess pushes + records CLEAN regardless of mainSha; the
         // comment step skips itself when mainSha is null.
         await applySuccess(deps, repo, pr.prNumber, "rebased", mainSha);
+        reconciled++;
+        continue;
+      }
+
+      // Data-loss guard tripped (#201): the rebase would have emptied the
+      // branch. The worktree was already restored by tryRebaseOntoMain. Skip the
+      // merge fallback (it would only re-derive the emptiness or push a noise
+      // merge of already-merged work) and escalate directly — a human decides
+      // whether the PR's work is already in main or the rebase needs hand-help.
+      if (rebaseResult.droppedAllCommits) {
+        await applyDemoteToWork(
+          {
+            db: deps.db,
+            github: deps.github,
+            enqueueEpic: deps.enqueueEpic,
+            now: deps.now,
+          },
+          repo,
+          pr.prNumber,
+          [],
+          {
+            reason:
+              "A `git rebase origin/main` dropped **all** of the PR's commits — each became empty against the new `main`, which would leave the branch identical to `main` (an empty PR). The reconciler refused to push this to avoid silently destroying the PR's work (the #182 data-loss). Investigate manually: either the work is already merged into `main` (close the PR), or the rebase needs hand-resolution before re-dispatch.",
+          },
+        );
         reconciled++;
         continue;
       }
