@@ -72,8 +72,13 @@ export function Inspector({
           <dt>tmux session</dt>
           <dd>
             {panel.session}{" "}
-            <Badge variant={panel.alive ? "success" : "destructive"}>
-              {panel.alive ? "● live" : "○ gone"}
+            <Badge
+              variant={panel.alive ? "success" : "destructive"}
+              aria-label={panel.alive ? "session alive" : "session ended"}
+            >
+              {/* The glyph stays visual; the Badge's aria-label carries the
+                  semantic so screenreaders don't announce "black circle". */}
+              <span aria-hidden="true">{panel.alive ? "● live" : "○ gone"}</span>
             </Badge>
           </dd>
           <dt>last heartbeat</dt>
