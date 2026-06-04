@@ -163,10 +163,18 @@ a:hover {
 }
 
 /* Form controls — quiet by default; the focus ring is the only thing that
-   shouts. */
+   shouts. Without these three, native `<button>` falls back to the OS chrome
+   (the cream-ish `ButtonFace` on Linux/Chromium) and bleeds through every
+   custom-styled button row in the sidebar nav. */
 button, input, select, textarea {
   font: inherit;
   color: inherit;
+}
+button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
 }
 
 ul, ol {

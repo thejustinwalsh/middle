@@ -102,7 +102,11 @@ export function Epics({
 }) {
   return (
     <section className="epics" aria-labelledby="epics-h">
-      <h2 id="epics-h">EPICS</h2>
+      {/* The page-level title is owned by the App's topbar; this remains the
+          section's accessible name for screen readers. */}
+      <h2 id="epics-h" className="sr-only">
+        Open Epics
+      </h2>
       {epics.length === 0 ? (
         <p className="empty">No open Epics for this repo.</p>
       ) : (
