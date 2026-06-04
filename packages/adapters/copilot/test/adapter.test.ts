@@ -169,6 +169,15 @@ describe("resolveTranscriptPath", () => {
   test("throws when the payload carries no sessionId", () => {
     expect(() => copilotAdapter.resolveTranscriptPath({ cwd: "/wt" })).toThrow(/sessionId/);
   });
+
+  test.each(["../../../../etc/passwd", "a/b", "..", "id with spaces", "id;rm -rf"])(
+    "rejects a non-identifier sessionId %p (defense-in-depth against path escape)",
+    (sessionId) => {
+      expect(() => copilotAdapter.resolveTranscriptPath({ sessionId, cwd: "/wt" })).toThrow(
+        /not a plain identifier/,
+      );
+    },
+  );
 });
 
 /** Build one real-shaped Copilot events.jsonl line. */
