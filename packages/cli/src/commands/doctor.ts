@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { loadConfig, type MiddleConfig } from "@middle/core";
@@ -240,6 +240,32 @@ function checkTsdocCoverageWarn(): Check {
     name: "tsdoc",
     status: "warn",
     detail: `${undocumented.length}/${totalExports} public exports lack a doc comment (advisory)`,
+  };
+}
+
+/**
+ * Report whether the Playwright Chromium browser is installed — the dashboard's
+ * end-to-end smoke (`packages/dashboard/playwright/`) needs it. **Advisory** (warn,
+ * never fail): the browser is a dev/CI prerequisite, not a dispatch one, and the
+ * detail carries the install command so an operator knows the fix. Detection is a
+ * best-effort scan of the Playwright browsers cache (honoring
+ * `PLAYWRIGHT_BROWSERS_PATH`).
+ */
+export function checkPlaywrightBrowser(): Check {
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), ".cache", "ms-playwright");
+  let installed = false;
+  try {
+    installed = existsSync(base) && readdirSync(base).some((d) => d.startsWith("chromium"));
+  } catch {
+    installed = false;
+  }
+  if (installed) {
+    return { name: "playwright", status: "pass", detail: "chromium installed (dashboard e2e)" };
+  }
+  return {
+    name: "playwright",
+    status: "warn",
+    detail: "chromium not installed — dashboard e2e needs `bunx playwright install chromium`",
   };
 }
 
@@ -497,6 +523,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
     checkSkillsDrift(),
     checkModuleIndexFrontmatter(),
     checkTsdocCoverageWarn(),
+    checkPlaywrightBrowser(),
   ];
 
   console.log("middle — system check\n");

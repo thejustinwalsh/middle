@@ -1,0 +1,25 @@
+# Dashboard end-to-end smoke (#224). A separate Playwright job so the three
+# Chromium smoke specs are visible in the PR-checks rollup on every push / PR —
+# they're deliberately NOT part of the `bun test` gate (Chromium isn't a dispatch
+# prerequisite, and Playwright uses its own runner, not `bun:test`).
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  dashboard-playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Run dashboard Playwright smoke
+        working-directory: packages/dashboard
+        run: bunx playwright test
