@@ -9,7 +9,7 @@
  * Public surface:
  * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
  *   `dispatch`, `pause`, `resume`, `config`, `run-recommender`, `docs`,
- *   `audit-issues`, `version`
+ *   `audit-issues`, `verify-file-mode`, `version`
  *
  * Where things live:
  * - `commands/` — one `run*` function per subcommand
@@ -71,6 +71,7 @@ import { runStartCommand } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninit } from "./commands/uninit.ts";
+import { runVerifyFileMode } from "./commands/verify-file-mode.ts";
 
 const VERSION = "0.0.0";
 
@@ -254,6 +255,13 @@ program
       );
     },
   );
+
+program
+  .command("verify-file-mode")
+  .description(
+    "Verify file mode end-to-end: drive the real file-mode workflow over a throwaway fixture and print a structured report",
+  )
+  .action(async () => process.exit(await runVerifyFileMode()));
 
 program
   .command("version")
