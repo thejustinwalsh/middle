@@ -21,6 +21,7 @@ import {
   updateWorkflow,
 } from "../workflow-record.ts";
 import type { CreateWorktreeOpts, WorktreeHandle } from "../worktree.ts";
+import { awaitStopOrSessionEnd } from "./implementation.ts";
 import type { TmuxOps, WorktreeOps } from "./implementation.ts";
 
 /** A recommender run: rewrite one repo's state issue with a ranked dispatch plan. */
@@ -144,6 +145,13 @@ export type RecommenderDeps = {
   launchTimeoutMs?: number;
   /** Hard cap on the agent run — the spec's 5-minute ceiling. */
   agentTimeoutMs?: number;
+  /**
+   * Cadence for the spawn step's session-liveness probe (the
+   * `awaitStopOrSessionEnd` race). Defaults to 5s in production. Exposed so
+   * tests can drive it tighter; should be ≪ `agentTimeoutMs` so a session that
+   * dies mid-run fails the step in seconds rather than minutes.
+   */
+  livenessPollMs?: number;
   /**
    * Surface a malformed produced body to a human (the verify step's failure
    * path). Optional + injectable so tests need no `gh`.
@@ -570,10 +578,29 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
       await deps.tmux.sendText(sessionName, promptText);
       await deps.tmux.sendEnter(sessionName);
 
-      // The recommender is a one-shot: drive one turn, observe the Stop. The
-      // step's own `timeout` (5 min) is the hard cap; this Stop-await is bounded
-      // just under it so it surfaces a specific error rather than the step timeout.
-      await deps.sessionGate.awaitStop(sessionName, agentTimeout);
+      // The recommender is a one-shot: drive one turn, observe the Stop.
+      // Liveness-aware (mirrors the implementation drive): race the Stop hook
+      // against tmux session-death so a session killed out from under us (a
+      // watchdog kill, a daemon force-close mid-run, a tmux crash) fails the
+      // step *immediately* with a specific reason instead of blocking on
+      // `awaitStop` for the full `agentTimeout` (a 15-min stall the bunqueue
+      // force-close would otherwise terminate as a generic compensation). When
+      // `tmux.status` is unwired (tests / standalone runner), it degrades to
+      // Stop-or-timeout — same behavior as before.
+      const wait = await awaitStopOrSessionEnd({
+        awaitStop: (ms) => deps.sessionGate.awaitStop(sessionName, ms),
+        timeoutMs: agentTimeout,
+        isAlive: deps.tmux.status
+          ? async () => (await deps.tmux.status!(sessionName)).alive
+          : undefined,
+        pollMs: deps.livenessPollMs,
+      });
+      if (wait.via === "session-ended") {
+        throw new Error("recommender session ended before Stop hook");
+      }
+      if (wait.via === "timeout") {
+        throw new Error(`recommender Stop hook timed out after ${agentTimeout}ms`);
+      }
       // END SESSION — the turn is over; free the dedicated slot.
       await deps.tmux.killSession(sessionName);
     } catch (error) {
