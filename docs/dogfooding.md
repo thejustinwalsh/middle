@@ -86,3 +86,57 @@ dispatch needs:
 
 `mm init` is idempotent: a re-run with a matching `bootstrap.version` refreshes
 skills/hooks but keeps the config and the existing state issue.
+
+## Live-smoke verification
+
+`mm verify-file-mode` proves the file-mode dispatch loop works end to end on your
+machine. Run it after install and after any merge that touches the dispatcher,
+the file gateways, the worktree machinery, or the Epic-file parser/renderer.
+
+`mm verify-file-mode` (no flags) drives the **real** workflow over a throwaway
+tmpdir repo: it authors a `epic_store="file"` Epic, dispatches it, parks it on a
+question, answers via a file edit, resumes through the real file-watcher, and
+checks the run reaches `completed` with the sub-issue checkbox flipped. It stubs
+only the GitHub PR/comment boundary, so it needs no daemon, no `gh`, and no
+network. This is the same drive CI runs on every commit to `main`.
+
+`mm verify-file-mode --live --repo <owner/name>` runs that loop against **real
+GitHub**: it authors an Epic on a fresh branch, dispatches a real agent, answers
+any park, and asserts a draft PR opened with the sub-issue checkbox flipped. It
+spends real tokens and minutes of wall-clock, so it is opt-in — run it after a
+major merge, not on every commit. It is not in CI by design.
+
+```bash
+mm verify-file-mode                                      # the local integration smoke (post-install)
+mm verify-file-mode --live --repo you/middle-smoketest   # the real-GitHub smoke (post-major-merge)
+```
+
+### Read a failure
+
+Both modes print one line per phase — `init` → `author` → `dispatch` → `park` →
+`answer` → `resume` → `complete` — each marked `PASS` or `FAIL` with its
+wall-time, then a verdict line. On success the last line is `all sections pass.`;
+on failure it is `FAIL: <section> — <reason>`, so the failing phase is the last
+thing printed. The section that flips to `FAIL` tells you which seam broke: a
+`dispatch` failure is the engine or worktree, `resume` is the file-watcher,
+`complete` is the terminal finalize.
+
+`--live` exits 0 only after it cleans up the test branch and PR. On failure it
+**leaves** the branch and PR intact and prints their URLs — inspect those
+artifacts, then delete them by hand once you have diagnosed the break.
+
+### Set up a designated test repo for `--live`
+
+`--live` needs a throwaway GitHub repo you can let an agent open PRs against. Set
+one up once:
+
+1. Create an empty repo, e.g. `you/middle-smoketest`, and clone it locally.
+2. Bootstrap it in file mode: `mm init <path> --epic-store=file`. This stamps the
+   skills and hooks and registers the repo with the daemon in file mode (Epics
+   live in `planning/epics/`, not GitHub issues).
+3. Confirm the install: `mm doctor` from the checkout reports the file-mode Epic
+   directory.
+
+Then run `mm verify-file-mode --live --repo you/middle-smoketest --repo-path <path>`
+(`--repo-path` defaults to the current directory). The command authors,
+dispatches, and cleans up its own throwaway Epic each run.
