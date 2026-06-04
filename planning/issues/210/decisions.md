@@ -131,3 +131,25 @@ out of the render logic. The `<768` and `≥1024` bounds are explicit in the AC;
 **Evidence:** `responsive.test.tsx` mocks `matchMedia` at 360px → asserts the Inspector's
 SheetContent carries the bottom-anchor classes (`bottom-0 inset-x-0`, not `inset-y-0`),
 and at 1280px → the right-anchor classes. The CSS-only bits are verified visually in #224.
+
+## #223 loading/error via a useAsyncResource hook; happy-dom registered once
+**File(s):** `useAsyncResource.ts`, `components/{RepoExpansion,InlineError}.tsx`, `App.tsx`, `test/dom.tsx`
+**Date:** 2026-06-04
+
+**Decision:** A `useAsyncResource(loader, {timeoutMs, deps})` hook drives loading /
+success / error / timeout + `reload`. The repo expansion is now self-fetching
+(`RepoExpansion`): App supplies `loadDetail` + bumps a per-repo `reloadSignal` on poll
+tick / SSE event (replacing the old `details` map + `refreshDetail`). The expansion
+renders a Skeleton → content → `InlineError` (Retry) / "Connection lost — retrying…".
+Queue/Activity show skeletons + an inline `InlineError` keyed off the existing guard's
+`source` (so the global bar is suppressed for those views).
+**Why (timeout):** the timeout transition fires from the hook's OWN timer, not by
+waiting for the loader to reject on abort — `api.repo` ignores the signal, so an
+abort-only design would hang in "loading" forever past 10s (caught by the timeout test).
+The timer is cancelled on unmount/reload (a leaked timer firing `setState` post-unmount
+both warns and, under happy-dom, corrupts the DOM).
+**Why (happy-dom once):** `@happy-dom/global-registrator` is not safe to
+register/unregister-cycle — across 5 DOM test files it threw `removeChild` DOMExceptions
+on unmount and degraded its timers (both flaky only in the full suite). Registering ONCE
+and restoring the native web primitives the live-server tests need (`fetch`/`Response`/
+streams/timers) is stable: 117 dashboard tests green ×3 runs, full monorepo 1382 green.

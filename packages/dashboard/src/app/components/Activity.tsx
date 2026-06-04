@@ -6,8 +6,10 @@
  */
 import type { RunSummary } from "../../wire.ts";
 import { ago } from "../format.ts";
+import { InlineError } from "./InlineError.tsx";
 import { Badge, type BadgeProps } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
+import { Skeleton } from "./ui/skeleton.tsx";
 
 /** A coarse health class for the state pill. */
 function tone(run: RunSummary): "active" | "ok" | "bad" {
@@ -92,10 +94,19 @@ function Section({
 export function Activity({
   runs,
   now,
+  loaded = true,
+  error,
+  onRetry,
   onOpenInspector,
 }: {
   runs: RunSummary[];
   now?: number;
+  /** False before the first runs fetch resolves → render skeletons (#223). */
+  loaded?: boolean;
+  /** Inline error message if the runs fetch failed. */
+  error?: string;
+  /** Re-fire the failed runs fetch. */
+  onRetry?: () => void;
   onOpenInspector?: (session: string) => void;
 }) {
   const recommender = runs.filter((r) => r.kind === "recommender");
@@ -103,20 +114,33 @@ export function Activity({
   return (
     <section className="activity" aria-labelledby="activity-h">
       <h2 id="activity-h">ACTIVITY</h2>
-      <Section
-        title="Recommender"
-        runs={recommender}
-        emptyLabel="No recommender runs yet."
-        now={now}
-        onOpenInspector={onOpenInspector}
-      />
-      <Section
-        title="Documentation"
-        runs={documentation}
-        emptyLabel="No documentation runs yet."
-        now={now}
-        onOpenInspector={onOpenInspector}
-      />
+      {error ? (
+        <InlineError message={error} onRetry={onRetry} />
+      ) : !loaded ? (
+        <div className="activity-skeleton flex flex-col gap-2" aria-busy="true">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      ) : null}
+      {!error && loaded ? (
+        <>
+          <Section
+            title="Recommender"
+            runs={recommender}
+            emptyLabel="No recommender runs yet."
+            now={now}
+            onOpenInspector={onOpenInspector}
+          />
+          <Section
+            title="Documentation"
+            runs={documentation}
+            emptyLabel="No documentation runs yet."
+            now={now}
+            onOpenInspector={onOpenInspector}
+          />
+        </>
+      ) : null}
     </section>
   );
 }
