@@ -82,6 +82,7 @@
       "dependencies": {
         "@middle/adapter-claude": "workspace:*",
         "@middle/adapter-codex": "workspace:*",
+        "@middle/adapter-copilot": "workspace:*",
         "@middle/core": "workspace:*",
         "@middle/docs": "workspace:*",
         "@middle/state-issue": "workspace:*",

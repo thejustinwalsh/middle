@@ -183,6 +183,7 @@ const GLOBAL_DEFAULTS: RawTable = {
       approval_policy: "never",
       extra_args: [],
     },
+    copilot: { enabled: true, binary: "copilot", extra_args: [] },
   },
   dashboard: { windowed: false, theme: "auto" },
 };
