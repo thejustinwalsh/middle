@@ -56,6 +56,8 @@ test("Queue state cell carries the s-running class", () => {
     <Queue metrics={baseMetrics} live={[{ id: "w1", repo: "o/r", epic: 7, state: "running" }]} />,
   );
   expect(html).toContain("s-running");
+  // #220: the state cell is a shadcn Badge (the s-<state> hook rides its className).
+  expect(html).toContain('data-slot="badge"');
 });
 
 test("Queue renders rate-limit chip with adapter name, status, and chip class", () => {

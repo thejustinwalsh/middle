@@ -60,3 +60,38 @@ future light theme only has to override the legacy vars. Avoids the name collisi
 shadcn's `--accent`/`--muted` (subtle backgrounds) mean something different from the
 legacy `--accent` (blue primary) / `--muted` (gray text): legacy `--accent` → shadcn
 `--color-primary`/`--color-ring`; legacy `--muted` → shadcn `--color-muted-foreground`.
+
+## Inspector becomes a Radix Dialog Sheet → DOM tests via happy-dom
+**File(s):** `packages/dashboard/src/app/components/Inspector.tsx`, `test/dom.tsx`, `test/inspector.test.tsx`
+**Date:** 2026-06-04
+
+**Decision:** The Inspector is now a shadcn `Sheet` (Radix Dialog), controlled `open`
+(App only mounts it when a session is selected; Escape/overlay/X route through
+`onOpenChange → onClose`). Its portaled content can't be captured by
+`renderToStaticMarkup`, so the Inspector tests moved to a real DOM (happy-dom) in
+`inspector.test.tsx`.
+**Why:** #220 wants the Inspector to "open as a Sheet (not a fixed-position div)".
+Radix portals only mount into a live `document.body`. happy-dom is registered PER FILE
+(not globally) because its `fetch` replacement can't reach a live `Bun.serve` — the
+live-server tests stay happy-dom-free. And DOM test files must import their components
+*dynamically after* `registerDom()`: a Radix Dialog imported before happy-dom registers
+binds to a doc-less global and never mounts its portal (verified the failure + the fix).
+**Evidence:** `test/dom.tsx` header documents the constraints; `inspector.test.tsx`
+asserts `data-slot="sheet-content"` + `role="dialog"` and the panel content.
+
+## No-preflight needs an explicit border reset; state-color CSS → Badge variants
+**File(s):** `packages/dashboard/src/app/tailwind.css`, `styles.css`, `components/Queue.tsx`, `Activity.tsx`
+**Date:** 2026-06-04
+
+**Decision:** Add a minimal `@layer base` reset (`border-width:0; border-style:solid;
+border-color:var(--border)`) — the slice of preflight the shadcn borders need — without
+the rest of preflight. The queue state colors (`.s-*`) and rate-limit chips (`.c-*`) and
+the activity run-state tones become Badge `variant`s; their `s-<state>`/`c-<status>`/
+`run-state <tone>` class names are kept purely as test/data hooks (their CSS is deleted).
+**Why:** Tailwind v4's `border` utility only sets a width and relies on preflight for
+`border-style: solid`; without it shadcn's Sheet/Select/Input/Badge borders render
+invisible. Keeping the legacy class names as hooks let the existing queue/activity tests
+keep asserting state without coupling to the deleted color rules — the color now comes
+from the Badge variant.
+**Evidence:** Served-CSS probe confirms `bg-primary`/`border-input`/`ring-ring`/`bg-card`/
+`animate-pulse` compile and `border-style: solid` is in the base layer.

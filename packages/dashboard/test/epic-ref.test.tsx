@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EpicRef, epicFileHref } from "../src/app/components/EpicRef.tsx";
-import { Inspector } from "../src/app/components/Inspector.tsx";
 import { RunnerRow } from "../src/app/components/RunnerRow.tsx";
-import type { RunnerPanel, RunnerSummary } from "../src/wire.ts";
+import type { RunnerSummary } from "../src/wire.ts";
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el);
 
@@ -86,37 +85,5 @@ describe("RunnerRow Epic rendering", () => {
   });
 });
 
-const panel = (over: Partial<RunnerPanel> = {}): RunnerPanel => ({
-  session: "s1",
-  workflowId: "w1",
-  repo: "o/r",
-  epic: null,
-  epicRef: null,
-  adapter: "claude",
-  state: "running",
-  controlledBy: "middle",
-  alive: true,
-  lastHeartbeat: null,
-  contextTokens: null,
-  transcriptPath: null,
-  worktreePath: null,
-  prNumber: null,
-  prBranch: null,
-  currentSubIssue: null,
-  attachCommands: { watch: "tmux attach -r -t s1", control: "tmux attach -t s1" },
-  ...over,
-});
-
-describe("Inspector Epic rendering", () => {
-  test("file-mode panel shows the slug file:// link in the header", () => {
-    const out = render(<Inspector panel={panel({ epicRef: "the-slug" })} events={[]} />);
-    expect(out).toContain('href="file://planning/epics/the-slug.md"');
-    expect(out).toContain(">the-slug<");
-  });
-
-  test("github-mode panel is unchanged (`#7`, no link)", () => {
-    const out = render(<Inspector panel={panel({ epic: 7 })} events={[]} />);
-    expect(out).toContain("#7");
-    expect(out).not.toContain("file://");
-  });
-});
+// Inspector Epic rendering moved to `inspector.test.tsx` (DOM): the Inspector is
+// now a Sheet (Radix Dialog) whose portaled content `renderToStaticMarkup` drops.

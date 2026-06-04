@@ -6,11 +6,18 @@
  */
 import type { RunSummary } from "../../wire.ts";
 import { ago } from "../format.ts";
+import { Badge, type BadgeProps } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
 
 /** A coarse health class for the state pill. */
 function tone(run: RunSummary): "active" | "ok" | "bad" {
   if (run.active) return "active";
   return run.state === "completed" ? "ok" : "bad";
+}
+
+/** Badge intent for a run tone. */
+function toneVariant(t: "active" | "ok" | "bad"): BadgeProps["variant"] {
+  return t === "ok" ? "success" : t === "bad" ? "destructive" : "default";
 }
 
 function RunRow({
@@ -24,13 +31,19 @@ function RunRow({
 }) {
   return (
     <li className="run-row" data-run={run.workflowId}>
-      <button type="button" className="run-open" onClick={() => onOpenInspector?.(run.session)}>
-        <span className={`run-state ${tone(run)}`}>{run.state}</span>
+      <Button
+        variant="link"
+        className="run-open h-auto justify-start gap-2 p-0 text-foreground"
+        onClick={() => onOpenInspector?.(run.session)}
+      >
+        <Badge variant={toneVariant(tone(run))} className={`run-state ${tone(run)}`}>
+          {run.state}
+        </Badge>
         <span className="run-repo">{run.repo}</span>
         <span className="run-when">
           {ago(run.startedAt, now)} ago · {Math.max(0, Math.round(run.durationMs / 1000))}s
         </span>
-      </button>
+      </Button>
       {run.outputLink ? (
         <a className="run-output" href={run.outputLink}>
           ↗ output

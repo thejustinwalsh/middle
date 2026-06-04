@@ -27,6 +27,15 @@ import {
   type ControlMetrics,
   type ControlWorkflowFrame,
 } from "./control-client.ts";
+import { Button } from "./components/ui/button.tsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./components/ui/select.tsx";
+import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Activity } from "./components/Activity.tsx";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
@@ -336,71 +345,46 @@ export function App() {
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error.message}</div> : null}
-      <nav className="view-nav">
-        <button
-          type="button"
-          className={view === "epics" ? "active" : ""}
-          onClick={() => setView("epics")}
-        >
-          epics
-        </button>
-        <button
-          type="button"
-          className={view === "dashboard" ? "active" : ""}
-          onClick={() => setView("dashboard")}
-        >
-          dashboard
-        </button>
-        <button
-          type="button"
-          className={view === "queue" ? "active" : ""}
-          onClick={() => setView("queue")}
-        >
-          queue
-        </button>
-        <button
-          type="button"
-          className={view === "activity" ? "active" : ""}
-          onClick={() => setView("activity")}
-        >
-          activity
-        </button>
-        <button
-          type="button"
-          className={view === "settings" ? "active" : ""}
-          onClick={() => setView("settings")}
-        >
-          settings
-        </button>
-      </nav>
+      <Tabs
+        value={view}
+        onValueChange={(v) => setView(v as typeof view)}
+        className="border-b border-border px-4 py-2"
+      >
+        <TabsList aria-label="views">
+          <TabsTrigger value="epics">epics</TabsTrigger>
+          <TabsTrigger value="dashboard">dashboard</TabsTrigger>
+          <TabsTrigger value="queue">queue</TabsTrigger>
+          <TabsTrigger value="activity">activity</TabsTrigger>
+          <TabsTrigger value="settings">settings</TabsTrigger>
+        </TabsList>
+      </Tabs>
       {view === "epics" ? (
         <>
-          <div className="epics-toolbar">
+          <div className="epics-toolbar flex items-center gap-2 px-4 pt-4">
             {repos.length > 1 ? (
-              <select
-                className="epic-repo-filter"
-                aria-label="repo"
+              <Select
                 value={epicRepo ?? ""}
-                onChange={(e) => {
-                  setEpicRepo(e.target.value);
+                onValueChange={(v) => {
+                  setEpicRepo(v);
                   setEpics([]);
                 }}
               >
-                {repos.map((r) => (
-                  <option key={r.repo} value={r.repo}>
-                    {r.repo}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger aria-label="repo" className="w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {repos.map((r) => (
+                    <SelectItem key={r.repo} value={r.repo}>
+                      {r.repo}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : null}
             {epicRepo ? (
-              <button
-                type="button"
-                className="epics-refresh"
-                onClick={() => forceRefreshEpics(epicRepo)}
-              >
+              <Button variant="outline" size="sm" onClick={() => forceRefreshEpics(epicRepo)}>
                 refresh
-              </button>
+              </Button>
             ) : null}
           </div>
           <Epics

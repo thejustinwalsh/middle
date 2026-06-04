@@ -4,6 +4,7 @@
  * folds both into `/api/needs-you`). When it's empty, the system is working.
  */
 import type { NeedsYouItem } from "../../wire.ts";
+import { Button } from "./ui/button.tsx";
 
 export function NeedsYou({
   items,
@@ -23,9 +24,13 @@ export function NeedsYou({
         <ul>
           {items.map((item) => (
             <li key={`${item.repo}#${item.issue}`} className="needs-you-item">
-              <button type="button" className="needs-you-open" onClick={() => onOpen?.(item)}>
+              <Button
+                variant="link"
+                className="needs-you-open h-auto justify-start p-0 text-foreground"
+                onClick={() => onOpen?.(item)}
+              >
                 ↑ {item.repo} #{item.issue} — <span className="label">{item.label}</span>
-              </button>
+              </Button>
               <div className="one-liner">{item.oneLiner}</div>
             </li>
           ))}

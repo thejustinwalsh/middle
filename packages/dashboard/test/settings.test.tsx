@@ -109,5 +109,9 @@ describe("Settings view (static render)", () => {
     expect(html).toContain("clear override");
     expect(html).toContain("o/alpha");
     expect(html).toContain("resume"); // auto is off → resume button
+    // #220 shadcn primitives: Inputs, Buttons, and a Badge for the rate-limit status.
+    expect(html.match(/data-slot="input"/g)?.length).toBe(2);
+    expect(html).toContain('data-slot="button"');
+    expect(html).toContain('data-slot="badge"');
   });
 });

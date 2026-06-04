@@ -82,32 +82,6 @@ ol {
   font-style: italic;
 }
 
-.pill {
-  display: inline-block;
-  padding: 0.05rem 0.4rem;
-  margin-left: 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 0.4rem;
-  color: var(--muted);
-}
-.pill.auto.on {
-  color: var(--ok);
-}
-.pill.auto.off {
-  color: var(--bad);
-}
-
-.repo-header,
-.needs-you-open,
-.runner-open {
-  background: none;
-  border: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  text-align: left;
-}
-
 .repo-row,
 .needs-you-item {
   padding: 0.4rem 0;
@@ -126,23 +100,6 @@ ol {
   padding: 0.2rem 0;
 }
 
-.runner-actions button,
-.inspector-actions button {
-  background: var(--panel);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 0.3rem;
-  cursor: pointer;
-  padding: 0.1rem 0.5rem;
-}
-
-.badge.human {
-  color: var(--warn);
-  border: 1px solid var(--warn);
-  border-radius: 0.3rem;
-  padding: 0 0.3rem;
-}
-
 .copy-command {
   display: inline-flex;
   gap: 0.3rem;
@@ -154,25 +111,6 @@ ol {
   border-radius: 0.3rem;
 }
 
-.inspector {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 30rem;
-  max-width: 100vw;
-  height: 100vh;
-  overflow-y: auto;
-  background: var(--panel);
-  border-left: 1px solid var(--border);
-  padding: 1rem;
-}
-
-.inspector-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 .runner-panel {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -181,40 +119,14 @@ ol {
 .runner-panel dt {
   color: var(--muted);
 }
-.runner-panel .human,
-.badge.human {
+.runner-panel .human {
   color: var(--warn);
-}
-.alive {
-  color: var(--ok);
-}
-.dead {
-  color: var(--bad);
 }
 
 .error-bar {
   background: var(--bad);
   color: #fff;
   padding: 0.3rem 1rem;
-}
-
-.view-nav {
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.4rem 1rem;
-  border-bottom: 1px solid var(--border);
-}
-.view-nav button {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 0.3rem;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 0.1rem 0.6rem;
-}
-.view-nav button.active {
-  color: var(--fg);
-  border-color: var(--accent);
 }
 
 .settings fieldset {
@@ -225,21 +137,6 @@ ol {
 .settings label {
   display: block;
   margin: 0.3rem 0;
-}
-.settings input {
-  margin-left: 0.5rem;
-  background: #010409;
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 0.3rem;
-  padding: 0.1rem 0.3rem;
-}
-.settings-repo-row,
-.rate-limit-row {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-  padding: 0.2rem 0;
 }
 
 /* Queue tab — gauge tiles */
@@ -283,60 +180,6 @@ ol {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.queue table.active td.state {
-  font-weight: 600;
-}
-
-/* Queue tab — state colors.
-   NOTE: "waiting" and "compensating" are intentionally left without an .s-*
-   color rule — they render unstyled (inheriting the default foreground),
-   matching the old status-page behaviour. This is deliberate, not an oversight. */
-.queue .s-running {
-  color: #36d399;
-}
-.queue .s-launching,
-.queue .s-pending {
-  color: var(--accent);
-}
-.queue .s-waiting-human {
-  color: var(--warn);
-}
-.queue .s-rate-limited {
-  color: var(--bad);
-}
-.queue .s-completed {
-  color: var(--ok);
-}
-.queue .s-failed,
-.queue .s-cancelled,
-.queue .s-compensated {
-  color: var(--bad);
-}
-
-/* Queue tab — rate-limit chips */
-.queue .chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-.queue .chips span {
-  display: inline-block;
-  padding: 0.2rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.8rem;
-}
-.queue .c-available {
-  color: var(--ok);
-  border-color: var(--ok);
-}
-.queue .c-rate_limited {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-.queue .c-unknown {
-  color: var(--muted);
-}
 
 /* Epics tab */
 .epics .epic-card {
@@ -351,24 +194,6 @@ ol {
   align-items: baseline;
   gap: 0.5rem;
 }
-.epics .epic-progress {
-  position: relative;
-  height: 1rem;
-  background: #222;
-  border-radius: 3px;
-  overflow: hidden;
-  margin: 0.35rem 0;
-}
-.epics .epic-progress-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: #3a7;
-}
-.epics .epic-progress-label {
-  position: relative;
-  font-size: 0.75rem;
-  padding-left: 0.35rem;
-}
 .epics .epic-agent.idle {
   opacity: 0.6;
 }
@@ -376,11 +201,8 @@ ol {
   font-size: 0.85rem;
   margin: 0.25rem 0;
 }
-.epics .epic-dispatch {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.35rem;
-}
+
+/* Activity tab */
 .activity .run-section {
   margin-bottom: 1rem;
 }
@@ -389,31 +211,6 @@ ol {
   align-items: baseline;
   gap: 0.5rem;
   padding: 0.15rem 0;
-}
-.activity .run-open {
-  display: flex;
-  gap: 0.6rem;
-  align-items: baseline;
-  background: none;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-}
-.activity .run-state {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  padding: 0 0.3rem;
-  border-radius: 3px;
-}
-.activity .run-state.active {
-  background: #234;
-}
-.activity .run-state.ok {
-  background: #143;
-}
-.activity .run-state.bad {
-  background: #511;
 }
 .activity .run-when {
   opacity: 0.7;

@@ -6,6 +6,8 @@
  */
 import type { RunnerSummary } from "../../wire.ts";
 import { ago } from "../format.ts";
+import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
 import { CopyCommand } from "./CopyCommand.tsx";
 import { EpicRef } from "./EpicRef.tsx";
 
@@ -24,22 +26,22 @@ export function RunnerRow({
 }) {
   return (
     <li className="runner-row" data-session={runner.session}>
-      <button
-        type="button"
-        className="runner-open"
+      <Button
+        variant="link"
+        className="runner-open h-auto justify-start p-0 text-foreground"
         onClick={() => onOpenInspector?.(runner.session)}
       >
         <EpicRef epicNumber={runner.epic} epicRef={runner.epicRef} fallback="#—" /> ·{" "}
         {runner.adapter} · {runner.progress} · {ago(runner.lastHeartbeat, now)} ago
-      </button>
-      {runner.controlledBy === "human" ? <span className="badge human">human</span> : null}
-      <span className="runner-actions">
-        <button type="button" onClick={() => onWatch?.(runner.session)}>
+      </Button>
+      {runner.controlledBy === "human" ? <Badge variant="warning">human</Badge> : null}
+      <span className="runner-actions flex gap-2">
+        <Button variant="secondary" size="sm" onClick={() => onWatch?.(runner.session)}>
           watch
-        </button>
-        <button type="button" onClick={() => onTakeControl?.(runner.session)}>
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => onTakeControl?.(runner.session)}>
           take control
-        </button>
+        </Button>
       </span>
       <CopyCommand command={runner.attachCommands.watch} label="attach" />
     </li>
