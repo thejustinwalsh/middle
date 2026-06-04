@@ -2,3 +2,61 @@
 
 Decisions worth more than two lines, captured as they were made. Distilled into PR
 review comments before the PR is marked ready.
+
+## #225 — resolution is a deterministic post-agent workflow step, not the agent's job
+**File(s):** `packages/dispatcher/src/workflows/recommender.ts` (resolve-blockers step), `packages/dispatcher/src/blocker-resolution.ts`
+**Date:** 2026-06-04
+
+**Decision:** A new `resolve-blockers` step runs after `reapply-dispatcher-sections`
+and before `verify-state-issue-parses`. The reclassification logic lives in a pure
+module (`blocker-resolution.ts`) with the live-state lookups injected, so it's fully
+unit-testable without a gateway.
+**Why:** The audit's finding was "no *code* consumes `blockedItem.blocker`". The
+recommender agent can't reliably resolve a cross-repo reference (it has no guaranteed
+access to repo B, and an LLM judgment isn't a deterministic unblock). Making it a
+deterministic step closes the hole reproducibly. Slotting it after the dispatcher
+reapply means it reads the latest body; before verify means the reclassified body is
+what gets validated.
+**Evidence:** Mirrors the existing `reapply-dispatcher-sections` best-effort pattern
+(skip on parse error, skip the write on a no-op).
+
+## #225 — a closed blocker moves the item to Ready (not Needs-human); the agent re-ranks
+**File(s):** `packages/dispatcher/src/blocker-resolution.ts`
+**Date:** 2026-06-04
+
+**Decision:** When a blocker closes, the item moves to `## Ready to dispatch` with a
+best-effort row (accurate title + open sub-issue count from `listOpenEpics` when the
+Epic is discoverable, else title via `getIssueState` + count 1). The "(or Needs human
+input if its own criteria are now unmet)" branch of the AC is NOT implemented
+deterministically.
+**Why:** Deciding an Epic's own acceptance-criteria readiness is the recommender
+*agent's* job, not deterministic code — it requires reading the Epic body/criteria.
+The transient Ready row is corrected by the next full recommender run. The integration
+test asserts the Ready transition, which this satisfies.
+**Evidence:** AC for #225 integration test asserts "moves to ## Ready to dispatch".
+
+## #225 — validator relaxed for cross-repo + annotated blockers (a schema change)
+**File(s):** `packages/state-issue/src/validate.ts`, `schemas/state-issue.v1.md`
+**Date:** 2026-06-04
+
+**Decision:** `validate()` previously rejected any `#`-prefixed blocker that wasn't
+exactly `#\d+`. Relaxed to accept an optional `<owner>/<repo>` prefix and an optional
+trailing `(<title>)` / `(stale blocker: <ref>)` annotation; backticked/free-text
+non-issue blockers stay exempt.
+**Why:** Without this, the resolution pass's own annotated output (`#42 (title)`,
+`acme/b#7 (stale blocker: …)`) would fail the verify step it feeds. The schema doc is
+the source of truth, so it's updated in the same change.
+**Evidence:** `validate.test.ts` cases for cross-repo / annotated / stale forms.
+
+## #225 — integration test drives the engine once, ticks many (bunqueue singleton)
+**File(s):** `packages/dispatcher/test/multi-repo-blockers.test.ts`
+**Date:** 2026-06-04
+
+**Decision:** The integration test registers the recommender workflow on ONE shared
+`Engine` and calls `engine.start` per tick. An earlier draft created a fresh `Engine`
+per tick and the workflow hung.
+**Why:** bunqueue's embedded queue/worker share a process-singleton manager keyed by
+the first dataPath (see `packages/dispatcher/CLAUDE.md`). A second engine in-process
+cross-talks with the first; reusing one engine is the established pattern (mirrors
+`recommender-workflow.test.ts`).
+**Evidence:** dispatcher `CLAUDE.md` → "bunqueue lifecycle & the lock-token race".

@@ -136,6 +136,17 @@ export function makeFileEpicGateway(deps: FileEpicGatewayDeps): EpicGateway {
       return epic?.meta.labels ?? [];
     },
 
+    async getIssueState(repo, ref) {
+      // A slug with a local Epic file resolves from disk (same-repo file-mode
+      // blocker); a numeric/github-native ref falls through to gh (a GitHub issue
+      // can still be a blocker in a file-mode repo). A slug with no file → null
+      // (unresolvable / stale), mirroring gh's 404.
+      if (!epicFileExists(epicsDir, ref)) return gh.getIssueState(repo, ref);
+      const epic = readEpicFile(epicsDir, ref);
+      if (!epic) return null;
+      return { state: epic.meta.closed ? "closed" : "open", title: epic.title };
+    },
+
     async addLabel(repo, ref, label): Promise<void> {
       if (!epicFileExists(epicsDir, ref)) {
         await gh.addLabel(repo, ref, label);

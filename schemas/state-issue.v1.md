@@ -38,8 +38,30 @@ complexity pause, awaiting reply, blocking critical path
 
 ### 3. ## Blocked
 
-Bulleted list. `- **#<n>** waiting on #<blocker> · <context>`
-`#<n>` and `#<blocker>` are Epics (or standalone issues). Non-issue blockers: `waiting on \`<description>\``
+Bulleted list. `- **#<n>** waiting on <blocker> · <context>`
+`#<n>` is an Epic (or standalone issue) in this repo. `<blocker>` is one of:
+- **Same-repo issue:** `#<blocker>` — an Epic/issue in this repo.
+- **Cross-repo issue:** `<owner>/<repo>#<blocker>` — an Epic/issue in another repo
+  (e.g. `acme/widgets#42`). This is the runtime-resolvable cross-repo blocker (#225):
+  repo A's Epic can be blocked on repo B's Epic.
+- **Non-issue:** `` `<description>` `` (backticked) — an external dependency with no
+  issue to resolve against.
+
+**Recommender resolution semantics (#225).** On each recommender run, after the
+agent rewrites the body, the dispatcher resolves every issue-reference blocker
+(same-repo and cross-repo; backticked descriptions are never resolved) against live
+state and reclassifies the blocked item:
+- **Blocker closed** → the item moves to `## Ready to dispatch` (a best-effort row
+  the next full recommender run re-ranks).
+- **Blocker still open** → stays in `## Blocked`; the blocker is annotated with the
+  resolved title: `<ref> (<title>)`.
+- **Blocker unresolvable** (404 / deleted, or a file-mode slug with no Epic file) →
+  stays in `## Blocked` with a `<ref> (stale blocker: <ref>)` suffix.
+
+Re-resolution is idempotent: an existing `(<title>)` / `(stale blocker: …)`
+annotation is stripped before the reference is re-read, so the line never
+accumulates annotations. Cross-repo references in **file mode** are out of scope for
+v1 (same-repo file-mode references resolve; cross-repo is a v2 step).
 
 ### 4. ## In-flight  [DISPATCHER-OWNED]
 
@@ -80,8 +102,11 @@ Body PASSES iff:
 2. All 7 sections in order
 3. Ready table has exact column header
 4. Numeric `#N` references match /#\d+/ — scoped to **Ready** row epics and
-   **Blocked** issue blockers. In-flight `<ref>` is exempt: it may be a file-mode
-   Epic slug (see In-flight above), so it is not constrained to /#\d+/.
+   **Blocked** issue blockers. A Blocked blocker may carry an optional
+   `<owner>/<repo>` cross-repo prefix and an optional trailing `(<title>)` /
+   `(stale blocker: <ref>)` annotation; a backticked or free-text non-issue blocker
+   is exempt. In-flight `<ref>` is exempt: it may be a file-mode Epic slug (see
+   In-flight above), so it is not constrained to /#\d+/.
 5. Adapter names are configured
 6. Empty sections use documented empty state
 7. Metadata `generated` parses as ISO 8601
