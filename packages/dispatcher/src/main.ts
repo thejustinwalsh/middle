@@ -667,6 +667,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       // Routed: a file-mode repo's recommender reads/writes its `state_file`, a
       // github repo its state issue — keyed per repo on the call's `repo` arg (#200).
       stateIssue: routingStateGateway,
+      // Routed too: the resolve-blockers step resolves a cross-repo blocker against
+      // the *blocker's* repo, so the router keys each lookup on that repo (#225).
+      epicGateway: routingEpicGateway,
       surfaceProblem: ghSurfaceProblem,
       triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
       gatherContext: (repo) => {
@@ -884,6 +887,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // (post-restart) and for any repo `mm init` registered.
   const recommenderCronDeps = {
     db,
+    // Per-repo runs fire concurrently (#227); these bound the fan-out and the
+    // per-repo timeout from the daemon's global `[recommender]` config (a hung
+    // repo no longer blocks the others). Defaults live in recommender-cron.ts.
+    maxConcurrentRepos: config.recommender?.maxConcurrentRepos,
+    runTimeoutMs: config.recommender?.runTimeoutMs,
     loadRepoConfig: (checkoutPath: string) => {
       try {
         return loadConfig({

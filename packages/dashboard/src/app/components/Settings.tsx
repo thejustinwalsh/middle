@@ -1,12 +1,17 @@
+import { useEffect, useState } from "react";
+import type { GlobalBanner, SettingsWire } from "../../wire.ts";
+import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
+import { Input } from "./ui/input.tsx";
+
 /**
  * The Settings view: edit global config (max concurrent, default adapter) and
  * per-repo config (auto-dispatch pause/resume), plus manual rate-limit override
- * buttons per adapter. Every change goes through the API and the parent refetches
- * `/api/settings`, so the UI always reflects persisted state.
+ * buttons per adapter. Driven by `settings` (and `banner` for the rate-limit
+ * state); every edit calls the matching `onSaveGlobal`/`onPauseRepo`/
+ * `onResumeRepo`/`onClearRateLimit` callback, after which the parent refetches
+ * `/api/settings` so the inputs always reflect persisted state.
  */
-import { useEffect, useState } from "react";
-import type { GlobalBanner, SettingsWire } from "../../wire.ts";
-
 export function Settings({
   settings,
   banner,
@@ -49,7 +54,7 @@ export function Settings({
         <legend>Global</legend>
         <label>
           max concurrent
-          <input
+          <Input
             type="number"
             min={1}
             value={maxConcurrent}
@@ -58,31 +63,33 @@ export function Settings({
         </label>
         <label>
           default adapter
-          <input
+          <Input
             type="text"
             value={defaultAdapter}
             onChange={(e) => setDefaultAdapter(e.target.value)}
           />
         </label>
-        <button type="button" onClick={saveGlobal}>
-          save
-        </button>
+        <Button onClick={saveGlobal}>save</Button>
       </fieldset>
 
       <fieldset className="settings-rate-limits">
         <legend>Rate limits</legend>
         {(banner?.adapters ?? []).map((a) => (
-          <div key={a.adapter} className="rate-limit-row">
-            <span className={`limit limit-${a.status.toLowerCase()}`}>
+          <div key={a.adapter} className="rate-limit-row flex items-center gap-2">
+            <Badge
+              variant={a.status === "AVAILABLE" ? "success" : "warning"}
+              className={`limit limit-${a.status.toLowerCase()}`}
+            >
               {a.adapter}: {a.status}
-            </span>
-            <button
-              type="button"
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => onClearRateLimit(a.adapter)}
               disabled={a.status === "AVAILABLE"}
             >
               clear override
-            </button>
+            </Button>
           </div>
         ))}
       </fieldset>
@@ -94,19 +101,19 @@ export function Settings({
         ) : (
           <ul>
             {settings.repos.map((r) => (
-              <li key={r.repo} className="settings-repo-row">
+              <li key={r.repo} className="settings-repo-row flex items-center gap-2">
                 <span className="repo-name">{r.repo}</span>
-                <span className={`pill auto ${r.auto ? "on" : "off"}`}>
+                <Badge variant={r.auto ? "success" : "destructive"}>
                   auto {r.auto ? "✓" : "✗"}
-                </span>
+                </Badge>
                 {r.auto ? (
-                  <button type="button" onClick={() => onPauseRepo(r.repo)}>
+                  <Button variant="outline" size="sm" onClick={() => onPauseRepo(r.repo)}>
                     pause
-                  </button>
+                  </Button>
                 ) : (
-                  <button type="button" onClick={() => onResumeRepo(r.repo)}>
+                  <Button variant="outline" size="sm" onClick={() => onResumeRepo(r.repo)}>
                     resume
-                  </button>
+                  </Button>
                 )}
               </li>
             ))}

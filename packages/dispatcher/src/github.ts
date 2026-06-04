@@ -51,6 +51,19 @@ export type IssueSummary = {
   labels: string[];
 };
 
+/**
+ * The open/closed lifecycle of a single issue (or file-mode Epic) plus its title —
+ * what the recommender's cross-repo blocker resolution reads to decide whether a
+ * `BlockedItem.blocker` reference is still blocking. `state` is normalized to the
+ * lowercase `"open"`/`"closed"` the resolver branches on (github's `OPEN`/`CLOSED`
+ * is folded here). A `null` return (not this type) means the ref is unresolvable
+ * (a 404 in github mode, or no Epic file in file mode) — a *stale* blocker.
+ */
+export type IssueState = {
+  state: "open" | "closed";
+  title: string;
+};
+
 /** A merged PR and the issue numbers GitHub records it as closing. */
 export type MergedPrRef = {
   number: number;
@@ -128,6 +141,13 @@ export interface EpicGateway {
   listOpenEpics(repo: string): Promise<EpicListItem[]>;
   /** Every open issue (not PRs) with body + labels — for the requirements/staleness audits. */
   listOpenIssues(repo: string): Promise<IssueSummary[]>;
+  /**
+   * A single issue's open/closed state + title, or `null` when it can't be
+   * resolved (404 / deleted in github mode, no Epic file in file mode). Drives the
+   * recommender's cross-repo blocker resolution — `repo` is the *blocker's* repo
+   * (which may differ from the state issue's repo for a cross-repo blocker).
+   */
+  getIssueState(repo: string, ref: string): Promise<IssueState | null>;
   /** Add a label to an issue (no-op if already present). */
   addLabel(repo: string, ref: string, label: string): Promise<void>;
   /** Recently-merged PRs and the issues each closes — for landed-but-open detection. */
@@ -144,6 +164,27 @@ export interface EpicGateway {
  * file-mode reference) is rejected here with a clear error rather than silently
  * coercing to `NaN` and producing a confusing `gh` failure downstream.
  */
+/**
+ * Map a raw `gh issue view --json state` value to the resolver's
+ * {@link IssueState} (or `null` for unresolvable). `gh` reports github's
+ * uppercase states; only the *known* ones are mapped. `OPEN` → still-blocking;
+ * `CLOSED` and `MERGED` (a ref that points at a PR) → resolved, so both read as
+ * `closed` (the resolver's unblock branch). Any *other* value — a future or
+ * unexpected gh state — yields `null` (a *stale* blocker), never a default
+ * unblock: we never treat an unrecognized state as "resolved".
+ */
+export function mapGhIssueState(state: string, title: string): IssueState | null {
+  switch (state) {
+    case "OPEN":
+      return { state: "open", title };
+    case "CLOSED":
+    case "MERGED":
+      return { state: "closed", title };
+    default:
+      return null;
+  }
+}
+
 export function refToIssueNumber(ref: string): number {
   if (!/^\d+$/.test(ref.trim())) {
     throw new Error(
@@ -339,6 +380,25 @@ export const ghGitHub: EpicGateway = {
       body: r.body ?? "",
       labels: (r.labels ?? []).map((l) => l.name),
     }));
+  },
+
+  async getIssueState(repo, ref) {
+    const issueNumber = refToIssueNumber(ref);
+    const result = await run([
+      "gh",
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "state,title",
+    ]);
+    // A non-zero exit is the unresolvable case (404 / deleted / no access) — the
+    // resolver treats `null` as a *stale* blocker, so don't throw here.
+    if (result.exitCode !== 0) return null;
+    const parsed = JSON.parse(result.stdout) as { state: string; title: string };
+    return mapGhIssueState(parsed.state, parsed.title);
   },
 
   async addLabel(repo, ref, label) {

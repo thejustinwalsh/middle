@@ -9,6 +9,14 @@ export type StartOptions = {
   /** Override the dispatcher entrypoint (defaults to the CLI-owned `daemon-entry.ts`). */
   entrypoint?: string;
   /**
+   * Run the dispatcher **in the foreground** (do not daemonize): no fork, no pid
+   * file — a service manager (systemd/launchd) owns the lifecycle and the process
+   * runs until SIGTERM. The call blocks until the daemon shuts down.
+   */
+  foreground?: boolean;
+  /** Seam: the in-process daemon runner used by `--foreground`. Injectable for tests. */
+  runForeground?: () => Promise<void>;
+  /**
    * Open the dashboard in a `webview-bun` window once the dispatcher is up. The
    * flag forces it on; absent, the `[dashboard] windowed` config default decides.
    */
@@ -47,6 +55,28 @@ function resolveDispatcherEntrypoint(): string {
 }
 
 /**
+ * Pid-file preflight shared by the background (`runStart`) and foreground
+ * (`runForegroundDaemon`) starts: refuse to start a second dispatcher when the
+ * recorded process is still alive, and clear a stale pid file (the recorded
+ * process is gone) so a fresh start can proceed. Returns `true` when it's safe
+ * to start, `false` when a live dispatcher already owns the lifecycle. Foreground
+ * starts honor this too — `--foreground` writes no pid file, but a live
+ * background dispatcher already holds the port, and a stale file should be
+ * cleaned rather than silently ignored.
+ */
+function pidFilePreflight(pidFile: string): boolean {
+  if (existsSync(pidFile)) {
+    const existing = Number(readFileSync(pidFile, "utf8").trim());
+    if (Number.isInteger(existing) && isAlive(existing)) {
+      console.error(`mm start: dispatcher already running (pid ${existing})`);
+      return false;
+    }
+    rmSync(pidFile, { force: true }); // stale — the recorded process is gone
+  }
+  return true;
+}
+
+/**
  * `mm start` — spawn the long-running dispatcher process (hook server + bunqueue
  * engine), detached, and record its pid for `mm stop`. A stale pid file (the
  * recorded process is gone) is cleared and a fresh dispatcher is started.
@@ -55,14 +85,7 @@ function resolveDispatcherEntrypoint(): string {
 export function runStart(opts: StartOptions = {}): number {
   const pidFile = opts.pidFile ?? defaultPidFile();
 
-  if (existsSync(pidFile)) {
-    const existing = Number(readFileSync(pidFile, "utf8").trim());
-    if (Number.isInteger(existing) && isAlive(existing)) {
-      console.error(`mm start: dispatcher already running (pid ${existing})`);
-      return 1;
-    }
-    rmSync(pidFile, { force: true }); // stale — the recorded process is gone
-  }
+  if (!pidFilePreflight(pidFile)) return 1;
 
   const entrypoint = opts.entrypoint ?? resolveDispatcherEntrypoint();
   const proc = Bun.spawn(["bun", entrypoint], {
@@ -80,6 +103,37 @@ export function runStart(opts: StartOptions = {}): number {
   proc.unref();
 
   console.log(`mm start: dispatcher started (pid ${proc.pid})`);
+  return 0;
+}
+
+/**
+ * The default in-process daemon runner for `--foreground`: the same composition
+ * root `mm start` spawns (dispatcher + dashboard in one process), but run in *this*
+ * process so a service manager owns the lifecycle. Dynamically imported so the
+ * background path never loads the dashboard/daemon modules. `runDaemon` installs
+ * SIGTERM/SIGINT handlers that drain and `process.exit(0)`, so this never returns.
+ */
+async function defaultRunForeground(): Promise<void> {
+  const { dashboardHostExtras } = await import("../daemon-entry.ts");
+  const { runDaemon } = await import("@middle/dispatcher");
+  await runDaemon({ hostExtras: dashboardHostExtras });
+}
+
+/**
+ * `mm start --foreground` — run the dispatcher in-process without writing a pid
+ * file. A service manager (systemd `Restart=on-failure`, launchd `KeepAlive`)
+ * owns start/stop/restart, so middle must not fork or leave a pid file the manager
+ * doesn't know about. Blocks until the daemon shuts down (SIGTERM → exit 0).
+ */
+async function runForegroundDaemon(opts: StartOptions): Promise<number> {
+  // Same preflight as the background path: a live background dispatcher already
+  // owns the lifecycle (don't start a second one), and a stale pid file is
+  // cleared. Foreground writes no pid file of its own afterward.
+  const pidFile = opts.pidFile ?? defaultPidFile();
+  if (!pidFilePreflight(pidFile)) return 1;
+
+  console.log("mm start: running the dispatcher in the foreground (no pid file; SIGTERM to stop)");
+  await (opts.runForeground ?? defaultRunForeground)();
   return 0;
 }
 
@@ -140,6 +194,10 @@ function resolveWindowConfig(configPath?: string): { port: number; windowed: boo
  * (the daemon is already up regardless). Returns the start exit code.
  */
 export async function runStartCommand(opts: StartOptions = {}): Promise<number> {
+  // Foreground: no fork, no pid file, no window step — the service manager owns
+  // the lifecycle and the call blocks until the daemon exits on SIGTERM.
+  if (opts.foreground) return runForegroundDaemon(opts);
+
   const code = runStart(opts);
   if (code !== 0) return code;
 

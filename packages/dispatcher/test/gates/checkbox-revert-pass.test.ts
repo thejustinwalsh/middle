@@ -94,6 +94,7 @@ function fakeGithub(opts: { body: string; headSha?: string; epicRef?: string }) 
     getPullRequest: unimplemented("getPullRequest"),
     getCommentAuthor: unimplemented("getCommentAuthor"),
     getIssueLabels: unimplemented("getIssueLabels"),
+    getIssueState: unimplemented("getIssueState"),
     listOpenEpics: unimplemented("listOpenEpics"),
     listOpenIssues: unimplemented("listOpenIssues"),
     addLabel: unimplemented("addLabel"),

@@ -1,17 +1,75 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterConfig, MiddleConfig } from "@middle/core";
 import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
 import { setEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
+import { EPIC_DOC_MARKER } from "@middle/dispatcher/src/epic-store/epic-file/markers.ts";
+import { parseEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/parser.ts";
+import { renderEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/renderer.ts";
 import type { RetentionStatus } from "@middle/dispatcher/src/retention.ts";
+import { renderEmptyStateBody } from "../src/bootstrap/file-store.ts";
 import {
   checkAdapterBinaries,
+  checkPlaywrightBrowser,
+  defaultPlaywrightBrowsersDir,
   formatAgo,
   runDoctor,
+  runVocabularyCheck,
   summarizeRetention,
 } from "../src/commands/doctor.ts";
+
+/** Build a vocabulary.md body whose `### `<label>`` sections are exactly `labels`. */
+function vocabularyDocWith(labels: readonly string[]): string {
+  return `# Label vocabulary\n\n${labels.map((l) => `### \`${l}\`\n\n- **Means:** ${l}.\n`).join("\n")}`;
+}
+
+/** The full canonical vocabulary the real doc documents — kept in step with `REQUIRED_VOCABULARY`. */
+const ALL_LABELS = [
+  "epic",
+  "approved",
+  "needs-design",
+  "blocked",
+  "wontfix",
+  "agent:claude",
+  "agent:codex",
+  "agent-queue:state",
+  "agent-queue:eligible",
+  "dogfood",
+  "bootstrap",
+  "housekeeping",
+  "phase:N",
+];
+
+/** Repo root, resolved from this test file (packages/cli/test → three up). */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
+
+/**
+ * Pull the first fenced code block out of `markdown` whose body opens with
+ * `firstLine`. Used to lift the worked-example Epic file straight from
+ * `docs/operator.md` so the doctor fixture IS the documented example — edit the
+ * doc into something that no longer parses and this test fails.
+ */
+function fencedBlockStartingWith(markdown: string, firstLine: string): string | null {
+  const lines = markdown.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i]!.startsWith("```")) {
+      const body: string[] = [];
+      i += 1;
+      while (i < lines.length && !lines[i]!.startsWith("```")) {
+        body.push(lines[i]!);
+        i += 1;
+      }
+      i += 1; // skip the closing fence
+      if (body[0] === firstLine) return `${body.join("\n")}\n`;
+      continue;
+    }
+    i += 1;
+  }
+  return null;
+}
 
 // runDoctor shells out to bun/tmux/claude/git/gh — these all exist on the
 // machine middle is built for, so the happy path is verifiable. We don't fake
@@ -128,6 +186,99 @@ describe("runDoctor — mode-aware Epic-store check", () => {
     expect(output).toContain("state-issue");
     expect(output).not.toContain("epics_dir");
   });
+
+  // Integration (sub-issue #216): `mm doctor` against a file-mode repo laid out
+  // exactly as docs/operator.md's "Enable file mode on an existing repo"
+  // walkthrough specifies — the documented `[epic_store]` paths, a `state_file`,
+  // and the doc's own worked-example Epic file as the fixture — boots the CLI,
+  // runs the three file-mode checks (epics_dir, state_file, Epic-file round-trip),
+  // and exits 0. The Epic body is lifted from the doc itself, so an edit that
+  // breaks the example (or drops the section) fails here.
+  test("doctor honors the documented file-mode config", async () => {
+    const operatorDoc = readFileSync(join(REPO_ROOT, "docs", "operator.md"), "utf8");
+    const epicBody = fencedBlockStartingWith(operatorDoc, EPIC_DOC_MARKER);
+    expect(epicBody, "operator.md must carry a worked-example Epic file").not.toBeNull();
+    // The documented example must itself be a valid, round-tripping Epic file.
+    expect(renderEpicFile(parseEpicFile(epicBody!))).toBe(epicBody!);
+    const slug = parseEpicFile(epicBody!).meta.slug;
+
+    // Lay out the repo exactly as the walkthrough describes.
+    mkdirSync(join(tmp, "planning", "epics"), { recursive: true });
+    mkdirSync(join(tmp, ".middle"), { recursive: true });
+    writeFileSync(join(tmp, "planning", "epics", `${slug}.md`), epicBody!);
+    writeFileSync(join(tmp, ".middle", "state.md"), renderEmptyStateBody(new Date()));
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = await runDoctor({ repoPath: tmp, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join("\n");
+
+    expect(output).toContain("✓ epics_dir   planning/epics exists");
+    expect(output).toContain("✓ state_file  .middle/state.md present");
+    expect(output).toContain("✓ epic-files  1 Epic file(s) round-trip");
+    expect(output).not.toContain("state-issue");
+    expect(code).toBe(0);
+  });
+
+  // A directory (or unreadable entry) named `*.md` under epics_dir must NOT crash
+  // the whole `mm doctor` run — listEpicSlugs matches on name only, so the read
+  // can EISDIR. Doctor surfaces it as an epic-files fail, never an uncaught throw.
+  test("file mode + a directory named *.md under epics_dir → epic-files fail, no crash", async () => {
+    mkdirSync(join(tmp, "planning", "epics", "subdir.md"), { recursive: true });
+    mkdirSync(join(tmp, ".middle"), { recursive: true });
+    writeFileSync(join(tmp, ".middle", "state.md"), renderEmptyStateBody(new Date()));
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      // Must resolve (not throw) — the read is inside the try in checkEpicFilesRoundTrip.
+      code = await runDoctor({ repoPath: tmp, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("✗ epic-files");
+    expect(output).toContain("subdir.md unreadable/malformed");
+    expect(code).toBe(1);
+  });
+
+  // A malformed Epic file under epics_dir fails the round-trip check (and the run).
+  test("file mode + malformed Epic file → epic-files fail", async () => {
+    mkdirSync(join(tmp, "planning", "epics"), { recursive: true });
+    mkdirSync(join(tmp, ".middle"), { recursive: true });
+    // Opens with the Epic doc marker (so it's treated as an Epic) but is missing
+    // the required H1/meta — the parser throws, doctor surfaces it by filename.
+    writeFileSync(join(tmp, "planning", "epics", "broken.md"), `${EPIC_DOC_MARKER}\nnot an epic\n`);
+    writeFileSync(join(tmp, ".middle", "state.md"), renderEmptyStateBody(new Date()));
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = await runDoctor({ repoPath: tmp, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("✗ epic-files");
+    expect(output).toContain("broken.md unreadable/malformed");
+    expect(code).toBe(1);
+  });
 });
 
 describe("checkAdapterBinaries", () => {
@@ -238,5 +389,156 @@ describe("summarizeRetention", () => {
     );
     expect(r.status).toBe("warn");
     expect(r.detail).toContain("retention FAILED 1m ago");
+  });
+});
+
+describe("runVocabularyCheck — docs↔code label drift guard (#217)", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "mm-vocab-"));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const runOn = (doc: string): { code: number; output: string } => {
+    const path = join(tmp, "vocabulary.md");
+    writeFileSync(path, doc);
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = runVocabularyCheck({ vocabularyDocPath: path });
+    } finally {
+      spy.mockRestore();
+    }
+    return { code, output: lines.join("\n") };
+  };
+
+  test("complete doc → exit 0, lists every documented label", () => {
+    const { code, output } = runOn(vocabularyDocWith(ALL_LABELS));
+    expect(code).toBe(0);
+    expect(output).toContain("docs and code agree");
+    for (const l of ALL_LABELS) expect(output).toContain(l);
+  });
+
+  test("missing a code-keyed label → exit 1, names the code disagreement", () => {
+    // Drop `needs-design` (the NEEDS_DESIGN_LABEL constant the audit/recommender key on).
+    const { code, output } = runOn(
+      vocabularyDocWith(ALL_LABELS.filter((l) => l !== "needs-design")),
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("code keys on `needs-design`");
+  });
+
+  test("missing a code-keyed internals label → exit 1", () => {
+    // Drop `agent-queue:state` (the STATE_LABEL constant).
+    const { code, output } = runOn(
+      vocabularyDocWith(ALL_LABELS.filter((l) => l !== "agent-queue:state")),
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("code keys on `agent-queue:state`");
+  });
+
+  test("missing a required-but-not-code-keyed label → exit 1 (deleted section caught)", () => {
+    // `phase:N` is grouping metadata code doesn't key on — completeness still requires it.
+    const { code, output } = runOn(vocabularyDocWith(ALL_LABELS.filter((l) => l !== "phase:N")));
+    expect(code).toBe(1);
+    expect(output).toContain("missing required label `phase:N`");
+  });
+
+  test("a `### `label`` heading inside a fenced code block is not counted as documented", () => {
+    // The complete vocabulary, plus a fenced example that *shows* a heading for a
+    // label that isn't really documented. The fence must be ignored, so the check
+    // still passes (the example doesn't inflate the documented set).
+    const doc = `${vocabularyDocWith(ALL_LABELS)}\n## Example\n\n\`\`\`md\n### \`not-a-real-label\`\n\`\`\`\n`;
+    const { code, output } = runOn(doc);
+    expect(code).toBe(0);
+    expect(output).not.toContain("not-a-real-label");
+  });
+
+  test("missing doc file → exit 1", () => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = runVocabularyCheck({ vocabularyDocPath: join(tmp, "nope.md") });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("not found");
+  });
+
+  // Integration: boot the real `mm` CLI against the real docs/vocabulary.md and
+  // require agreement. This is the wired path the operator runs — `mm doctor
+  // --vocabulary-check` — and it must exit 0 in a healthy tree, proving the
+  // shipped doc and the shipped label constants agree right now.
+  test("`mm doctor --vocabulary-check` boots the CLI and exits 0 against the shipped doc", async () => {
+    const proc = Bun.spawn(
+      [
+        "bun",
+        join(REPO_ROOT, "packages", "cli", "src", "index.ts"),
+        "doctor",
+        "--vocabulary-check",
+      ],
+      { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    expect(stdout).toContain("middle — vocabulary check");
+    expect(stdout).toContain("docs and code agree");
+    expect(code).toBe(0);
+  });
+});
+
+describe("checkPlaywrightBrowser", () => {
+  const saved = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mm-pw-"));
+    process.env.PLAYWRIGHT_BROWSERS_PATH = dir;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a chromium install in the browsers cache → pass", () => {
+    mkdirSync(join(dir, "chromium_headless_shell-1223"));
+    const check = checkPlaywrightBrowser();
+    expect(check.status).toBe("pass");
+  });
+
+  test("no chromium → warn, documents the install command", () => {
+    const check = checkPlaywrightBrowser();
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("bunx playwright install chromium");
+  });
+});
+
+describe("defaultPlaywrightBrowsersDir — OS-specific Playwright cache fallback", () => {
+  const home = join("/home", "tester");
+  test("linux → ~/.cache/ms-playwright", () => {
+    expect(defaultPlaywrightBrowsersDir("linux", home)).toBe(join(home, ".cache", "ms-playwright"));
+  });
+  test("macOS → ~/Library/Caches/ms-playwright", () => {
+    expect(defaultPlaywrightBrowsersDir("darwin", home)).toBe(
+      join(home, "Library", "Caches", "ms-playwright"),
+    );
+  });
+  test("windows → ~/AppData/Local/ms-playwright", () => {
+    expect(defaultPlaywrightBrowsersDir("win32", home)).toBe(
+      join(home, "AppData", "Local", "ms-playwright"),
+    );
+  });
+  test("unknown platforms fall back to the linux layout (no false warning)", () => {
+    expect(defaultPlaywrightBrowsersDir("freebsd" as NodeJS.Platform, home)).toBe(
+      join(home, ".cache", "ms-playwright"),
+    );
   });
 });

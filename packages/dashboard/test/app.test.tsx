@@ -4,12 +4,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ApiError, api } from "../src/app/api-client.ts";
 import { App, applyWorkflowFrame } from "../src/app/App.tsx";
 import { GlobalBanner } from "../src/app/components/GlobalBanner.tsx";
-import { Inspector } from "../src/app/components/Inspector.tsx";
 import { NeedsYou } from "../src/app/components/NeedsYou.tsx";
 import { RepoRow } from "../src/app/components/Repos.tsx";
 import { createDbDeps } from "../src/db-deps.ts";
 import { createDashboardServer } from "../src/server.ts";
-import type { RepoDetail, RunnerPanel } from "../src/wire.ts";
 import { makeConfig, makeDb, seedWorkflow } from "./helpers.ts";
 
 // The React views render against the wire shapes (renderToStaticMarkup), and the
@@ -24,6 +22,14 @@ test("App nav includes a queue tab", () => {
 test("App nav includes an activity tab", () => {
   const html = renderToStaticMarkup(<App />);
   expect(html).toContain(">activity<");
+});
+
+test("App nav is a shadcn Tabs primitive (#220): tabs-list + a trigger per view", () => {
+  const html = renderToStaticMarkup(<App />);
+  expect(html).toContain('data-slot="tabs-list"');
+  // One shadcn TabsTrigger per view, each a real ARIA tab.
+  expect(html.match(/data-slot="tabs-trigger"/g)?.length).toBe(5);
+  expect(html).toContain('role="tab"');
 });
 
 test("api.runs reads runs from a live server", async () => {
@@ -137,83 +143,37 @@ describe("dashboard views (static render)", () => {
     expect(empty).toContain("Nothing needs you");
   });
 
-  test("RepoRow expansion shows slot pills, NEXT UP, IN FLIGHT, and an accurate attach command", () => {
-    const detail: RepoDetail = {
+  test("RepoRow header (sync) shows slot pills as Badges + a Collapsible trigger", () => {
+    const summary = {
       repo: "o/alpha",
       adapters: [{ adapter: "claude", used: 2, max: 2 }],
       total: { used: 2, max: 3 },
       auto: true,
-      nextUp: [{ rank: 1, epic: 247, adapter: "claude", subIssues: 4, reason: "top of ready" }],
-      inFlight: [
-        {
-          session: "mm-alpha-247",
-          workflowId: "w1",
-          epic: 247,
-          epicRef: null,
-          adapter: "claude",
-          progress: "sub-issue 2",
-          state: "running",
-          controlledBy: "human",
-          lastHeartbeat: Date.now() - 14_000,
-          attachCommands: {
-            watch: "tmux attach -r -t 'mm-alpha-247'",
-            control: "tmux attach -t 'mm-alpha-247'",
-          },
-        },
-      ],
     };
     const html = renderToStaticMarkup(
-      <RepoRow summary={detail} detail={detail} expanded onToggle={() => {}} />,
+      <RepoRow
+        summary={summary}
+        expanded={false}
+        loadDetail={async () => {
+          throw new Error("not called");
+        }}
+        onToggle={() => {}}
+      />,
     );
     expect(html).toContain("claude 2/2");
     expect(html).toContain("total 2/3");
     expect(html).toContain("auto ✓");
-    expect(html).toContain("#247"); // NEXT UP
-    expect(html).toContain("tmux attach -r -t &#x27;mm-alpha-247&#x27;"); // copy command (escaped quotes)
-    expect(html).toContain("human"); // controlled_by badge
+    // #220 shadcn primitives: slot pills are Badges, the header is a Collapsible
+    // trigger (a Button via asChild — Radix's `data-slot="collapsible-trigger"`
+    // wins over the Button's own slot on the merged element).
+    expect(html).toContain('data-slot="badge"');
+    expect(html).toContain('data-slot="collapsible-trigger"');
   });
 
-  test("Inspector renders the per-runner panel, links, affordances, and timeline", () => {
-    const panel: RunnerPanel = {
-      session: "mm-alpha-247",
-      workflowId: "w1",
-      repo: "o/alpha",
-      epic: 247,
-      epicRef: null,
-      adapter: "claude",
-      state: "running",
-      controlledBy: "middle",
-      alive: true,
-      lastHeartbeat: Date.now() - 5000,
-      contextTokens: null,
-      transcriptPath: "/wt/alpha/transcript.jsonl",
-      worktreePath: "/wt/alpha",
-      prNumber: 251,
-      prBranch: "feat/oauth",
-      currentSubIssue: 2,
-      attachCommands: {
-        watch: "tmux attach -r -t 'mm-alpha-247'",
-        control: "tmux attach -t 'mm-alpha-247'",
-      },
-    };
-    const html = renderToStaticMarkup(
-      <Inspector
-        panel={panel}
-        events={[
-          { ts: Date.now() - 10_000, type: "session.started", payload: null },
-          { ts: Date.now() - 2000, type: "gate.passed", payload: null },
-        ]}
-        transcriptUrl="/api/sessions/mm-alpha-247/transcript"
-      />,
-    );
-    expect(html).toContain("controlled by");
-    expect(html).toContain("● live");
-    expect(html).toContain("#251"); // PR link
-    expect(html).toContain("/wt/alpha"); // worktree
-    expect(html).toContain("tmux attach -t &#x27;mm-alpha-247&#x27;"); // control copy command
-    expect(html).toContain("gate.passed"); // verification evidence + timeline
-    expect(html).toContain("session.started");
-  });
+  // The expanded-row content (NEXT UP / IN FLIGHT) + its #223 loading/error/retry
+  // states are async (RepoExpansion self-fetches), so they're tested in DOM:
+  // `repos.test.tsx` (happy path) and `error-recovery.test.tsx` (error → retry).
+  // Inspector render test moved to `inspector.test.tsx` (DOM Sheet).
 });
 
 describe("api-client against a live server", () => {
@@ -256,15 +216,21 @@ describe("api-client against a live server", () => {
     cleanup();
   });
 
-  test("api.repos() + RepoRow render the live repo", async () => {
+  test("api.repos() + RepoRow render the live repo header", async () => {
     const repos = await api.repos();
     expect(repos.map((r) => r.repo)).toContain("o/alpha");
-    const detail = await api.repo("o/alpha");
+    // The expansion fetches via loadDetail; here we only assert the sync header
+    // (the async NEXT UP / IN FLIGHT content is covered in repos.test.tsx).
+    const summary = repos.find((r) => r.repo === "o/alpha")!;
     const html = renderToStaticMarkup(
-      <RepoRow summary={detail} detail={detail} expanded onToggle={() => {}} />,
+      <RepoRow
+        summary={summary}
+        expanded={false}
+        loadDetail={(r) => api.repo(r)}
+        onToggle={() => {}}
+      />,
     );
     expect(html).toContain("o/alpha");
-    expect(html).toContain("tmux attach -r -t &#x27;mm-alpha-247&#x27;");
   });
 
   test("api.attach(control) flips controlled_by; api.release reverts it", async () => {

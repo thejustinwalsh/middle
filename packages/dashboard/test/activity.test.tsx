@@ -46,8 +46,10 @@ describe("Activity", () => {
   });
 
   test("state pill tone: completed is ok, compensated/failed are bad", () => {
-    expect(html([run({ state: "completed", active: false })])).toContain('class="run-state ok"');
-    expect(html([run({ state: "compensated", active: false })])).toContain('class="run-state bad"');
-    expect(html([run({ state: "running", active: true })])).toContain('class="run-state active"');
+    // The state pill is now a shadcn Badge; the `run-state <tone>` hook still
+    // rides on its className (color comes from the Badge variant).
+    expect(html([run({ state: "completed", active: false })])).toContain("run-state ok");
+    expect(html([run({ state: "compensated", active: false })])).toContain("run-state bad");
+    expect(html([run({ state: "running", active: true })])).toContain("run-state active");
   });
 });

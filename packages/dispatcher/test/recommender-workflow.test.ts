@@ -28,6 +28,22 @@ import {
   sessionNameFor,
 } from "../src/workflows/recommender.ts";
 import { createWorktree, destroyWorktree, listWorktrees } from "../src/worktree.ts";
+import type { EpicGateway } from "../src/github.ts";
+
+/**
+ * A no-op `EpicGateway` for the resolve-blockers step (#225). The default bodies
+ * have an empty `Blocked` section, so the step reads the body, finds nothing
+ * resolvable, and never actually invokes the gateway — but the dep is required.
+ * Cross-repo resolution is exercised end-to-end in `multi-repo-blockers.test.ts`.
+ */
+const stubEpicGateway = {
+  async listOpenEpics() {
+    return [];
+  },
+  async getIssueState() {
+    return null;
+  },
+} as unknown as EpicGateway;
 
 let scratch: string;
 let repoPath: string;
@@ -185,16 +201,15 @@ function makeHarness(opts?: {
     worktreeRoot,
     dispatcherUrl: "http://127.0.0.1:8822",
     schemaPath: "/abs/schemas/state-issue.v1.md",
+    epicGateway: stubEpicGateway,
     stateIssue: {
       async readBody() {
-        // Three reads now: build-prompt (prior) → reapply (agent output) → verify.
-        // Once the dispatcher reapply has written, later reads see that body.
+        // Four reads now: build-prompt (prior) → reapply (agent output) →
+        // resolve-blockers → verify. Once a step has written, later reads see it.
         const label =
-          readCount === 0
-            ? "build-prompt:read-prior"
-            : readCount === 1
-              ? "reapply:read"
-              : "verify:read";
+          ["build-prompt:read-prior", "reapply:read", "resolve-blockers:read", "verify:read"][
+            readCount
+          ] ?? "verify:read";
         trace.push(label);
         const body = written ?? bodies[Math.min(readCount, bodies.length - 1)]!;
         readCount += 1;
@@ -254,7 +269,7 @@ function stepDef(deps: RecommenderDeps, name: string) {
 }
 
 describe("recommender workflow — #43 shell: step order + dedicated slot", () => {
-  test("declares the seven spec steps in order", () => {
+  test("declares the eight spec steps in order", () => {
     const wf = createRecommenderWorkflow(makeHarness().deps);
     expect(wf.getStepNames()).toEqual([
       "check-rate-limit",
@@ -262,6 +277,7 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
       "build-prompt",
       "spawn-recommender-agent",
       "reapply-dispatcher-sections",
+      "resolve-blockers",
       "verify-state-issue-parses",
       "trigger-auto-dispatch",
       "cleanup-worktree",
@@ -283,6 +299,8 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
       "reapply:read",
       "gather",
       "reapply:write",
+      // resolve-blockers: read the reapplied body; no resolvable blockers → no write.
+      "resolve-blockers:read",
       "verify:read",
       "trigger",
       "cleanup",

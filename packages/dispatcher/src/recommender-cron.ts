@@ -26,6 +26,11 @@ export const RECOMMENDER_CRON_INTERVAL_MS = 60_000;
  * `loadRepoConfig` that reads each checkout's `.middle/config.toml`, and a
  * `runRecommender` that launches a run on an ephemeral engine; tests stub them.
  */
+/** Default cap on how many repos' recommender runs fire concurrently per pass (#227). */
+export const DEFAULT_MAX_CONCURRENT_REPOS = 4;
+/** Default per-repo run timeout inside a cron pass — a hung run is abandoned after this (#227). */
+export const DEFAULT_RUN_TIMEOUT_MS = 60_000;
+
 export type RecommenderCronDeps = {
   db: Database;
   /** Load a managed repo's merged config from its checkout, or null if unreadable. */
@@ -36,8 +41,69 @@ export type RecommenderCronDeps = {
    * the auto-dispatch trigger); tests stub it. A throw is isolated per repo.
    */
   runRecommender: (repo: ManagedRepo) => Promise<void>;
+  /**
+   * Max repos whose runs fire concurrently in one pass (#227). The daemon resolves
+   * this from the global config's `[recommender] max_concurrent_repos`. Bounds the
+   * fan-out so a many-repo daemon doesn't blow rate limits / memory. Default
+   * {@link DEFAULT_MAX_CONCURRENT_REPOS}; a non-positive / non-finite value falls
+   * back to that default.
+   */
+  maxConcurrentRepos?: number;
+  /**
+   * Hard timeout for a single repo's run (#227). A run exceeding this is abandoned
+   * (its stamp rolled back, marked failed) without blocking the others — the whole
+   * point of parallelizing: a hung `gh`/state-write on repo A no longer stalls
+   * repo B. Default {@link DEFAULT_RUN_TIMEOUT_MS}; a non-positive / non-finite
+   * value falls back to that default (a 0 would expire every run immediately).
+   */
+  runTimeoutMs?: number;
   now?: () => number;
 };
+
+/** A repo that passed the due-check, with the prior stamp to roll back to on failure. */
+type DueRepo = { managed: ManagedRepo; prev: number | null };
+
+/** A finite, strictly-positive number — the shape every injected timeout/concurrency
+ *  knob must have before it's trusted (rejects `undefined`, `NaN`, `0`, negatives). */
+function isPositiveNumber(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Run `task` with a hard timeout. Resolves to `"ok"` if it settles first, or
+ * `"timeout"` if the deadline wins (the underlying promise is then abandoned — it
+ * keeps running but no longer blocks the pass, which is the isolation #227 needs).
+ * A task that rejects propagates its rejection (caught per-repo by the caller).
+ */
+async function withTimeout(task: Promise<void>, ms: number): Promise<"ok" | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+  });
+  try {
+    return await Promise.race([task.then(() => "ok" as const), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Run `tasks` concurrently, at most `limit` in flight at once (a hand-rolled
+ * bounded pool — no `pLimit` dependency). Awaits all of them (a barrier); each
+ * task is self-isolating (the caller's task never rejects), so one slow/failed
+ * task can't starve or abort the rest.
+ */
+async function runBounded(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  const max = Math.max(1, limit);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < tasks.length) {
+      const i = next++;
+      await tasks[i]!();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(max, tasks.length) }, () => worker()));
+}
 
 /**
  * One due-check pass over the managed-repo registry. For each repo that is
@@ -45,8 +111,12 @@ export type RecommenderCronDeps = {
  * is older than its `interval_minutes`, **stamp `last_recommender_run` to now
  * BEFORE firing** (so an overlapping tick — or a slow run — can't double-dispatch
  * the same repo; the next tick's due-check sees the fresh stamp) and run the
- * recommender. Per-repo failures are isolated and retried next tick. Returns the
- * number of runs fired (for logging/tests).
+ * recommender.
+ *
+ * **Per-repo runs fire concurrently** (#227), bounded by `maxConcurrentRepos`,
+ * each under a `runTimeoutMs` hard timeout. A hang, timeout, or throw on one repo
+ * is isolated — its stamp is rolled back (so it retries next tick) and the other
+ * repos' runs complete unaffected. Returns the number of runs that succeeded.
  *
  * Gating is deliberate: `enabled` is the master switch for *periodic* running;
  * `auto_dispatch` is a separate, downstream gate (the recommender workflow only
@@ -55,7 +125,23 @@ export type RecommenderCronDeps = {
  */
 export async function runRecommenderCronPass(deps: RecommenderCronDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
-  let fired = 0;
+  // A non-positive (or NaN) injected `runTimeoutMs` would expire every run
+  // immediately — every stamp rolls back and no repo can ever complete — so it
+  // falls back to the default rather than dead-locking the cron. `maxConcurrentRepos`
+  // gets the same positive-number guard (runBounded also clamps with Math.max(1, …),
+  // but a NaN would slip that and zero out the worker pool). Mirrors the
+  // `intervalMs > 0` due-check guard below.
+  const timeoutMs = isPositiveNumber(deps.runTimeoutMs)
+    ? deps.runTimeoutMs
+    : DEFAULT_RUN_TIMEOUT_MS;
+  const limit = isPositiveNumber(deps.maxConcurrentRepos)
+    ? deps.maxConcurrentRepos
+    : DEFAULT_MAX_CONCURRENT_REPOS;
+
+  // Phase 1 — due-check + stamp, SYNCHRONOUSLY before any run fires. Stamping all
+  // due repos up front (no intervening await) preserves the double-dispatch guard:
+  // an overlapping tick sees every fresh stamp before this pass yields the loop.
+  const due: DueRepo[] = [];
   for (const managed of listManagedRepos(deps.db)) {
     if (isPaused(deps.db, managed.repo, now)) continue;
     const rec = deps.loadRepoConfig(managed.checkoutPath)?.recommender;
@@ -66,18 +152,34 @@ export async function runRecommenderCronPass(deps: RecommenderCronDeps): Promise
     if (!(intervalMs > 0)) continue;
     const prev = getLastRecommenderRun(deps.db, managed.repo);
     if (now - (prev ?? 0) < intervalMs) continue; // not due yet
-    // Stamp BEFORE firing so an overlapping tick can't double-dispatch — but a
-    // failed *launch* rolls the stamp back, so a failure retries next tick rather
-    // than going quiet for a full interval.
     markRecommenderRun(deps.db, managed.repo, now);
-    try {
-      await deps.runRecommender(managed);
-      fired++;
-    } catch (error) {
-      setLastRecommenderRun(deps.db, managed.repo, prev);
-      console.error(`[recommender-cron] ${managed.repo} run failed: ${(error as Error).message}`);
-    }
+    due.push({ managed, prev });
   }
+
+  // Phase 2 — fire the due repos concurrently (bounded), each under a hard
+  // timeout. A failed/timed-out run rolls its stamp back so it retries next tick
+  // rather than going quiet for a full interval; the rollback + log is that
+  // repo's failure record, and it never touches another repo's run.
+  let fired = 0;
+  await runBounded(
+    due.map(({ managed, prev }) => async () => {
+      try {
+        const outcome = await withTimeout(deps.runRecommender(managed), timeoutMs);
+        if (outcome === "timeout") {
+          setLastRecommenderRun(deps.db, managed.repo, prev);
+          console.error(
+            `[recommender-cron] ${managed.repo} run timed out after ${timeoutMs}ms — abandoned (retries next tick)`,
+          );
+          return;
+        }
+        fired++;
+      } catch (error) {
+        setLastRecommenderRun(deps.db, managed.repo, prev);
+        console.error(`[recommender-cron] ${managed.repo} run failed: ${(error as Error).message}`);
+      }
+    }),
+    limit,
+  );
   return fired;
 }
 

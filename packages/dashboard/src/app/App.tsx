@@ -13,7 +13,6 @@ import type {
   EpicCard,
   GlobalBanner as BannerData,
   NeedsYouItem,
-  RepoDetail,
   RepoSummary,
   RunnerPanel,
   RunSummary,
@@ -27,6 +26,23 @@ import {
   type ControlMetrics,
   type ControlWorkflowFrame,
 } from "./control-client.ts";
+import { Menu } from "lucide-react";
+import { Button } from "./components/ui/button.tsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./components/ui/select.tsx";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "./components/ui/sheet.tsx";
+import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Activity } from "./components/Activity.tsx";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
 import { GlobalBanner } from "./components/GlobalBanner.tsx";
@@ -39,6 +55,10 @@ import { Settings } from "./components/Settings.tsx";
 
 /** Poll cadence for the top-level read model until SSE replaces it (#57). */
 const POLL_MS = 4000;
+
+/** The top-nav views, in order. Drives both the desktop Tabs and the mobile menu. */
+const VIEWS = ["epics", "dashboard", "queue", "activity", "settings"] as const;
+type View = (typeof VIEWS)[number];
 
 /** Lifecycle states that drop a workflow from the live queue (mirrors the old status page). */
 const TERMINAL_QUEUE_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
@@ -55,24 +75,31 @@ export function applyWorkflowFrame(
   return TERMINAL_QUEUE_STATES.has(frame.state) ? without : [frame, ...without];
 }
 
+/**
+ * The dashboard SPA root. Owns all view state (the active tab, expanded repos,
+ * the open Inspector session, per-view data + errors) and wires the JSON API
+ * (`/api/*`, `/control/metrics`) to the views, refreshing on a poll tick and via
+ * the live SSE channels ({@link ChannelSubscriber}). Takes no props — it reads
+ * everything from the same-origin daemon. Rendered once by `main.tsx`.
+ */
 export function App() {
   const [banner, setBanner] = useState<BannerData | null>(null);
   const [repos, setRepos] = useState<RepoSummary[]>([]);
   const [needs, setNeeds] = useState<NeedsYouItem[]>([]);
-  const [details, setDetails] = useState<Record<string, RepoDetail | undefined>>({});
+  const [reloadSignals, setReloadSignals] = useState<Record<string, number>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
   );
-  const [view, setView] = useState<"epics" | "dashboard" | "queue" | "activity" | "settings">(
-    "epics",
-  );
+  const [view, setView] = useState<View>("epics");
+  const [navOpen, setNavOpen] = useState(false);
   const [epics, setEpics] = useState<EpicCard[]>([]);
   const [epicRepo, setEpicRepo] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsWire | null>(null);
   const [queueMetrics, setQueueMetrics] = useState<ControlMetrics | null>(null);
   const [queueLive, setQueueLive] = useState<ControlWorkflowFrame[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [runsLoaded, setRunsLoaded] = useState(false);
   const [error, setError] = useState<GuardError | null>(null);
 
   // The uniform async-error funnel for every fire-and-forget API call below —
@@ -102,13 +129,13 @@ export function App() {
     [guard],
   );
 
-  const refreshDetail = useCallback(
-    (repo: string) =>
-      guard(`detail:${repo}`, async () => {
-        const detail = await api.repo(repo);
-        setDetails((d) => ({ ...d, [repo]: detail }));
-      }),
-    [guard],
+  // The repo expansion fetches its own detail (`RepoExpansion` owns the loading /
+  // error / retry UI per #223); App only supplies the loader and bumps a per-repo
+  // signal to refresh an open panel on a poll tick or SSE event.
+  const loadDetail = useCallback((repo: string) => api.repo(repo), []);
+  const bumpReload = useCallback(
+    (repo: string) => setReloadSignals((s) => ({ ...s, [repo]: (s[repo] ?? 0) + 1 })),
+    [],
   );
 
   const pauseRepo = useCallback(
@@ -145,26 +172,26 @@ export function App() {
     return () => clearInterval(id);
   }, [refreshTop]);
 
-  // Keep every expanded repo's detail fresh on each poll tick.
+  // Refresh every OPEN repo expansion on each poll tick: `repos` is replaced by
+  // refreshTop every POLL_MS, so reacting to it bumps each expanded repo's reload
+  // signal. Reacting to `repos` only (not `expanded`) avoids a double-load when a
+  // repo is first opened — RepoExpansion already auto-loads on mount.
   useEffect(() => {
-    for (const repo of expanded) void refreshDetail(repo);
-  }, [expanded, repos, refreshDetail]);
+    for (const repo of expanded) bumpReload(repo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repos]);
 
-  const toggleRepo = useCallback(
-    (repo: string) => {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(repo)) {
-          next.delete(repo);
-        } else {
-          next.add(repo);
-          void refreshDetail(repo);
-        }
-        return next;
-      });
-    },
-    [refreshDetail],
-  );
+  const toggleRepo = useCallback((repo: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo)) {
+        next.delete(repo);
+      } else {
+        next.add(repo);
+      }
+      return next;
+    });
+  }, []);
 
   // Raw inspector refresh: fetch the panel + events and update state, letting
   // errors propagate. `openInspector` wraps it in a guard for the unguarded
@@ -221,17 +248,30 @@ export function App() {
     return () => clearInterval(id);
   }, [view, refreshSettings]);
 
-  // Fetch the queue metrics snapshot once when the Queue tab is opened. Routed
-  // through `guard` like every other fetch so a backend failure surfaces on the
-  // error bar (and clears on the next success) instead of silently blanking the
-  // tab — a hidden empty state would mask a real /control/metrics outage.
+  // Fetch the queue metrics snapshot. Routed through `guard` so a backend failure
+  // is keyed to the "queue" source — surfaced as an inline error panel in the
+  // Queue view (with Retry), not a silent blank tab (#223).
+  const refetchQueue = useCallback(
+    () => guard("queue", async () => setQueueMetrics(await fetchControlMetrics())),
+    [guard],
+  );
   useEffect(() => {
+    // Reset the incremental live frames on every view change. queueLive only
+    // accumulates while the `/control/events` subscription is mounted (view ===
+    // "queue"); without this, frames left over from a previous Queue visit would
+    // linger — and re-merge with new frames — showing workflows that may have
+    // since transitioned away while we were unsubscribed.
+    setQueueLive([]);
     if (view !== "queue") return;
-    void guard("queue", async () => setQueueMetrics(await fetchControlMetrics()));
-  }, [view, guard]);
+    void refetchQueue();
+  }, [view, refetchQueue]);
 
   const refreshRuns = useCallback(
-    () => guard("activity", async () => setRuns(await api.runs())),
+    () =>
+      guard("activity", async () => {
+        setRuns(await api.runs());
+        setRunsLoaded(true);
+      }),
     [guard],
   );
 
@@ -304,8 +344,8 @@ export function App() {
           key={repo}
           url={`/events/repos/${encodeURIComponent(repo)}`}
           handlers={{
-            repo: () => void refreshDetail(repo),
-            workflow: () => void refreshDetail(repo),
+            repo: () => bumpReload(repo),
+            workflow: () => bumpReload(repo),
           }}
         />
       ))}
@@ -335,72 +375,78 @@ export function App() {
         handlers={{ workflow: () => void refreshRuns() }}
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
-      {error ? <div className="error-bar">API error: {error.message}</div> : null}
-      <nav className="view-nav">
-        <button
-          type="button"
-          className={view === "epics" ? "active" : ""}
-          onClick={() => setView("epics")}
-        >
-          epics
-        </button>
-        <button
-          type="button"
-          className={view === "dashboard" ? "active" : ""}
-          onClick={() => setView("dashboard")}
-        >
-          dashboard
-        </button>
-        <button
-          type="button"
-          className={view === "queue" ? "active" : ""}
-          onClick={() => setView("queue")}
-        >
-          queue
-        </button>
-        <button
-          type="button"
-          className={view === "activity" ? "active" : ""}
-          onClick={() => setView("activity")}
-        >
-          activity
-        </button>
-        <button
-          type="button"
-          className={view === "settings" ? "active" : ""}
-          onClick={() => setView("settings")}
-        >
-          settings
-        </button>
-      </nav>
+      {/* The global bar covers sources without their own inline panel; queue /
+          activity surface their failure inline within the view (#223). */}
+      {error && error.source !== "queue" && error.source !== "activity" ? (
+        <div className="error-bar">API error: {error.message}</div>
+      ) : null}
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+        {/* Mobile (<640px): the tabs collapse to a hamburger that opens a Sheet menu. */}
+        <Sheet open={navOpen} onOpenChange={setNavOpen}>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon" aria-label="menu" className="sm:hidden">
+              <Menu />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" aria-describedby={undefined} className="w-64">
+            <SheetHeader>
+              <SheetTitle>Views</SheetTitle>
+            </SheetHeader>
+            <nav className="flex flex-col gap-1">
+              {VIEWS.map((v) => (
+                <Button
+                  key={v}
+                  variant={view === v ? "secondary" : "ghost"}
+                  className="justify-start"
+                  onClick={() => {
+                    setView(v);
+                    setNavOpen(false);
+                  }}
+                >
+                  {v}
+                </Button>
+              ))}
+            </nav>
+          </SheetContent>
+        </Sheet>
+        {/* Desktop (≥640px): the shadcn Tabs strip. */}
+        <Tabs value={view} onValueChange={(v) => setView(v as View)} className="hidden sm:block">
+          <TabsList aria-label="views">
+            {VIEWS.map((v) => (
+              <TabsTrigger key={v} value={v}>
+                {v}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
       {view === "epics" ? (
         <>
-          <div className="epics-toolbar">
+          <div className="epics-toolbar flex items-center gap-2 px-4 pt-4">
             {repos.length > 1 ? (
-              <select
-                className="epic-repo-filter"
-                aria-label="repo"
+              <Select
                 value={epicRepo ?? ""}
-                onChange={(e) => {
-                  setEpicRepo(e.target.value);
+                onValueChange={(v) => {
+                  setEpicRepo(v);
                   setEpics([]);
                 }}
               >
-                {repos.map((r) => (
-                  <option key={r.repo} value={r.repo}>
-                    {r.repo}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger aria-label="repo" className="w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {repos.map((r) => (
+                    <SelectItem key={r.repo} value={r.repo}>
+                      {r.repo}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : null}
             {epicRepo ? (
-              <button
-                type="button"
-                className="epics-refresh"
-                onClick={() => forceRefreshEpics(epicRepo)}
-              >
+              <Button variant="outline" size="sm" onClick={() => forceRefreshEpics(epicRepo)}>
                 refresh
-              </button>
+              </Button>
             ) : null}
           </div>
           <Epics
@@ -426,23 +472,34 @@ export function App() {
           )}
         </main>
       ) : view === "queue" ? (
-        <Queue metrics={queueMetrics} live={queueLive} />
+        <Queue
+          metrics={queueMetrics}
+          live={queueLive}
+          error={error?.source === "queue" ? error.message : undefined}
+          onRetry={refetchQueue}
+        />
       ) : view === "activity" ? (
-        <Activity runs={runs} onOpenInspector={openInspector} />
+        <Activity
+          runs={runs}
+          loaded={runsLoaded}
+          error={error?.source === "activity" ? error.message : undefined}
+          onRetry={refreshRuns}
+          onOpenInspector={openInspector}
+        />
       ) : (
         <main>
           <NeedsYou
             items={needs}
             onOpen={(item) => {
-              const repo = item.repo;
-              setExpanded((prev) => new Set(prev).add(repo));
-              void refreshDetail(repo);
+              // Opening expands the repo; RepoExpansion auto-loads its detail on mount.
+              setExpanded((prev) => new Set(prev).add(item.repo));
             }}
           />
           <Repos
             repos={repos}
-            details={details}
             expanded={expanded}
+            reloadSignals={reloadSignals}
+            loadDetail={loadDetail}
             onToggle={toggleRepo}
             onWatch={watch}
             onTakeControl={takeControl}

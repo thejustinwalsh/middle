@@ -5,6 +5,11 @@
 node_modules/
 *.tsbuildinfo
 
+# Playwright (dashboard e2e) — run artifacts + downloaded browsers, never committed.
+test-results/
+playwright-report/
+.last-run.json
+
 # middle's per-repo bootstrap dir is local-only (mm init step 7). Skills under
 # .claude/skills/ stay committed; the operational .middle/ does not — except
 # verify.toml (the committed gate config the dispatcher reads) and policy.toml

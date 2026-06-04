@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { resolve } from "node:path";
 
 /**
  * Per-repo dispatcher state in the `repo_config` table. v1 uses only the
@@ -67,6 +68,59 @@ export function isPaused(db: Database, repo: string, now: number = Date.now()): 
 export type ManagedRepo = { repo: string; checkoutPath: string };
 
 /**
+ * Thrown when a checkout path is already registered to a *different* repo slug
+ * (#226). Two slugs sharing one checkout collide on `git worktree add` — the first
+ * dispatch creates the branch, the second fails messily — so the registry rejects
+ * it rather than silently overwriting the in-memory map. Carries both slugs + the
+ * shared path so callers (the CLI, the `/control/dispatch` route) can name all
+ * three in their error. A *re-register of the same slug* is idempotent, never this.
+ */
+export class RepoPathCollisionError extends Error {
+  constructor(
+    /** The slug already registered at this checkout path. */
+    readonly existingRepo: string,
+    /** The slug being registered (rejected). */
+    readonly attemptedRepo: string,
+    /** The checkout path both want. */
+    readonly checkoutPath: string,
+  ) {
+    super(
+      `checkout path ${checkoutPath} is already registered to ${existingRepo}; ` +
+        `cannot also register ${attemptedRepo} there (two repos sharing a checkout collide on git worktree add)`,
+    );
+    this.name = "RepoPathCollisionError";
+  }
+}
+
+/**
+ * Normalize a checkout path for collision comparison + storage so trivial
+ * spelling variants of the *same* directory (a trailing slash, a `.`/`..` segment)
+ * don't read as distinct checkouts and slip the guard (#226). `resolve` does NOT
+ * follow symlinks — two symlinked paths to one directory still read as distinct
+ * (resolving them would need fs access and fail for a not-yet-created path); that
+ * narrower case is out of scope.
+ */
+function normalizeCheckoutPath(checkoutPath: string): string {
+  return resolve(checkoutPath);
+}
+
+/**
+ * Reject (throw {@link RepoPathCollisionError}) if `checkoutPath` is already
+ * registered to a *different* repo. Same-slug re-registration is allowed (the
+ * `repo != ?` filter excludes it), so an idempotent re-register / path update for
+ * the same repo passes. Paths are normalized so `/foo` and `/foo/` collide. Run by
+ * {@link registerManagedRepo} before it writes, and by `mm init` *before* it
+ * scaffolds (so a rejected init writes nothing).
+ */
+export function assertNoRepoPathCollision(db: Database, repo: string, checkoutPath: string): void {
+  const normalized = normalizeCheckoutPath(checkoutPath);
+  const row = db
+    .query("SELECT repo FROM repo_config WHERE checkout_path = ? AND repo != ?")
+    .get(normalized, repo) as { repo: string } | null;
+  if (row) throw new RepoPathCollisionError(row.repo, repo, normalized);
+}
+
+/**
  * Record (or update) a repo's local checkout path — the act that makes a repo
  * "managed": it becomes visible to the recommender cron and survives a daemon
  * restart. Upserts the `repo_config` row (empty `config_json` placeholder if
@@ -80,12 +134,46 @@ export function registerManagedRepo(
   checkoutPath: string,
   now: number = Date.now(),
 ): void {
-  db.run(
-    `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
-       VALUES (?, '{}', ?, ?)
-     ON CONFLICT(repo) DO UPDATE SET checkout_path = excluded.checkout_path,
-       last_synced_at = excluded.last_synced_at`,
-    [repo, checkoutPath, now],
+  // Reject a shared-checkout collision before writing — never silently overwrite
+  // another repo's path mapping (#226). Store the normalized path so the guard's
+  // comparison stays consistent across trailing-slash / `.`-segment variants.
+  const normalized = normalizeCheckoutPath(checkoutPath);
+  // Eager check: the friendly fast path (precise error, no wasted write attempt).
+  assertNoRepoPathCollision(db, repo, normalized);
+  try {
+    db.run(
+      `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
+         VALUES (?, '{}', ?, ?)
+       ON CONFLICT(repo) DO UPDATE SET checkout_path = excluded.checkout_path,
+         last_synced_at = excluded.last_synced_at`,
+      [repo, normalized, now],
+    );
+  } catch (error) {
+    // The partial UNIQUE index on `checkout_path` (migration 011) is the atomic
+    // backstop: a *concurrent* writer in another process can pass the eager check
+    // above and slip in between it and this INSERT. On that race the commit fails
+    // here; re-read the now-winning repo and surface the same RepoPathCollisionError
+    // the eager check would have. Anything that isn't this specific collision
+    // re-throws untouched.
+    if (isCheckoutPathUniqueViolation(error)) {
+      const row = db
+        .query("SELECT repo FROM repo_config WHERE checkout_path = ? AND repo != ?")
+        .get(normalized, repo) as { repo: string } | null;
+      if (row) throw new RepoPathCollisionError(row.repo, repo, normalized);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether a thrown DB error is specifically the `checkout_path` UNIQUE-index
+ * violation (migration 011) — matched narrowly on the index/column so an
+ * unrelated constraint failure is never mistaken for a path collision.
+ */
+function isCheckoutPathUniqueViolation(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /UNIQUE constraint failed: repo_config\.checkout_path/.test(error.message)
   );
 }
 

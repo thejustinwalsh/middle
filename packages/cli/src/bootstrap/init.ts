@@ -84,6 +84,11 @@ export async function initRepo(
 ): Promise<InitResult> {
   const epicStore: EpicStoreMode = opts.epicStore ?? "github";
   const info = await validateTarget(repo, deps, epicStore);
+  // Shared-checkout collision guard (#226): once the repo is identified, reject a
+  // checkout already registered to a *different* slug BEFORE writing any files, so
+  // a rejected init leaves the target untouched (no half-scaffolded `.middle/`).
+  // Skipped under --dry-run (which writes nothing anyway).
+  if (!opts.dryRun) opts.checkCollision?.(`${info.owner}/${info.name}`);
   const existing = readExistingConfig(repo);
   const mode: InitResult["mode"] =
     existing === null ? "fresh" : existing.version === BOOTSTRAP_VERSION ? "reinit" : "migrate";

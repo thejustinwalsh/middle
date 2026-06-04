@@ -96,11 +96,7 @@ Note:
 - **Recent issue titles** — the project's naming convention (verb-led? scope-prefixed? conventional-commit style?). Match it.
 - **Label families** — `phase:N`, `area:X`, `priority:N` style. Conform.
 
-If `.middle/config.toml` exists in the repo, read it for the controlled vocabulary middle expects:
-- `agent:claude`, `agent:codex` — adapter overrides
-- `approved` — bypasses the complexity ceiling
-- `agent-queue:state`, `agent-queue:eligible` — middle internals (don't apply to new issues)
-- `needs-design`, `blocked`, `wontfix` — recommender exclusion signals (use deliberately)
+If `.middle/config.toml` exists in the repo, read it for the controlled vocabulary middle expects. For what each middle label means, who applies it, and what middle does in response, see the [label vocabulary](https://github.com/thejustinwalsh/middle/blob/main/docs/vocabulary.md) — the single source of truth. The dispatch-decision labels (`agent:claude`/`agent:codex`, `approved`, `agent-queue:state`/`agent-queue:eligible`, `needs-design`/`blocked`/`wontfix`) are applied by the operator or middle, **not** by this skill.
 
 If a label the plan requires doesn't exist yet, create it (`gh label create <name> --color <hex> --description "<purpose>"`) — label creation is reversible and on the build path. Inventing a label *not* called for by the plan or the user is the thing to avoid.
 
@@ -448,17 +444,10 @@ If you genuinely can't write concrete criteria for an item, that's a Phase 5 unk
 
 Apply labels the plan and the repo's vocabulary call for. Create a label the plan requires but the repo lacks (`gh label create ...`) — that's on the build path. Do NOT invent labels the plan and user never asked for.
 
-Middle's controlled labels (applied by this skill when the plan calls for them):
-- `phase:N` — phase grouping for build specs
-- `bootstrap` — pre-dogfooding work
-- `dogfood` — work that flows through middle once dogfooding starts
-- `housekeeping` — infrastructure / repo hygiene
+For what each label means and who applies it, see the [label vocabulary](https://github.com/thejustinwalsh/middle/blob/main/docs/vocabulary.md) — the single source of truth. Which labels *this skill* applies vs. which the operator/middle apply:
 
-Middle's controlled labels (applied manually by the user, NOT by this skill — they're dispatch decisions, not metadata about the work):
-- `agent:claude`, `agent:codex` — adapter override
-- `approved` — bypasses complexity ceiling
-- `agent-queue:state`, `agent-queue:eligible` — middle internals
-- `needs-design`, `blocked`, `wontfix` — exclusion signals
+- **This skill applies, when the plan calls for them:** `phase:N`, `bootstrap`, `dogfood`, `housekeeping` (grouping metadata about the work).
+- **The operator or middle apply, NOT this skill** (they're dispatch decisions, not metadata): `agent:claude`/`agent:codex`, `approved`, `agent-queue:state`/`agent-queue:eligible`, `needs-design`/`blocked`/`wontfix`.
 
 ## Red flags — STOP and self-correct
 

@@ -1,0 +1,89 @@
+/*
+ * Tailwind v4 entry for the dashboard SPA, bundled by `bun-plugin-tailwind`
+ * (registered in the root `bunfig.toml`). Imported before `styles.css` in
+ * `main.tsx`.
+ *
+ * Preflight (Tailwind's global reset, the `base` layer of the umbrella
+ * `@import "tailwindcss"`) is deliberately NOT imported — only `theme`
+ * (the token → CSS-var layer) and `utilities`. The legacy `styles.css` carries
+ * its own minimal reset and is unlayered (so it wins over utilities until each
+ * rule is deleted as its component moves to shadcn primitives). Keeping
+ * preflight out is what lets #219 land "no visual change": unstyled elements
+ * (e.g. the Settings buttons) keep their current rendering instead of being
+ * reset.
+ *
+ * The shadcn semantic tokens (`--color-background`, `--color-primary`, …) are
+ * `@theme inline` aliases of the existing GitHub-dark palette defined in
+ * `styles.css` (`--bg`, `--panel`, `--accent`, …) — a single palette source,
+ * so the dark theme renders identically and a future light theme only has to
+ * override the legacy palette vars.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+:root {
+  --radius: 0.5rem;
+}
+
+@theme inline {
+  /* Surfaces */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--panel);
+  --color-popover-foreground: var(--fg);
+  /* Intent colors */
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--panel);
+  --color-secondary-foreground: var(--fg);
+  --color-muted: var(--panel);
+  --color-muted-foreground: var(--muted);
+  --color-accent: #21262d;
+  --color-accent-foreground: var(--fg);
+  --color-destructive: var(--bad);
+  --color-destructive-foreground: #ffffff;
+  --color-success: var(--ok);
+  --color-warning: var(--warn);
+  /* Lines + focus */
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+  /* Radii (shadcn rounded-{sm,md,lg,xl}) */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  /* The slice of Tailwind preflight the shadcn primitives actually need, minus
+     the parts that would change the legacy look (button/heading/margin resets).
+     Without `border-style: solid` here, the `border` utility only sets a width
+     and shadcn's borders (Sheet/Select/Input/Badge outline) render invisible;
+     `border-color` defaults to currentColor in v4, so pin it to the panel line.
+     `border-width: 0` keeps a bare element borderless until a utility opts in —
+     legacy unlayered CSS and the `border-*` utilities both override it. */
+  *,
+  ::before,
+  ::after {
+    box-sizing: border-box;
+    border-width: 0;
+    border-style: solid;
+    border-color: var(--border);
+  }
+
+  /* #221 — a visible focus ring on EVERY focusable element. The shadcn primitives
+     (Button/Tabs/Select/Input/Collapsible-trigger) carry their own
+     `focus-visible:ring-*`; this covers the rest (plain anchors, anything with a
+     tabindex) so keyboard navigation is never invisible. Keyed to `:focus-visible`
+     so a mouse click doesn't paint a ring. */
+  a:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+}

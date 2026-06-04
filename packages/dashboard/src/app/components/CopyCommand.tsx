@@ -1,11 +1,16 @@
+import { useEffect, useRef, useState } from "react";
+import { Button } from "./ui/button.tsx";
+
 /**
  * A copyable command chip — the guaranteed-portable attach fallback ("the
- * copy-command path always works"). Renders the raw command as selectable
+ * copy-command path always works"). Renders the raw `command` as selectable
  * monospace text with a Copy button; the text is present in the DOM regardless
- * of clipboard support, so it's always copy-paste-accurate by hand.
+ * of clipboard support, so it's always copy-paste-accurate by hand. Clicking
+ * Copy writes to the clipboard when available and shows a transient "copied"
+ * state that resets after ~1.2s (the reset timer is cancelled on unmount); when
+ * the Clipboard API is unavailable (insecure context) the visible text is the
+ * fallback. `label`, if given, is rendered before the command.
  */
-import { useEffect, useRef, useState } from "react";
-
 export function CopyCommand({ command, label }: { command: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -31,9 +36,9 @@ export function CopyCommand({ command, label }: { command: string; label?: strin
     <span className="copy-command">
       {label ? <span className="copy-label">{label}</span> : null}
       <code>{command}</code>
-      <button type="button" onClick={copy} aria-label={`copy: ${command}`}>
+      <Button variant="outline" size="sm" onClick={copy} aria-label={`copy: ${command}`}>
         {copied ? "copied" : "copy"}
-      </button>
+      </Button>
     </span>
   );
 }

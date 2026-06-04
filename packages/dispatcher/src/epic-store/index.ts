@@ -139,6 +139,7 @@ export function makeRoutingEpicGateway(deps: {
     getCommentAuthor: (repo, url) => gatewayFor(repo).getCommentAuthor(repo, url),
     getIssueLabels: (repo, ref) => gatewayFor(repo).getIssueLabels(repo, ref),
     listOpenIssues: (repo) => gatewayFor(repo).listOpenIssues(repo),
+    getIssueState: (repo, ref) => gatewayFor(repo).getIssueState(repo, ref),
     addLabel: (repo, ref, label) => gatewayFor(repo).addLabel(repo, ref, label),
     listMergedPrsClosingRefs: (repo) => gatewayFor(repo).listMergedPrsClosingRefs(repo),
     closeIssue: (repo, ref, comment) => gatewayFor(repo).closeIssue(repo, ref, comment),

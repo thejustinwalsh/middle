@@ -6,13 +6,52 @@
  * `textContent` discipline.
  */
 import type { ControlMetrics, ControlWorkflowFrame } from "../control-client.ts";
+import { InlineError } from "./InlineError.tsx";
+import { Badge, type BadgeProps } from "./ui/badge.tsx";
+import { Skeleton } from "./ui/skeleton.tsx";
+
+/**
+ * Map a workflow state to a Badge intent. `waiting`/`compensating` stay neutral
+ * (outline) — deliberately uncolored, mirroring the old status-page behavior.
+ */
+function stateVariant(state: string): BadgeProps["variant"] {
+  if (state === "running" || state === "completed") return "success";
+  if (state === "launching" || state === "pending") return "default";
+  if (state === "waiting-human") return "warning";
+  if (
+    state === "rate-limited" ||
+    state === "failed" ||
+    state === "cancelled" ||
+    state === "compensated"
+  )
+    return "destructive";
+  return "outline";
+}
 
 type QueueProps = {
   /** Latest `/control/metrics` snapshot, or null before the first fetch. */
   metrics: ControlMetrics | null;
   /** Live workflow frames (most-recent state per id), parked-for-human first. */
   live: ControlWorkflowFrame[];
+  /** Inline error message for this view, if the metrics fetch failed (#223). */
+  error?: string;
+  /** Re-fire the failed metrics fetch. */
+  onRetry?: () => void;
 };
+
+/** Gauge-tile skeletons shown before the first `/control/metrics` snapshot arrives. */
+function QueueSkeleton() {
+  return (
+    <section className="tiles" aria-busy="true">
+      {["a", "b", "c"].map((k) => (
+        <div key={k} className="tile">
+          <Skeleton className="mb-2 h-6 w-10" />
+          <Skeleton className="h-3 w-20" />
+        </div>
+      ))}
+    </section>
+  );
+}
 
 /** Parked-waiting-on-human rows sort to the top — they're what needs attention. */
 function sortLive(rows: ControlWorkflowFrame[]): ControlWorkflowFrame[] {
@@ -30,11 +69,17 @@ function sortLive(rows: ControlWorkflowFrame[]): ControlWorkflowFrame[] {
  * `live` is the latest frame per workflow id (terminal ones already dropped by
  * the caller); it drives the table, while `metrics.totals` drives the tiles.
  */
-export function Queue({ metrics, live }: QueueProps) {
+export function Queue({ metrics, live, error, onRetry }: QueueProps) {
+  if (error)
+    return (
+      <main className="queue">
+        <InlineError message={error} onRetry={onRetry} />
+      </main>
+    );
   if (!metrics)
     return (
       <main className="queue">
-        <p className="empty">no data yet</p>
+        <QueueSkeleton />
       </main>
     );
   const rows = sortLive(live);
@@ -75,21 +120,35 @@ export function Queue({ metrics, live }: QueueProps) {
               <tr key={w.id}>
                 <td>{w.repo || "—"}</td>
                 <td>{w.epic === null ? "—" : `#${w.epic}`}</td>
-                <td className={`state s-${w.state}`}>{w.state}</td>
+                <td className="state">
+                  <Badge variant={stateVariant(w.state)} className={`s-${w.state}`}>
+                    {w.state}
+                  </Badge>
+                </td>
               </tr>
             ))
           )}
         </tbody>
       </table>
       <h2>Rate limits</h2>
-      <div className="chips">
+      <div className="chips flex flex-wrap gap-2">
         {metrics.rateLimits.length === 0 ? (
           <span className="empty">no rate-limit data</span>
         ) : (
           metrics.rateLimits.map((r) => (
-            <span key={r.adapter} className={`c-${r.status.toLowerCase()}`}>
+            <Badge
+              key={r.adapter}
+              variant={
+                r.status === "AVAILABLE"
+                  ? "success"
+                  : r.status === "RATE_LIMITED"
+                    ? "destructive"
+                    : "outline"
+              }
+              className={`c-${r.status.toLowerCase()}`}
+            >
               {r.adapter}: {r.status}
-            </span>
+            </Badge>
           ))
         )}
       </div>

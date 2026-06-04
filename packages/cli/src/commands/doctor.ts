@@ -1,9 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { loadConfig, type MiddleConfig } from "@middle/core";
+import { loadConfig, type MiddleConfig, NON_FEATURE_LABELS } from "@middle/core";
 import { currentSchemaVersion, openDb } from "@middle/dispatcher/src/db.ts";
 import { type EpicStoreConfig, readEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
+import { EPIC_DOC_MARKER } from "@middle/dispatcher/src/epic-store/epic-file/markers.ts";
+import { parseEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/parser.ts";
+import { renderEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/renderer.ts";
+import { epicFilePath, listEpicSlugs } from "@middle/dispatcher/src/epic-store/epic-file-io.ts";
 import { collectRetentionStatus, type RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   getTmuxVersion,
@@ -11,6 +15,8 @@ import {
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
 import { defaultPidFile, deriveRepoSlug } from "../paths.ts";
+import { NEEDS_DESIGN_LABEL } from "./audit-issues.ts";
+import { STATE_LABEL } from "../bootstrap/types.ts";
 import {
   BOOTSTRAP_SKILLS_DIR,
   CANONICAL_SKILLS_DIR,
@@ -244,6 +250,47 @@ function checkTsdocCoverageWarn(): Check {
 }
 
 /**
+ * Playwright's default browsers-cache directory for a given platform — the path
+ * it installs to and reads from when `PLAYWRIGHT_BROWSERS_PATH` is unset. These
+ * are OS-specific (macOS uses `~/Library/Caches`, Windows `AppData\Local`), so a
+ * single Linux-style fallback would mis-detect on the other two and emit a false
+ * "not installed" warning. Mirrors Playwright's own registry defaults.
+ */
+export function defaultPlaywrightBrowsersDir(platform: NodeJS.Platform, home: string): string {
+  if (platform === "darwin") return join(home, "Library", "Caches", "ms-playwright");
+  if (platform === "win32") return join(home, "AppData", "Local", "ms-playwright");
+  return join(home, ".cache", "ms-playwright");
+}
+
+/**
+ * Report whether the Playwright Chromium browser is installed — the dashboard's
+ * end-to-end smoke (`packages/dashboard/playwright/`) needs it. **Advisory** (warn,
+ * never fail): the browser is a dev/CI prerequisite, not a dispatch one, and the
+ * detail carries the install command so an operator knows the fix. Detection is a
+ * best-effort scan of the Playwright browsers cache (honoring
+ * `PLAYWRIGHT_BROWSERS_PATH`, else the OS-specific default).
+ */
+export function checkPlaywrightBrowser(): Check {
+  const base =
+    process.env.PLAYWRIGHT_BROWSERS_PATH ||
+    defaultPlaywrightBrowsersDir(process.platform, homedir());
+  let installed = false;
+  try {
+    installed = existsSync(base) && readdirSync(base).some((d) => d.startsWith("chromium"));
+  } catch {
+    installed = false;
+  }
+  if (installed) {
+    return { name: "playwright", status: "pass", detail: "chromium installed (dashboard e2e)" };
+  }
+  return {
+    name: "playwright",
+    status: "warn",
+    detail: "chromium not installed — dashboard e2e needs `bunx playwright install chromium`",
+  };
+}
+
+/**
  * Load middle's config (global, plus the cwd's `.middle/config.toml` when the
  * operator runs `mm doctor` from inside a managed repo) and report whether it
  * parses. A malformed TOML throws out of `loadConfig` — that's a hard fail (the
@@ -428,26 +475,91 @@ async function resolveEpicStore(
 }
 
 /**
- * The state-store check row, chosen by the cwd repo's Epic-store mode. File-mode
- * repos keep no GitHub state issue, so the parser round-trip check is irrelevant;
- * instead we confirm the configured Epic directory exists under the repo
- * (`✓ epics_dir <path> exists` / `✗ … missing`). GitHub-mode (and any repo whose
- * mode can't be determined) keeps the existing repo-agnostic `state-issue` check.
+ * The state-store check rows, chosen by the cwd repo's Epic-store mode. GitHub-mode
+ * (and any repo whose mode can't be determined) keeps the existing repo-agnostic
+ * `state-issue` parser round-trip check — one row.
+ *
+ * File-mode repos keep no GitHub state issue, so that check is irrelevant; instead
+ * we confirm the three things a file-mode repo's docs promise are sound — three rows:
+ * - `epics_dir` — the configured Epic directory exists under the repo;
+ * - `state_file` — the recommender's `state_file` is present;
+ * - `epic-files` — every Epic file under `epics_dir` (those starting with the
+ *   `<!-- middle:epic v1 -->` marker; the scaffold's `README.md` and other notes
+ *   are skipped) parses and renders byte-identically — the round-trip invariant the
+ *   whole file-mode design rests on, surfaced where an operator can act on it.
  */
-function checkEpicStore(store: EpicStoreConfig, opts: DoctorOptions): Check {
+function checkEpicStore(store: EpicStoreConfig, opts: DoctorOptions): Check[] {
   if (store.mode !== "file") {
     const stateIssue = checkStateIssue();
-    return { name: "state-issue", status: stateIssue.status, detail: stateIssue.detail };
+    return [{ name: "state-issue", status: stateIssue.status, detail: stateIssue.detail }];
   }
   const repoPath = opts.repoPath ?? process.cwd();
-  const absDir = isAbsolute(store.epicsDir) ? store.epicsDir : join(repoPath, store.epicsDir);
-  if (existsSync(absDir)) {
-    return { name: "epics_dir", status: "pass", detail: `${store.epicsDir} exists` };
+  const resolve = (p: string) => (isAbsolute(p) ? p : join(repoPath, p));
+  const absDir = resolve(store.epicsDir);
+
+  const epicsDirOk = existsSync(absDir);
+  const epicsDirCheck: Check = epicsDirOk
+    ? { name: "epics_dir", status: "pass", detail: `${store.epicsDir} exists` }
+    : {
+        name: "epics_dir",
+        status: "fail",
+        detail: `${store.epicsDir} missing — run \`mm init --epic-store=file\``,
+      };
+
+  const stateFileCheck: Check = existsSync(resolve(store.stateFile))
+    ? { name: "state_file", status: "pass", detail: `${store.stateFile} present` }
+    : {
+        name: "state_file",
+        status: "fail",
+        detail: `${store.stateFile} missing — run \`mm init --epic-store=file\``,
+      };
+
+  return [epicsDirCheck, stateFileCheck, checkEpicFilesRoundTrip(absDir, epicsDirOk)];
+}
+
+/**
+ * Parse+render every Epic file under `epicsDir` and confirm the result is
+ * byte-identical to the source — the load-bearing round-trip invariant. Only files
+ * that open with {@link EPIC_DOC_MARKER} are treated as Epics; the scaffold's
+ * `README.md` and any non-Epic markdown are skipped (not failed). The first file
+ * that throws on parse or fails to round-trip is named so an operator can fix it
+ * from the Epic file itself. A missing directory short-circuits to a warn (the
+ * `epics_dir` row already carries the actionable failure).
+ */
+function checkEpicFilesRoundTrip(absDir: string, epicsDirOk: boolean): Check {
+  if (!epicsDirOk) {
+    return { name: "epic-files", status: "warn", detail: "skipped — epics_dir missing" };
+  }
+  let checked = 0;
+  for (const slug of listEpicSlugs(absDir)) {
+    const path = epicFilePath(absDir, slug);
+    // The read is inside the try: `listEpicSlugs` matches on name only, so a
+    // directory named `*.md` (EISDIR) or an unreadable `*.md` symlink would
+    // otherwise throw out of `mm doctor` and crash the whole health check.
+    try {
+      const body = readFileSync(path, "utf8");
+      if (!body.startsWith(EPIC_DOC_MARKER)) continue;
+      checked += 1;
+      if (renderEpicFile(parseEpicFile(body)) !== body) {
+        return {
+          name: "epic-files",
+          status: "fail",
+          detail: `${slug}.md does not round-trip — re-render it (the dispatcher owns the marker lines)`,
+        };
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        name: "epic-files",
+        status: "fail",
+        detail: `${slug}.md unreadable/malformed — ${reason}`,
+      };
+    }
   }
   return {
-    name: "epics_dir",
-    status: "fail",
-    detail: `${store.epicsDir} missing — run \`mm init --epic-store=file\``,
+    name: "epic-files",
+    status: "pass",
+    detail: checked === 0 ? "no Epic files yet" : `${checked} Epic file(s) round-trip`,
   };
 }
 
@@ -464,7 +576,131 @@ export type DoctorOptions = {
   repoPath?: string;
   /** Resolve the repo's `owner/name` slug (defaults to the git-remote derivation). */
   resolveSlug?: (repoPath: string) => Promise<string>;
+  /** Run only the docs↔code label drift guard (`--vocabulary-check`). */
+  vocabularyCheck?: boolean;
+  /** Override the `docs/vocabulary.md` path the vocabulary check reads (tests). */
+  vocabularyDocPath?: string;
 };
+
+/**
+ * The standard GitHub triage labels that appear in {@link NON_FEATURE_LABELS}
+ * but are *not* part of middle's own vocabulary — they take an issue out of the
+ * integration rubric, but middle neither defines nor owns them, so the
+ * vocabulary check doesn't require `docs/vocabulary.md` to document them.
+ */
+const GENERIC_TRIAGE_LABELS = new Set([
+  "documentation",
+  "docs",
+  "chore",
+  "question",
+  "duplicate",
+  "invalid",
+]);
+
+/**
+ * The full operator-facing label vocabulary `docs/vocabulary.md` must document —
+ * the canonical set a reader learns the system from. The drift guard fails if the
+ * doc is missing any of these (a deleted section) on top of the code-agreement
+ * check below; kept here, beside the code that enforces it, so adding a label to
+ * the doc's contract is a deliberate edit.
+ */
+const REQUIRED_VOCABULARY: readonly string[] = [
+  "epic",
+  "approved",
+  "needs-design",
+  "blocked",
+  "wontfix",
+  "agent:claude",
+  "agent:codex",
+  "agent-queue:state",
+  "agent-queue:eligible",
+  "dogfood",
+  "bootstrap",
+  "housekeeping",
+  "phase:N",
+];
+
+/** Default `docs/vocabulary.md` path, resolved from this module (commands → src → cli → packages → root). */
+function defaultVocabularyDocPath(): string {
+  return join(import.meta.dir, "..", "..", "..", "..", "docs", "vocabulary.md");
+}
+
+/**
+ * Every label `docs/vocabulary.md` documents — the stems of its `### `<label>``
+ * section headers. Lines inside fenced code blocks (```` ``` ````) are ignored, so
+ * a documentation *example* that shows a `### `foo`` heading isn't miscounted as a
+ * real documented label.
+ */
+function parseDocumentedLabels(doc: string): Set<string> {
+  const labels = new Set<string>();
+  const headerRe = /^#{2,4}\s+`([^`]+)`/;
+  let inFence = false;
+  for (const line of doc.split("\n")) {
+    if (line.startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = headerRe.exec(line);
+    if (m) labels.add(m[1]!);
+  }
+  return labels;
+}
+
+/**
+ * `mm doctor --vocabulary-check` — the docs↔code label drift guard. Parses
+ * `docs/vocabulary.md`, lists every label it documents, and asserts the doc
+ * *covers* what the code needs (a completeness/coverage check, not a bidirectional
+ * equality):
+ * - **Code coverage:** every label middle's code deterministically keys on — the
+ *   `needs-design` and `agent-queue:state` constants plus every middle-owned
+ *   {@link NON_FEATURE_LABELS} entry (the generic GitHub triage labels are
+ *   excluded) — has a section in the doc. Rename a constant in code without
+ *   updating the doc and this fails.
+ * - **Completeness:** every label in {@link REQUIRED_VOCABULARY} is documented, so
+ *   a deleted section is caught even for labels code doesn't key on.
+ *
+ * Exits 0 only when both hold. (Extra documented labels are allowed — the doc may
+ * cover operator conventions the code doesn't key on.) Returns the process exit code.
+ */
+export function runVocabularyCheck(opts: Pick<DoctorOptions, "vocabularyDocPath"> = {}): number {
+  const docPath = opts.vocabularyDocPath ?? defaultVocabularyDocPath();
+  console.log("middle — vocabulary check\n");
+  if (!existsSync(docPath)) {
+    console.log(`  ✗ docs/vocabulary.md not found at ${docPath}`);
+    return 1;
+  }
+  const documented = parseDocumentedLabels(readFileSync(docPath, "utf8"));
+
+  // Labels the code deterministically keys on, minus the generic triage labels
+  // middle doesn't own. De-duplicated (NON_FEATURE_LABELS overlaps the constants).
+  const codeKeyed = [...new Set([NEEDS_DESIGN_LABEL, STATE_LABEL, ...NON_FEATURE_LABELS])].filter(
+    (l) => !GENERIC_TRIAGE_LABELS.has(l),
+  );
+
+  const missingFromCode = codeKeyed.filter((l) => !documented.has(l));
+  const missingRequired = REQUIRED_VOCABULARY.filter((l) => !documented.has(l));
+
+  console.log(`  documented labels (${documented.size}): ${[...documented].sort().join(", ")}\n`);
+
+  const fails: string[] = [];
+  for (const l of missingFromCode) {
+    fails.push(`code keys on \`${l}\` but docs/vocabulary.md doesn't document it`);
+  }
+  for (const l of missingRequired) {
+    fails.push(`docs/vocabulary.md is missing required label \`${l}\``);
+  }
+
+  if (fails.length === 0) {
+    console.log(`  ✓ docs and code agree — ${codeKeyed.length} code-keyed label(s) documented.`);
+    return 0;
+  }
+  for (const f of fails) console.log(`  ✗ ${f}`);
+  console.log(
+    `\n${fails.length} drift issue(s) — update docs/vocabulary.md or the label constants.`,
+  );
+  return 1;
+}
 
 /**
  * `mm doctor` — full operator health check. Validates the toolchain every
@@ -479,6 +715,9 @@ export type DoctorOptions = {
  * missing adapter binary among others present) do not fail the run.
  */
 export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
+  if (opts.vocabularyCheck) {
+    return runVocabularyCheck({ vocabularyDocPath: opts.vocabularyDocPath });
+  }
   const { fix } = opts;
   const { check: configCheck, config } = loadDoctorConfig();
   const epicStore = await resolveEpicStore(config, opts);
@@ -492,11 +731,12 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
     await checkGhAuth(),
     configCheck,
     await checkDispatcher(config),
-    checkEpicStore(epicStore, opts),
+    ...checkEpicStore(epicStore, opts),
     checkDatabase(config),
     checkSkillsDrift(),
     checkModuleIndexFrontmatter(),
     checkTsdocCoverageWarn(),
+    checkPlaywrightBrowser(),
   ];
 
   console.log("middle — system check\n");

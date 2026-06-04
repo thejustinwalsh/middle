@@ -9,7 +9,13 @@ import type { ParsedState, ValidationResult } from "./schema.v1.ts";
 
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 const EPIC_REF_RE = /^#\d+\s+\S/;
-const ISSUE_REF_RE = /^#\d+$/;
+// A Blocked blocker reference: an optional `<owner>/<repo>` prefix (a cross-repo
+// blocker, #225), then `#<n>`, optionally carrying a resolved-title or
+// `(stale blocker: <ref>)` annotation the recommender's resolution pass appends.
+const BLOCKER_REF_RE = /^(?:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)?#\d+(?: \(.+\))?$/;
+// Whether a blocker is *attempting* to be an issue/cross-repo reference (vs a
+// backticked or free-text non-issue blocker, which carry no `#<n>` and are exempt).
+const REF_LIKE_BLOCKER_RE = /^(?:#|[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+#)/;
 
 export function validate(state: ParsedState, config: RepoConfig): ValidationResult {
   const errors: string[] = [];
@@ -27,9 +33,12 @@ export function validate(state: ParsedState, config: RepoConfig): ValidationResu
     }
   }
   for (const item of state.blocked) {
-    // blocker is "#<n>" for an issue, or "`<description>`" for a non-issue blocker.
-    if (item.blocker.startsWith("#") && !ISSUE_REF_RE.test(item.blocker)) {
-      errors.push(`Blocked blocker is not a valid issue reference: "${item.blocker}"`);
+    // A blocker is a same-repo `#<n>`, a cross-repo `<owner>/<repo>#<n>` (each
+    // optionally annotated with a resolved title or `(stale blocker: …)`), or a
+    // backticked / free-text non-issue blocker (exempt). Only validate the shape
+    // of one that's *trying* to be an issue reference.
+    if (REF_LIKE_BLOCKER_RE.test(item.blocker) && !BLOCKER_REF_RE.test(item.blocker)) {
+      errors.push(`Blocked blocker is not a valid issue/cross-repo reference: "${item.blocker}"`);
     }
   }
 

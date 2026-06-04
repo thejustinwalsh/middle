@@ -31,7 +31,11 @@ import { runDocs } from "./commands/docs.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { loadConfig } from "@middle/core";
 import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
-import { registerManagedRepo, setEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
+import {
+  assertNoRepoPathCollision,
+  registerManagedRepo,
+  setEpicStoreConfig,
+} from "@middle/dispatcher/src/repo-config.ts";
 import { runInit, type EpicStoreRegistration } from "./commands/init.ts";
 
 /**
@@ -60,6 +64,22 @@ function setEpicStoreInDaemonDb(repo: string, cfg: EpicStoreRegistration): void 
   const db = openAndMigrate(config.global.dbPath);
   try {
     setEpicStoreConfig(db, repo, cfg);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Shared-checkout collision guard (#226): reject `mm init` when this checkout path
+ * is already registered to a *different* repo slug — BEFORE any files are written.
+ * Throws {@link RepoPathCollisionError}; `runInit`'s catch turns it into a clear
+ * `mm init: …` message + non-zero exit. NOT best-effort (a collision must fail).
+ */
+function checkRepoCollisionInDaemonDb(repo: string, repoPath: string): void {
+  const config = loadConfig({ globalPath: process.env.MIDDLE_CONFIG });
+  const db = openAndMigrate(config.global.dbPath);
+  try {
+    assertNoRepoPathCollision(db, repo, repoPath);
   } finally {
     db.close();
   }
@@ -103,6 +123,7 @@ program
         epicStore: mode,
         registerRepo: registerRepoInDaemonDb,
         setEpicStore: setEpicStoreInDaemonDb,
+        checkCollision: checkRepoCollisionInDaemonDb,
       }),
     );
   });
@@ -120,8 +141,9 @@ program
   .command("start")
   .description("Start the dispatcher process (hook server + workflow engine)")
   .option("--window", "open the queue observability page once the dispatcher is up")
-  .action(async (options: { window?: boolean }) =>
-    process.exit(await runStartCommand({ window: options.window })),
+  .option("--foreground", "run in the foreground without a pid file (for systemd/launchd)")
+  .action(async (options: { window?: boolean; foreground?: boolean }) =>
+    process.exit(await runStartCommand({ window: options.window, foreground: options.foreground })),
   );
 
 program
@@ -138,8 +160,12 @@ program
   .command("doctor")
   .description("Check tmux/claude/git/gh preconditions for `mm dispatch`")
   .option("--fix", "write the bun PATH export to your shell rc (~/.zshrc / ~/.bashrc)")
-  .action(async (options: { fix?: boolean }) =>
-    process.exit(await runDoctor({ fix: options.fix })),
+  .option(
+    "--vocabulary-check",
+    "only check docs/vocabulary.md agrees with middle's label constants",
+  )
+  .action(async (options: { fix?: boolean; vocabularyCheck?: boolean }) =>
+    process.exit(await runDoctor({ fix: options.fix, vocabularyCheck: options.vocabularyCheck })),
   );
 
 program

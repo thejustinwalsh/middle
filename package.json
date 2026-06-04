@@ -18,9 +18,12 @@
     "prepare": "git config core.hooksPath scripts/hooks 2>/dev/null && echo 'middle: enabled repo git hooks (core.hooksPath=scripts/hooks)' || true"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.10.1",
     "@types/bun": "latest",
+    "bun-plugin-tailwind": "^0.1.2",
     "oxfmt": "^0.51.0",
     "oxlint": "^1.66.0",
+    "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3"
   }
 }

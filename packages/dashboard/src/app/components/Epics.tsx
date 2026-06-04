@@ -1,20 +1,19 @@
-/**
- * The Epic browse view — the dashboard's primary surface. Lists a repo's open
- * Epics with sub-issue progress, the agent working each (if any), a high-value
- * decision callout from the state issue, and a force-dispatch control whose
- * adapter picker defaults to the recommender's choice. The repo filter lives in
- * {@link App}; this component renders the chosen repo's cards.
- */
 import { useState } from "react";
 import type { EpicCard } from "../../wire.ts";
+import { Button } from "./ui/button.tsx";
+import { Progress } from "./ui/progress.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
 import { EpicRef } from "./EpicRef.tsx";
 
 function ProgressBar({ closed, total }: { closed: number; total: number }) {
   const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
   return (
-    <div className="epic-progress" aria-label={`${closed} of ${total} sub-issues done`}>
-      <div className="epic-progress-fill" style={{ width: `${pct}%` }} />
-      <span className="epic-progress-label">
+    <div
+      className="epic-progress my-1 flex items-center gap-2"
+      aria-label={`${closed} of ${total} sub-issues done`}
+    >
+      <Progress value={pct} />
+      <span className="epic-progress-label whitespace-nowrap text-xs">
         {closed} / {total}
       </span>
     </div>
@@ -43,22 +42,22 @@ function DispatchControl({
   const isFileEpic = card.number === null;
   const disabled = card.dispatch.inFlight || noSlot || isFileEpic;
   return (
-    <div className="epic-dispatch">
-      <select
-        aria-label="agent"
-        value={adapter}
-        onChange={(e) => setAdapter(e.target.value)}
-        disabled={card.dispatch.inFlight}
-      >
-        {adapters.map((a) => (
-          <option key={a} value={a}>
-            {a}
-            {a === card.dispatch.recommendedAdapter ? " ★" : ""}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
+    <div className="epic-dispatch flex items-center gap-2">
+      <Select value={adapter} onValueChange={setAdapter} disabled={card.dispatch.inFlight}>
+        <SelectTrigger aria-label="agent" className="w-40">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {adapters.map((a) => (
+            <SelectItem key={a} value={a}>
+              {a}
+              {a === card.dispatch.recommendedAdapter ? " ★" : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Button
+        size="sm"
         aria-label={`Dispatch Epic ${card.ref}`}
         disabled={disabled}
         title={
@@ -75,11 +74,21 @@ function DispatchControl({
         }}
       >
         dispatch
-      </button>
+      </Button>
     </div>
   );
 }
 
+/**
+ * The Epic browse view — the dashboard's primary surface. Renders `epics` (a
+ * repo's open Epic cards) with sub-issue progress, the agent working each (if
+ * any), a high-value decision callout, and a force-dispatch control whose adapter
+ * picker is drawn from `adapters` and defaults to the recommender's choice (an
+ * empty `adapters` or `epics` simply renders empty/disabled). `onDispatch(repo,
+ * epicNumber, adapter)` fires synchronously from the dispatch button; the
+ * optional `onOpenInspector` receives a session id. The repo filter lives in
+ * {@link App}; this component renders the chosen repo's cards.
+ */
 export function Epics({
   epics,
   adapters,
@@ -105,13 +114,13 @@ export function Epics({
                   <EpicRef epicNumber={card.number} epicRef={card.ref} /> {card.title}
                 </span>
                 {card.runner ? (
-                  <button
-                    type="button"
-                    className="epic-agent"
+                  <Button
+                    variant="link"
+                    className="epic-agent h-auto p-0"
                     onClick={() => onOpenInspector?.(card.runner!.session)}
                   >
                     {card.runner.adapter} · {card.runner.state}
-                  </button>
+                  </Button>
                 ) : (
                   <span className="epic-agent idle">idle</span>
                 )}

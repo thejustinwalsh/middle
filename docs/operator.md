@@ -19,12 +19,13 @@ mm stop                         # shut the dispatcher down
 `mm start` spawns the dispatcher as a background process and records its pid in `~/.middle/dispatcher.pid`. The dispatcher serves the hook receiver and the dashboard on one port (default `4120`, set by `global.dispatcher_port`).
 
 ```bash
-mm start            # start in the background
-mm start --window   # also open the queue observability page once it is up
-mm stop             # SIGTERM the recorded pid and clear the pidfile
+mm start              # start in the background
+mm start --window     # also open the queue observability page once it is up
+mm start --foreground # run in-process, no pidfile (for a service manager — see below)
+mm stop               # SIGTERM the recorded pid and clear the pidfile
 ```
 
-To run the dispatcher in the foreground during development, use `scripts/dev.sh` instead of `mm start`. Set `MIDDLE_CONFIG` to point at a non-default config file.
+`mm start --foreground` runs the dispatcher in-process without forking or writing a pidfile, so a service manager owns its lifecycle — that's the command the systemd/launchd templates use. To have middle come up on boot, restart on crash, and log durably, run it as a service: see [Run middle as a system service](daemon-as-a-service.md). For a quick foreground run during development you can also use `scripts/dev.sh`. Set `MIDDLE_CONFIG` to point at a non-default config file.
 
 ## Dispatch work
 
@@ -42,6 +43,85 @@ mm run-recommender <repo-path>              # rank the backlog now (rewrites the
 ```
 
 The recommender rewrites the repo's **state issue** — a single GitHub issue holding the ranked dispatch plan and a needs-human digest. `mm run-recommender` is read-only with respect to dispatch: it ranks, it does not launch.
+
+## Enable file mode on an existing repo
+
+By default an Epic is a **GitHub issue** and the dispatch state is a GitHub **state issue** (github mode). In **file mode** an Epic is instead a Markdown file under `planning/epics/`, and the ranked dispatch state is the local file `.middle/state.md` — no Epic issues, no state issue. PRs still go to GitHub; only where Epics and dispatch state *live* changes.
+
+Flip a repo that is already bootstrapped (or bootstrap a fresh one) into file mode with one command — `mm init` writes the local scaffold **and** the matching daemon-db row that the dispatcher routes on:
+
+```bash
+mm stop                                  # if the dispatcher is running
+mm init <repo-path> --epic-store=file    # idempotent: re-init flips the mode
+mm start
+```
+
+`mm init --epic-store=file` is idempotent — re-running it on a github-mode repo refreshes the skills and hooks, preserves your committed `.middle/policy.toml`, and adds the file-mode pieces. It writes the per-repo `[epic_store]` config to `.middle/<owner>-<name>.toml`:
+
+```toml
+[epic_store]
+mode = "file"
+epics_dir = "planning/epics"
+state_file = ".middle/state.md"
+```
+
+That TOML is the human-readable record of the mode; `mm init` writes it together with the daemon-db row the dispatcher's gateway reads. **Hand-editing the TOML alone does not switch modes** — the dispatcher routes on the db row, so re-run `mm init --epic-store=file` rather than editing the file by hand.
+
+After init, the repo has:
+
+```text
+planning/epics/        # one <slug>.md per Epic (README.md explains the format)
+.middle/state.md       # the ranked dispatch state (the file-mode "state issue")
+.middle/<owner>-<name>.toml   # the [epic_store] config above
+```
+
+Commit `planning/epics/` and `.middle/state.md` — they are the repo's Epics and dispatch state, not throwaway cache.
+
+### Worked example
+
+Author an Epic by dropping a file into `planning/epics/`. The filename stem is the Epic's slug — this is `planning/epics/retry-webhooks.md`:
+
+```md
+<!-- middle:epic v1 -->
+# Retry failed webhooks
+
+<!-- middle:meta
+slug: retry-webhooks
+approved: true
+-->
+
+## Context
+
+Failed webhook deliveries are dropped on the floor. Retry them with backoff.
+
+## Acceptance criteria
+
+- [ ] Failed deliveries retry with exponential backoff
+- [ ] A delivery that exhausts its retries lands in a dead-letter table
+
+## Sub-issues
+
+<!-- middle:sub-issue id=1 -->
+- [ ] **1 — Retry queue**
+  Persist failed deliveries and retry them with capped exponential backoff.
+<!-- /middle:sub-issue -->
+
+<!-- middle:conversation -->
+<!-- /middle:conversation -->
+```
+
+The `<!-- middle:… -->` markers are the structural contract — write your prose *between* them; the dispatcher owns the marker lines. `mm doctor` round-trips every Epic file and fails on a malformed one, so a typo surfaces before a dispatch does. Dispatch it by **slug**, not issue number:
+
+```bash
+mm dispatch <repo-path> retry-webhooks
+```
+
+### What changes in file mode
+
+- **References are slugs, not `#numbers`.** `mm dispatch`, `mm status`, and the dashboard show `retry-webhooks`, not `#123`.
+- **The recommender ranks files.** `mm run-recommender` ranks the Epic files under `planning/epics/` and rewrites `.middle/state.md` instead of the GitHub state issue. The dispatcher's poller picks up state changes on its normal cadence (≈120s), same as github mode.
+- **PRs are unchanged.** The agent still opens a GitHub PR per Epic and drives it to ready-for-review; only the Epic and dispatch state are local.
+- **Verify with `mm doctor`.** In file mode `mm doctor` checks that `epics_dir` and `state_file` exist and that every Epic file round-trips, in place of the github-mode state-issue check (see [Run the health check](#run-the-health-check)).
 
 ## Pause and resume a repo
 
@@ -113,7 +193,7 @@ Retention touches only middle's SQLite. `mm doctor`'s `database` line reports th
 |---|---|
 | `mm init <path>` | Bootstrap middle into a repo (skills, hooks, config, state issue) |
 | `mm uninit <path>` | Remove middle from a repo |
-| `mm start [--window]` | Start the dispatcher |
+| `mm start [--foreground] [--window]` | Start the dispatcher (`--foreground` for a service manager) |
 | `mm stop` | Stop the dispatcher |
 | `mm status` | One-screen summary of repos and workflow states |
 | `mm doctor [--fix]` | Full health check |

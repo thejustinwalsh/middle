@@ -1,52 +1,50 @@
-/**
- * The Repos list: a per-repo header (slot pills + auto-dispatch state) that
- * expands to NEXT UP (top of the recommender's ready ranking) and IN FLIGHT
- * (the running runners). Detail is fetched lazily on expand and passed in via
- * `details`, so a collapsed repo costs nothing.
- */
 import type { RepoDetail, RepoSummary } from "../../wire.ts";
-import { RunnerRow } from "./RunnerRow.tsx";
+import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible.tsx";
+import { RepoExpansion } from "./RepoExpansion.tsx";
 
 function SlotPills({ summary }: { summary: RepoSummary }) {
   return (
-    <span className="slot-pills">
+    <span className="slot-pills flex flex-wrap items-center gap-1">
       {summary.adapters.map((a) => (
-        <span key={a.adapter} className="pill">
+        <Badge key={a.adapter} variant="outline">
           {a.adapter} {a.used}/{a.max}
-        </span>
+        </Badge>
       ))}
-      <span className="pill total">
+      <Badge variant="outline">
         total {summary.total.used}/{summary.total.max}
-      </span>
-      <span className={`pill auto ${summary.auto ? "on" : "off"}`}>
+      </Badge>
+      <Badge variant={summary.auto ? "success" : "destructive"}>
         auto {summary.auto ? "✓" : "✗"}
-      </span>
+      </Badge>
     </span>
   );
 }
 
 /**
  * A single repo row: a header (slot pills + auto-dispatch state) that, when
- * `expanded` and its `detail` has loaded, reveals NEXT UP and IN FLIGHT. The
- * header click delegates to `onToggle`; the runner affordances
- * (`onWatch`/`onTakeControl`/`onOpenInspector`) pass through to each
- * {@link RunnerRow}. A collapsed row (or one whose `detail` hasn't arrived)
- * renders only the header.
+ * `expanded`, reveals NEXT UP and IN FLIGHT via {@link RepoExpansion} (which
+ * loads `loadDetail(repo)` itself). The header click delegates to `onToggle`; the
+ * runner affordances pass through to each {@link RunnerRow}. `reloadSignal` lets
+ * App refresh an open panel on a poll tick or SSE event.
  */
 export function RepoRow({
   summary,
-  detail,
   expanded,
+  reloadSignal,
   now,
+  loadDetail,
   onToggle,
   onWatch,
   onTakeControl,
   onOpenInspector,
 }: {
   summary: RepoSummary;
-  detail?: RepoDetail;
   expanded: boolean;
+  reloadSignal?: number;
   now?: number;
+  loadDetail: (repo: string, signal: AbortSignal) => Promise<RepoDetail>;
   onToggle: (repo: string) => void;
   onWatch?: (session: string) => void;
   onTakeControl?: (session: string) => void;
@@ -54,70 +52,58 @@ export function RepoRow({
 }) {
   return (
     <li className="repo-row" data-repo={summary.repo}>
-      <button
-        type="button"
-        className="repo-header"
-        aria-expanded={expanded}
-        onClick={() => onToggle(summary.repo)}
-      >
-        <span className="repo-name">{summary.repo}</span>
-        <SlotPills summary={summary} />
-      </button>
-      {expanded && detail ? (
-        <div className="repo-expansion">
-          <div className="next-up">
-            <h4>NEXT UP</h4>
-            {detail.nextUp.length === 0 ? (
-              <p className="empty">—</p>
-            ) : (
-              <ol>
-                {detail.nextUp.map((n) => (
-                  <li key={n.epic}>
-                    #{n.epic} · {n.adapter} · {n.subIssues} sub-issues — {n.reason}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-          <div className="in-flight">
-            <h4>IN FLIGHT</h4>
-            {detail.inFlight.length === 0 ? (
-              <p className="empty">—</p>
-            ) : (
-              <ul>
-                {detail.inFlight.map((r) => (
-                  <RunnerRow
-                    key={r.session}
-                    runner={r}
-                    now={now}
-                    onWatch={onWatch}
-                    onTakeControl={onTakeControl}
-                    onOpenInspector={onOpenInspector}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      ) : null}
+      <Collapsible open={expanded} onOpenChange={() => onToggle(summary.repo)}>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className="repo-header flex h-auto w-full items-center justify-between gap-2 py-2"
+          >
+            <span className="repo-name font-medium">{summary.repo}</span>
+            <SlotPills summary={summary} />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <RepoExpansion
+            loader={(signal) => loadDetail(summary.repo, signal)}
+            reloadSignal={reloadSignal}
+            now={now}
+            onWatch={onWatch}
+            onTakeControl={onTakeControl}
+            onOpenInspector={onOpenInspector}
+          />
+        </CollapsibleContent>
+      </Collapsible>
     </li>
   );
 }
 
+/**
+ * The Repos list: renders one {@link RepoRow} per `repos` entry, each a header
+ * (slot pills + auto-dispatch state) that, when its id is in the `expanded` set,
+ * reveals NEXT UP and IN FLIGHT. The expansion body ({@link RepoExpansion})
+ * fetches its own detail lazily via `loadDetail(repo, signal)` (must honor the
+ * abort signal) and owns its loading/error/retry UI, so a collapsed repo costs
+ * nothing and a failed fetch recovers in place. `reloadSignals` maps a repo id to
+ * a counter — bumping it refreshes that open panel; `now` anchors relative
+ * timestamps. `onToggle` fires with the clicked repo; the optional `onWatch`/
+ * `onTakeControl`/`onOpenInspector` receive a session id.
+ */
 export function Repos({
   repos,
-  details,
   expanded,
+  reloadSignals,
   now,
+  loadDetail,
   onToggle,
   onWatch,
   onTakeControl,
   onOpenInspector,
 }: {
   repos: RepoSummary[];
-  details: Record<string, RepoDetail | undefined>;
   expanded: Set<string>;
+  reloadSignals: Record<string, number>;
   now?: number;
+  loadDetail: (repo: string, signal: AbortSignal) => Promise<RepoDetail>;
   onToggle: (repo: string) => void;
   onWatch?: (session: string) => void;
   onTakeControl?: (session: string) => void;
@@ -134,9 +120,10 @@ export function Repos({
             <RepoRow
               key={r.repo}
               summary={r}
-              detail={details[r.repo]}
               expanded={expanded.has(r.repo)}
+              reloadSignal={reloadSignals[r.repo]}
               now={now}
+              loadDetail={loadDetail}
               onToggle={onToggle}
               onWatch={onWatch}
               onTakeControl={onTakeControl}

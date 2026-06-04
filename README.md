@@ -145,6 +145,8 @@ If you want to see it: browse the open [Epics](https://github.com/thejustinwalsh
 ## Going deeper
 
 - **[`docs/operator.md`](docs/operator.md)** — the operator how-to: every `mm` command, the daily run loop, `mm doctor`, backups, and resetting state.
+- **[`docs/daemon-as-a-service.md`](docs/daemon-as-a-service.md)** — run middle under systemd/launchd so it survives a reboot and restarts on crash.
+- **[`docs/vocabulary.md`](docs/vocabulary.md)** — every GitHub label middle reads, what it means, and what middle does in response.
 - **[`docs/architecture.md`](docs/architecture.md)** — how the pieces fit: the daemon, the dispatch lifecycle, the crons, and why SQLite is operational state while GitHub is the system of record.
 - **[`docs/adapters.md`](docs/adapters.md)** — the `AgentAdapter` interface every coding-agent CLI implements.
 - **[`docs/bootstrap.md`](docs/bootstrap.md)** — what `mm init` stamps into a target repo, and how to remove it.
