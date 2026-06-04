@@ -15,19 +15,27 @@ const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
 const CLI = join(import.meta.dir, "..", "src", "index.ts");
 const DOGFOODING = join(REPO_ROOT, "docs", "dogfooding.md");
 
-/** Commands registered via `.command("name")` in the CLI entry. */
+/**
+ * Commands registered via `.command("name")` in the CLI entry. Captures up to the
+ * first space or quote so an inline-arg form (`.command("name <arg>")`) still
+ * resolves to `name`.
+ */
 function registeredCommands(): Set<string> {
   const src = readFileSync(CLI, "utf8");
   const out = new Set<string>();
-  for (const m of src.matchAll(/\.command\("([a-z][a-z-]*)"\)/g)) out.add(m[1]!);
+  for (const m of src.matchAll(/\.command\("([a-z][a-z-]*)/g)) out.add(m[1]!);
   return out;
 }
 
-/** `mm <command>` tokens mentioned in a doc (the first word after `mm`). */
+/**
+ * `mm <command>` tokens a doc *runs* — only where `mm ` starts a line (a fenced
+ * command) or follows an inline-code backtick. Prose like "mm then dispatches"
+ * is deliberately not matched, so an English sentence can't trip the guard.
+ */
 function mentionedCommands(docPath: string): string[] {
   const text = readFileSync(docPath, "utf8");
   const out = new Set<string>();
-  for (const m of text.matchAll(/\bmm ([a-z][a-z-]*[a-z])\b/g)) out.add(m[1]!);
+  for (const m of text.matchAll(/(?:^|`)\s*mm ([a-z][a-z-]*[a-z])\b/gm)) out.add(m[1]!);
   return [...out];
 }
 

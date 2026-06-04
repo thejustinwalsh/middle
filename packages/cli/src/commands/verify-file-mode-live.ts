@@ -38,7 +38,7 @@ export type LiveSmokeIO = {
   authorEpic: () => Promise<{ slug: string; branch: string; branchUrl: string }>;
   /** Dispatch the Epic through the daemon and resolve once the row settles. */
   dispatch: (slug: string) => Promise<SettledState>;
-  /** Fill in the open question's answer block on disk + push (the file-mode resume trigger). */
+  /** Fill in the open question's answer block on disk (the file-mode resume trigger). */
   answerQuestion: (slug: string) => Promise<void>;
   /** Wait for the daemon's file-watcher resume to drive the sub-issue checkbox to `[x]`. */
   awaitResume: (slug: string) => Promise<void>;
@@ -179,10 +179,18 @@ export function makeLiveSmokeIO(cfg: { repo: string; repoPath: string }): LiveSm
   const { repo, repoPath } = cfg;
   const stamp = Date.now();
   const slug = `verify-smoke-${stamp}`;
-  const branch = `middle-smoke-${stamp}`;
+  // The branch the daemon's worktree opens its PR from: `middle-<unit>`, where
+  // unit is `issue-<epicRef>` (see worktree.ts `unitName`/`createWorktree`). The
+  // smoke finds + cleans the PR by this head branch — file-mode Epics have no
+  // issue number, so the gh `closes #N` finder (ghGitHub.findEpicPr) can't match.
+  const agentBranch = `middle-issue-${slug}`;
+  // The local seed branch the Epic file is authored on; never pushed (the daemon
+  // dispatches against the local checkout, so the Epic only needs to be on disk).
+  const seedBranch = `middle-smoke-${stamp}`;
   const epicRelPath = `planning/epics/${slug}.md`;
   const log = (line: string): void => console.log(`mm verify-file-mode --live: ${line}`);
   const prUrl = (n: number): string => `https://github.com/${repo}/pull/${n}`;
+  const branchUrl = `https://github.com/${repo}/tree/${agentBranch}`;
 
   return {
     log,
@@ -192,11 +200,12 @@ export function makeLiveSmokeIO(cfg: { repo: string; repoPath: string }): LiveSm
       const abs = join(repoPath, epicRelPath);
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, EPIC_BODY(slug));
-      await git(repoPath, ["checkout", "-b", branch]);
+      // Seed the Epic on a fresh local branch; the daemon's worktree branches off
+      // this HEAD, so its checkout carries the Epic file. No push needed.
+      await git(repoPath, ["checkout", "-b", seedBranch]);
       await git(repoPath, ["add", epicRelPath]);
       await git(repoPath, ["commit", "-m", `chore: live-smoke Epic ${slug}`]);
-      await git(repoPath, ["push", "-u", "origin", branch]);
-      return { slug, branch, branchUrl: `https://github.com/${repo}/tree/${branch}` };
+      return { slug, branch: seedBranch, branchUrl };
     },
     async dispatch(s) {
       // runDispatch returns 0 when the workflow completes or parks; infer which by
@@ -206,10 +215,9 @@ export function makeLiveSmokeIO(cfg: { repo: string; repoPath: string }): LiveSm
       return (await hasOpenQuestion(repoPath, s)) ? "waiting-human" : "completed";
     },
     async answerQuestion(s) {
+      // The human-edit the file-watcher detects: fill the answer block on disk.
+      // The daemon reads the local checkout, so no push is needed.
       await fillAnswerBlock(repoPath, s, ANSWER_TEXT);
-      await git(repoPath, ["add", epicRelPath]);
-      await git(repoPath, ["commit", "-m", `chore: answer live-smoke question ${s}`]);
-      await git(repoPath, ["push"]);
     },
     async awaitResume(s) {
       // The daemon's file-watcher polls on its cron; poll the PR until the
@@ -220,29 +228,33 @@ export function makeLiveSmokeIO(cfg: { repo: string; repoPath: string }): LiveSm
         if (pr && (await this.isSubIssueChecked(s, pr, 1))) return;
         await Bun.sleep(10_000);
       }
+      log(`timed out after 15m waiting for the resume to flip the sub-issue checkbox`);
     },
-    async findEpicPr(s) {
-      const { ghGitHub } = await import("@middle/dispatcher/src/github.ts");
-      const pr = await ghGitHub.findEpicPr(repo, s);
-      return pr ? { number: pr.number, isDraft: pr.isDraft, url: prUrl(pr.number) } : null;
-    },
-    async isSubIssueChecked(s, pr, id) {
-      // Read the Epic file at the PR head and parse the sub-issue's checkbox.
-      const headRes = await gh([
+    async findEpicPr() {
+      // Match by the agent's head branch (file-mode Epics have no issue number).
+      const res = await gh([
         "pr",
-        "view",
-        String(pr.number),
+        "list",
         "--repo",
         repo,
+        "--head",
+        agentBranch,
+        "--state",
+        "open",
         "--json",
-        "headRefName",
+        "number,isDraft",
         "--jq",
-        ".headRefName",
+        ".[0] // empty",
       ]);
-      const ref = headRes.stdout.trim();
+      if (!res.ok || res.stdout.trim() === "") return null;
+      const pr = JSON.parse(res.stdout.trim()) as { number: number; isDraft: boolean };
+      return { number: pr.number, isDraft: pr.isDraft, url: prUrl(pr.number) };
+    },
+    async isSubIssueChecked(_s, _pr, id) {
+      // Read the Epic file at the agent branch head and parse the sub-issue's box.
       const fileRes = await gh([
         "api",
-        `repos/${repo}/contents/${epicRelPath}?ref=${ref}`,
+        `repos/${repo}/contents/${epicRelPath}?ref=${agentBranch}`,
         "--jq",
         ".content",
       ]);
@@ -253,11 +265,11 @@ export function makeLiveSmokeIO(cfg: { repo: string; repoPath: string }): LiveSm
       const epic = parseEpicFile(text);
       return epic.subIssues.find((sub) => sub.id === id)?.checked === true;
     },
-    async cleanup(_s, b, pr) {
+    async cleanup(_s, _b, pr) {
+      // Close the agent PR and delete its remote branch; drop the local seed branch.
       if (pr) await gh(["pr", "close", String(pr.number), "--repo", repo, "--delete-branch"]);
-      // Drop the local probe branch + the authored branch (best-effort).
       await git(repoPath, ["checkout", "-"]).catch(() => {});
-      await git(repoPath, ["branch", "-D", b]).catch(() => {});
+      await git(repoPath, ["branch", "-D", seedBranch]).catch(() => {});
     },
   };
 }
