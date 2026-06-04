@@ -1,5 +1,42 @@
 # Decisions — Issue #209 (operator docs hardening)
 
+## #218 — `--foreground` runs the daemon in-process via a dynamic import + a test seam
+**File(s):** `packages/cli/src/commands/start.ts` (`runForegroundDaemon`, `defaultRunForeground`)
+**Date:** 2026-06-04
+
+**Decision:** `mm start --foreground` skips `runStart`'s fork/pid-file path entirely
+and runs `runDaemon({ hostExtras: dashboardHostExtras })` in *this* process. The
+daemon entry is pulled in with a **dynamic** `import()` (so the default background
+path never loads the dashboard/daemon modules), and the runner is injectable via a
+`runForeground` seam so unit tests don't boot the real daemon.
+
+**Why:** A service manager (systemd `Restart=on-failure`, launchd `KeepAlive`) owns
+the lifecycle, so middle must not daemonize behind its back or leave a pid file the
+manager doesn't track. `runDaemon` already installs SIGTERM/SIGINT → drain →
+`process.exit(0)` (`main.ts:1027-1030`), so foreground mode gets clean shutdown for
+free. The seam keeps the two unit tests fast while the integration test boots the
+real binary.
+
+**Evidence:** `daemon-entry.ts` runs exactly `runDaemon({ hostExtras })` under
+`import.meta.main`; `main.ts:118-138` shows the daemon boots from just config + db
+(no tmux/gh needed at boot), which is why the integration test can spawn it with a
+temp HOME + `MIDDLE_CONFIG`.
+
+## #218 — the integration test boots the real `mm` binary, not a mocked daemon
+**File(s):** `packages/cli/test/start-foreground.test.ts`
+**Date:** 2026-06-04
+
+**Decision:** Beyond the two fast injected-seam unit tests, the integration test
+`Bun.spawn`s `bun src/index.ts start --foreground` against an isolated `HOME` + a
+temp config (temp db_path + port 41877), polls `/health` until ready, asserts **no**
+`~/.middle/dispatcher.pid` is written, sends `SIGTERM`, and asserts a clean exit 0.
+
+**Why:** The sub-issue's integration criterion requires proving the systemd/launchd
+templates work "without manual workarounds" — that demands actually booting the
+daemon in foreground and observing the pid-file absence + SIGTERM handling on the
+real process, not a mock. Isolating `HOME` keeps it off the real `~/.middle`; a high
+port avoids colliding with a running dispatcher on 4120. Runs in ~1.6s.
+
 ## #217 — the integration check is a docs↔code drift guard, not a recommender replay
 **File(s):** `packages/cli/src/commands/doctor.ts` (`runVocabularyCheck`)
 **Date:** 2026-06-04

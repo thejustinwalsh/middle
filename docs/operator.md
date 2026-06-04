@@ -19,12 +19,13 @@ mm stop                         # shut the dispatcher down
 `mm start` spawns the dispatcher as a background process and records its pid in `~/.middle/dispatcher.pid`. The dispatcher serves the hook receiver and the dashboard on one port (default `4120`, set by `global.dispatcher_port`).
 
 ```bash
-mm start            # start in the background
-mm start --window   # also open the queue observability page once it is up
-mm stop             # SIGTERM the recorded pid and clear the pidfile
+mm start              # start in the background
+mm start --window     # also open the queue observability page once it is up
+mm start --foreground # run in-process, no pidfile (for a service manager — see below)
+mm stop               # SIGTERM the recorded pid and clear the pidfile
 ```
 
-To run the dispatcher in the foreground during development, use `scripts/dev.sh` instead of `mm start`. Set `MIDDLE_CONFIG` to point at a non-default config file.
+`mm start --foreground` runs the dispatcher in-process without forking or writing a pidfile, so a service manager owns its lifecycle — that's the command the systemd/launchd templates use. To have middle come up on boot, restart on crash, and log durably, run it as a service: see [Run middle as a system service](daemon-as-a-service.md). For a quick foreground run during development you can also use `scripts/dev.sh`. Set `MIDDLE_CONFIG` to point at a non-default config file.
 
 ## Dispatch work
 
@@ -190,7 +191,7 @@ Retention touches only middle's SQLite. `mm doctor`'s `database` line reports th
 |---|---|
 | `mm init <path>` | Bootstrap middle into a repo (skills, hooks, config, state issue) |
 | `mm uninit <path>` | Remove middle from a repo |
-| `mm start [--window]` | Start the dispatcher |
+| `mm start [--foreground] [--window]` | Start the dispatcher (`--foreground` for a service manager) |
 | `mm stop` | Stop the dispatcher |
 | `mm status` | One-screen summary of repos and workflow states |
 | `mm doctor [--fix]` | Full health check |

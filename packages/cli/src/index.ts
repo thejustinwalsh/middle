@@ -140,8 +140,9 @@ program
   .command("start")
   .description("Start the dispatcher process (hook server + workflow engine)")
   .option("--window", "open the queue observability page once the dispatcher is up")
-  .action(async (options: { window?: boolean }) =>
-    process.exit(await runStartCommand({ window: options.window })),
+  .option("--foreground", "run in the foreground without a pid file (for systemd/launchd)")
+  .action(async (options: { window?: boolean; foreground?: boolean }) =>
+    process.exit(await runStartCommand({ window: options.window, foreground: options.foreground })),
   );
 
 program
