@@ -28,6 +28,13 @@
         "smol-toml": "^1.6.1",
       },
     },
+    "packages/adapters/copilot": {
+      "name": "@middle/adapter-copilot",
+      "version": "0.0.0",
+      "dependencies": {
+        "@middle/core": "workspace:*",
+      },
+    },
     "packages/cli": {
       "name": "@middle/cli",
       "version": "0.0.0",
@@ -107,6 +114,8 @@
     "@middle/adapter-claude": ["@middle/adapter-claude@workspace:packages/adapters/claude"],
 
     "@middle/adapter-codex": ["@middle/adapter-codex@workspace:packages/adapters/codex"],
+
+    "@middle/adapter-copilot": ["@middle/adapter-copilot@workspace:packages/adapters/copilot"],
 
     "@middle/cli": ["@middle/cli@workspace:packages/cli"],
 
