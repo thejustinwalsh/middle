@@ -69,7 +69,7 @@ That TOML is the human-readable record of the mode; `mm init` writes it together
 
 After init, the repo has:
 
-```
+```text
 planning/epics/        # one <slug>.md per Epic (README.md explains the format)
 .middle/state.md       # the ranked dispatch state (the file-mode "state issue")
 .middle/<owner>-<name>.toml   # the [epic_store] config above
