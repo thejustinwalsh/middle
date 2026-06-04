@@ -61,7 +61,12 @@ cd packages/cli && bun link && cd ../..
 
 # "did you get that memo?" — verify bun / tmux / claude / git / gh + gh auth
 mm doctor
+
+# verify everything works — drive the file-mode dispatch loop end to end
+mm verify-file-mode
 ```
+
+`mm doctor` checks your toolchain; `mm verify-file-mode` proves the dispatch loop itself runs end to end. See [Live-smoke verification](docs/dogfooding.md#live-smoke-verification) for what it covers and the opt-in `--live` real-GitHub smoke.
 
 Configuration is optional — middle ships with working defaults. To override, drop a `~/.middle/config.toml` (defaults shown):
 

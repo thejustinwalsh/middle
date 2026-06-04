@@ -75,6 +75,8 @@ mm doctor --fix    # also append the bun PATH export to ~/.zshrc / ~/.bashrc
 
 Each check is pass (`✓`), warn (`!`), or fail (`✗`). Warnings mean degraded-but-functional; the command exits non-zero only on a failure.
 
+`mm doctor` checks your *toolchain*; `mm verify-file-mode` checks the *file-mode dispatch loop* end to end. Run it after install and after a major merge — see [Live-smoke verification](dogfooding.md#live-smoke-verification) for what it covers, when to run `--live`, and how to read a failure.
+
 ## Back up and restore state
 
 middle's SQLite database holds operational bookkeeping — workflow rows, the event log, rate-limit state. GitHub holds the work itself (issues, sub-issues, PRs), so a backup captures middle's state, never GitHub's.
@@ -115,6 +117,7 @@ Retention touches only middle's SQLite. `mm doctor`'s `database` line reports th
 | `mm stop` | Stop the dispatcher |
 | `mm status` | One-screen summary of repos and workflow states |
 | `mm doctor [--fix]` | Full health check |
+| `mm verify-file-mode [--live --repo <owner/name>]` | Verify the file-mode dispatch loop end to end (`--live` runs against real GitHub) |
 | `mm dispatch <repo> <epic>` | Force-dispatch an Epic (or standalone issue) |
 | `mm run-recommender <repo>` | Rank the backlog now (rewrites the state issue) |
 | `mm pause <repo>` / `mm resume <repo>` | Pause / resume auto-dispatch for a repo |
