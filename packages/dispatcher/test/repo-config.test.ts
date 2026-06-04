@@ -186,4 +186,15 @@ describe("shared-checkout collision guard (#226)", () => {
     expect(() => assertNoRepoPathCollision(db, "acme/a", "/tmp/X")).not.toThrow(); // same repo ok
     expect(() => assertNoRepoPathCollision(db, "acme/c", "/tmp/Z")).not.toThrow(); // free path ok
   });
+
+  test("trailing-slash / dot-segment spellings of the same path still collide (normalized)", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    // `/tmp/X/` and `/tmp/./X` resolve to the same directory as `/tmp/X` — the
+    // guard must catch them, not read them as distinct checkouts.
+    expect(() => registerManagedRepo(db, "acme/b", "/tmp/X/")).toThrow(RepoPathCollisionError);
+    expect(() => registerManagedRepo(db, "acme/b", "/tmp/./X")).toThrow(RepoPathCollisionError);
+    // The same repo re-registering with a trailing slash is still idempotent.
+    expect(() => registerManagedRepo(db, "acme/a", "/tmp/X/")).not.toThrow();
+    expect(getManagedRepoPath(db, "acme/a")).toBe("/tmp/X"); // stored normalized
+  });
 });

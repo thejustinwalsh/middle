@@ -127,7 +127,12 @@ export async function resolveBlockers(
       continue;
     }
     if (resolved.state === "open") {
-      const blocker = `${ref.ref} (${sanitizeTitle(resolved.title)})`;
+      // Annotate with the resolved title, truncated like an Epic cell. An empty /
+      // whitespace-only title (sanitizes to "") must NOT produce `#42 ()` — that
+      // fails the very `validate` the verify step runs next — so fall back to the
+      // bare ref (which re-resolves identically on the next tick).
+      const title = truncate60(sanitizeTitle(resolved.title));
+      const blocker = title === "" ? ref.ref : `${ref.ref} (${title})`;
       if (blocker !== item.blocker) changed = true;
       stillBlocked.push({ ...item, blocker });
       continue;
