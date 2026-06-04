@@ -137,7 +137,7 @@ function LimitRow({
       <span className="font-mono text-[11px] leading-none tracking-tight text-foreground">
         {label}
       </span>
-      <span className={cn("ml-auto font-mono text-[10.5px] leading-none tabular-nums", labelClass)}>
+      <span className={cn("ml-auto font-mono text-[11px] leading-none tabular-nums", labelClass)}>
         {detail ?? rateLimitLabel(status).toLowerCase()}
       </span>
     </div>
@@ -272,21 +272,11 @@ export function Sidebar(props: SidebarProps) {
             />
           </div>
         ) : (
-          <div className="px-3 py-3 font-mono text-[10.5px] tracking-tight text-[color:var(--fg-dim)]">
+          <div className="px-3 py-3 font-mono text-[11px] tracking-tight text-[color:var(--fg-dim)]">
             booting limits…
           </div>
         )}
       </div>
-
-      {/* Keyframes for the LiveDot pulse — keeping it co-located so the
-          sidebar is self-contained. The animation runs only when `live` is
-          true (the LiveDot's `style` carries the animation property). */}
-      <style>{`
-        @keyframes sidebar-pulse {
-          0%, 100% { box-shadow: 0 0 0 0 var(--accent), 0 0 6px 0 var(--accent); opacity: 1; }
-          50%      { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 10px 0 var(--accent); opacity: 0.7; }
-        }
-      `}</style>
     </aside>
   );
 }

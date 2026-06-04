@@ -147,16 +147,27 @@ export function Epics({
                     <span className="font-medium text-foreground">{card.title}</span>
                   </span>
                   {card.runner ? (
-                    <button
-                      type="button"
-                      className="cursor-pointer"
-                      onClick={() => onOpenInspector?.(card.runner!.session)}
-                      aria-label={`Open inspector for ${card.runner.session}`}
-                    >
+                    // Wrap the chip in a focusable button only when the
+                    // inspector callback is wired. Otherwise an undefined
+                    // handler would leave a no-op control in the tab order —
+                    // a chip with no behavior is honestly a chip, not a
+                    // button. (CodeRabbit #234.)
+                    onOpenInspector ? (
+                      <button
+                        type="button"
+                        className="cursor-pointer"
+                        onClick={() => onOpenInspector(card.runner!.session)}
+                        aria-label={`Open inspector for ${card.runner.session}`}
+                      >
+                        <StatusChip variant={variant}>
+                          {card.runner.adapter} · {card.runner.state}
+                        </StatusChip>
+                      </button>
+                    ) : (
                       <StatusChip variant={variant}>
                         {card.runner.adapter} · {card.runner.state}
                       </StatusChip>
-                    </button>
+                    )
                   ) : (
                     <StatusChip variant="idle">idle</StatusChip>
                   )}

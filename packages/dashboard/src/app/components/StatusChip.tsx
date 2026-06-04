@@ -15,6 +15,7 @@
 import type { ReactNode } from "react";
 import { cn } from "../lib/utils.ts";
 
+/** Visual tone for a workflow/adapter state pill — one variant per state class. */
 export type ChipVariant = "active" | "wait" | "alarm" | "idle";
 
 /** Map a workflow/runner state string to a chip variant. Unknown → idle. */
@@ -60,7 +61,7 @@ export function StatusChip({
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5",
-        "font-mono text-[10.5px] leading-[1.4] tabular-nums",
+        "font-mono text-[11px] leading-[1.4] tabular-nums",
         VARIANT_CLASS[variant],
         className,
       )}

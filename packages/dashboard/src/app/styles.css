@@ -129,6 +129,26 @@ body {
   min-height: 100%;
 }
 
+/* Keyframes for the Sidebar's LiveDot pulse — silent confirmation the system
+   is awake. Lives here (not co-located in Sidebar.tsx) so React doesn't emit
+   a duplicate `<style>` element on every Sidebar mount; the dashboard mounts
+   the Sidebar twice in narrow mode (desktop column + Sheet content). */
+@keyframes sidebar-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 0 var(--accent),
+      0 0 6px 0 var(--accent);
+    opacity: 1;
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px var(--accent-soft),
+      0 0 10px 0 var(--accent);
+    opacity: 0.7;
+  }
+}
+
 /* Mono everywhere there's a number, ID, hash, or path. Add `class="num"` to
    inline display numbers; `<code>` and `<pre>` already pick up mono. */
 code,
