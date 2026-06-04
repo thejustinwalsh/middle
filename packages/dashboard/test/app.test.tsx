@@ -4,12 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ApiError, api } from "../src/app/api-client.ts";
 import { App, applyWorkflowFrame } from "../src/app/App.tsx";
 import { GlobalBanner } from "../src/app/components/GlobalBanner.tsx";
-import { Inspector } from "../src/app/components/Inspector.tsx";
 import { NeedsYou } from "../src/app/components/NeedsYou.tsx";
 import { RepoRow } from "../src/app/components/Repos.tsx";
 import { createDbDeps } from "../src/db-deps.ts";
 import { createDashboardServer } from "../src/server.ts";
-import type { RepoDetail, RunnerPanel } from "../src/wire.ts";
+import type { RepoDetail } from "../src/wire.ts";
 import { makeConfig, makeDb, seedWorkflow } from "./helpers.ts";
 
 // The React views render against the wire shapes (renderToStaticMarkup), and the
@@ -24,6 +23,14 @@ test("App nav includes a queue tab", () => {
 test("App nav includes an activity tab", () => {
   const html = renderToStaticMarkup(<App />);
   expect(html).toContain(">activity<");
+});
+
+test("App nav is a shadcn Tabs primitive (#220): tabs-list + a trigger per view", () => {
+  const html = renderToStaticMarkup(<App />);
+  expect(html).toContain('data-slot="tabs-list"');
+  // One shadcn TabsTrigger per view, each a real ARIA tab.
+  expect(html.match(/data-slot="tabs-trigger"/g)?.length).toBe(5);
+  expect(html).toContain('role="tab"');
 });
 
 test("api.runs reads runs from a live server", async () => {
@@ -171,49 +178,15 @@ describe("dashboard views (static render)", () => {
     expect(html).toContain("#247"); // NEXT UP
     expect(html).toContain("tmux attach -r -t &#x27;mm-alpha-247&#x27;"); // copy command (escaped quotes)
     expect(html).toContain("human"); // controlled_by badge
+    // #220 shadcn primitives wired in: slot pills are Badges, the repo header is a
+    // Collapsible trigger Button, the runner actions are Buttons.
+    expect(html).toContain('data-slot="badge"');
+    expect(html).toContain('data-slot="collapsible-trigger"');
+    expect(html).toContain('data-slot="button"');
   });
 
-  test("Inspector renders the per-runner panel, links, affordances, and timeline", () => {
-    const panel: RunnerPanel = {
-      session: "mm-alpha-247",
-      workflowId: "w1",
-      repo: "o/alpha",
-      epic: 247,
-      epicRef: null,
-      adapter: "claude",
-      state: "running",
-      controlledBy: "middle",
-      alive: true,
-      lastHeartbeat: Date.now() - 5000,
-      contextTokens: null,
-      transcriptPath: "/wt/alpha/transcript.jsonl",
-      worktreePath: "/wt/alpha",
-      prNumber: 251,
-      prBranch: "feat/oauth",
-      currentSubIssue: 2,
-      attachCommands: {
-        watch: "tmux attach -r -t 'mm-alpha-247'",
-        control: "tmux attach -t 'mm-alpha-247'",
-      },
-    };
-    const html = renderToStaticMarkup(
-      <Inspector
-        panel={panel}
-        events={[
-          { ts: Date.now() - 10_000, type: "session.started", payload: null },
-          { ts: Date.now() - 2000, type: "gate.passed", payload: null },
-        ]}
-        transcriptUrl="/api/sessions/mm-alpha-247/transcript"
-      />,
-    );
-    expect(html).toContain("controlled by");
-    expect(html).toContain("● live");
-    expect(html).toContain("#251"); // PR link
-    expect(html).toContain("/wt/alpha"); // worktree
-    expect(html).toContain("tmux attach -t &#x27;mm-alpha-247&#x27;"); // control copy command
-    expect(html).toContain("gate.passed"); // verification evidence + timeline
-    expect(html).toContain("session.started");
-  });
+  // Inspector render test moved to `inspector.test.tsx` (DOM): it's now a Sheet
+  // (Radix Dialog) whose portaled content `renderToStaticMarkup` can't capture.
 });
 
 describe("api-client against a live server", () => {

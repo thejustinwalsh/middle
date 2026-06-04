@@ -59,14 +59,19 @@
 }
 
 @layer base {
+  /* The slice of Tailwind preflight the shadcn primitives actually need, minus
+     the parts that would change the legacy look (button/heading/margin resets).
+     Without `border-style: solid` here, the `border` utility only sets a width
+     and shadcn's borders (Sheet/Select/Input/Badge outline) render invisible;
+     `border-color` defaults to currentColor in v4, so pin it to the panel line.
+     `border-width: 0` keeps a bare element borderless until a utility opts in —
+     legacy unlayered CSS and the `border-*` utilities both override it. */
   *,
   ::before,
   ::after {
     box-sizing: border-box;
-  }
-  /* Tailwind v4 defaults `border-color` to currentColor; shadcn primitives
-     expect a neutral default so a bare `border` utility draws the panel line. */
-  * {
+    border-width: 0;
+    border-style: solid;
     border-color: var(--border);
   }
 }

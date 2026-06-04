@@ -5,22 +5,25 @@
  * `details`, so a collapsed repo costs nothing.
  */
 import type { RepoDetail, RepoSummary } from "../../wire.ts";
+import { Badge } from "./ui/badge.tsx";
+import { Button } from "./ui/button.tsx";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible.tsx";
 import { RunnerRow } from "./RunnerRow.tsx";
 
 function SlotPills({ summary }: { summary: RepoSummary }) {
   return (
-    <span className="slot-pills">
+    <span className="slot-pills flex flex-wrap items-center gap-1">
       {summary.adapters.map((a) => (
-        <span key={a.adapter} className="pill">
+        <Badge key={a.adapter} variant="outline">
           {a.adapter} {a.used}/{a.max}
-        </span>
+        </Badge>
       ))}
-      <span className="pill total">
+      <Badge variant="outline">
         total {summary.total.used}/{summary.total.max}
-      </span>
-      <span className={`pill auto ${summary.auto ? "on" : "off"}`}>
+      </Badge>
+      <Badge variant={summary.auto ? "success" : "destructive"}>
         auto {summary.auto ? "✓" : "✗"}
-      </span>
+      </Badge>
     </span>
   );
 }
@@ -54,52 +57,56 @@ export function RepoRow({
 }) {
   return (
     <li className="repo-row" data-repo={summary.repo}>
-      <button
-        type="button"
-        className="repo-header"
-        aria-expanded={expanded}
-        onClick={() => onToggle(summary.repo)}
-      >
-        <span className="repo-name">{summary.repo}</span>
-        <SlotPills summary={summary} />
-      </button>
-      {expanded && detail ? (
-        <div className="repo-expansion">
-          <div className="next-up">
-            <h4>NEXT UP</h4>
-            {detail.nextUp.length === 0 ? (
-              <p className="empty">—</p>
-            ) : (
-              <ol>
-                {detail.nextUp.map((n) => (
-                  <li key={n.epic}>
-                    #{n.epic} · {n.adapter} · {n.subIssues} sub-issues — {n.reason}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-          <div className="in-flight">
-            <h4>IN FLIGHT</h4>
-            {detail.inFlight.length === 0 ? (
-              <p className="empty">—</p>
-            ) : (
-              <ul>
-                {detail.inFlight.map((r) => (
-                  <RunnerRow
-                    key={r.session}
-                    runner={r}
-                    now={now}
-                    onWatch={onWatch}
-                    onTakeControl={onTakeControl}
-                    onOpenInspector={onOpenInspector}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      ) : null}
+      <Collapsible open={expanded} onOpenChange={() => onToggle(summary.repo)}>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className="repo-header flex h-auto w-full items-center justify-between gap-2 py-2"
+          >
+            <span className="repo-name font-medium">{summary.repo}</span>
+            <SlotPills summary={summary} />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="repo-expansion">
+          {detail ? (
+            <>
+              <div className="next-up">
+                <h4>NEXT UP</h4>
+                {detail.nextUp.length === 0 ? (
+                  <p className="empty">—</p>
+                ) : (
+                  <ol>
+                    {detail.nextUp.map((n) => (
+                      <li key={n.epic}>
+                        #{n.epic} · {n.adapter} · {n.subIssues} sub-issues — {n.reason}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+              <div className="in-flight">
+                <h4>IN FLIGHT</h4>
+                {detail.inFlight.length === 0 ? (
+                  <p className="empty">—</p>
+                ) : (
+                  <ul>
+                    {detail.inFlight.map((r) => (
+                      <RunnerRow
+                        key={r.session}
+                        runner={r}
+                        now={now}
+                        onWatch={onWatch}
+                        onTakeControl={onTakeControl}
+                        onOpenInspector={onOpenInspector}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          ) : null}
+        </CollapsibleContent>
+      </Collapsible>
     </li>
   );
 }

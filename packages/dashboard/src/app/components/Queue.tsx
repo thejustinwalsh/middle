@@ -6,6 +6,25 @@
  * `textContent` discipline.
  */
 import type { ControlMetrics, ControlWorkflowFrame } from "../control-client.ts";
+import { Badge, type BadgeProps } from "./ui/badge.tsx";
+
+/**
+ * Map a workflow state to a Badge intent. `waiting`/`compensating` stay neutral
+ * (outline) — deliberately uncolored, mirroring the old status-page behavior.
+ */
+function stateVariant(state: string): BadgeProps["variant"] {
+  if (state === "running" || state === "completed") return "success";
+  if (state === "launching" || state === "pending") return "default";
+  if (state === "waiting-human") return "warning";
+  if (
+    state === "rate-limited" ||
+    state === "failed" ||
+    state === "cancelled" ||
+    state === "compensated"
+  )
+    return "destructive";
+  return "outline";
+}
 
 type QueueProps = {
   /** Latest `/control/metrics` snapshot, or null before the first fetch. */
@@ -75,21 +94,35 @@ export function Queue({ metrics, live }: QueueProps) {
               <tr key={w.id}>
                 <td>{w.repo || "—"}</td>
                 <td>{w.epic === null ? "—" : `#${w.epic}`}</td>
-                <td className={`state s-${w.state}`}>{w.state}</td>
+                <td className="state">
+                  <Badge variant={stateVariant(w.state)} className={`s-${w.state}`}>
+                    {w.state}
+                  </Badge>
+                </td>
               </tr>
             ))
           )}
         </tbody>
       </table>
       <h2>Rate limits</h2>
-      <div className="chips">
+      <div className="chips flex flex-wrap gap-2">
         {metrics.rateLimits.length === 0 ? (
           <span className="empty">no rate-limit data</span>
         ) : (
           metrics.rateLimits.map((r) => (
-            <span key={r.adapter} className={`c-${r.status.toLowerCase()}`}>
+            <Badge
+              key={r.adapter}
+              variant={
+                r.status === "AVAILABLE"
+                  ? "success"
+                  : r.status === "RATE_LIMITED"
+                    ? "destructive"
+                    : "outline"
+              }
+              className={`c-${r.status.toLowerCase()}`}
+            >
               {r.adapter}: {r.status}
-            </span>
+            </Badge>
           ))
         )}
       </div>

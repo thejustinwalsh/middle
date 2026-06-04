@@ -29,7 +29,13 @@ describe("Epics", () => {
     expect(out).toContain("#247 OAuth refresh");
     expect(out).toContain("2 / 4");
     expect(out).toContain("dispatch");
-    expect(out).not.toContain("disabled");
+    // #220 shadcn primitives: Progress bar, Select adapter picker, Button dispatch.
+    expect(out).toContain('data-slot="progress"');
+    expect(out).toContain('data-slot="select-trigger"');
+    expect(out).toContain('data-slot="button"');
+    // shadcn primitives carry `disabled:` utility classes, so assert the
+    // actual disabled attribute (SSR renders it as `disabled=""`).
+    expect(out).not.toContain('disabled=""');
   });
 
   test("empty state when there are no Epics", () => {
@@ -51,7 +57,7 @@ describe("Epics", () => {
     expect(out).not.toContain("#null");
     // Force-dispatch is CLI-only for a file Epic — the button is disabled and
     // points at the working path.
-    expect(out).toContain("disabled");
+    expect(out).toContain('disabled=""');
     expect(out).toContain("mm dispatch rollout-epic-store");
   });
 
@@ -72,7 +78,7 @@ describe("Epics", () => {
         },
       }),
     );
-    expect(out).toContain("disabled");
+    expect(out).toContain('disabled=""');
     expect(out).toContain("claude · running");
   });
 
@@ -86,7 +92,7 @@ describe("Epics", () => {
         },
       }),
     );
-    expect(out).toContain("disabled");
+    expect(out).toContain('disabled=""');
   });
 
   test("shows a decision callout when present", () => {
