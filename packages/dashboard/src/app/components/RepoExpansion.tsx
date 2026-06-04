@@ -1,10 +1,3 @@
-/**
- * The body of an expanded repo row: NEXT UP + IN FLIGHT. Self-fetching via
- * {@link useAsyncResource} so it owns its own loading / error / retry UI (#223):
- * a Skeleton while the detail is in flight, an {@link InlineError} (with Retry)
- * on failure or timeout, the content on success. `reloadSignal` lets the parent
- * (App, on a poll tick or SSE event) force a refresh of an already-open panel.
- */
 import type { RepoDetail } from "../../wire.ts";
 import { useAsyncResource } from "../useAsyncResource.ts";
 import { InlineError } from "./InlineError.tsx";
@@ -22,6 +15,16 @@ function RepoExpansionSkeleton() {
   );
 }
 
+/**
+ * The body of an expanded repo row: NEXT UP + IN FLIGHT. Self-fetching via
+ * {@link useAsyncResource} (calling `loader(signal)`, which must honor the abort
+ * signal) so it owns its own loading / error / retry UI (#223): a Skeleton while
+ * the detail is in flight, an {@link InlineError} (with Retry) on failure or
+ * timeout, the content on success. Bumping `reloadSignal` forces a refresh of an
+ * already-open panel (App does this on a poll tick or SSE event); `now` anchors
+ * relative timestamps, and the optional `onWatch`/`onTakeControl`/
+ * `onOpenInspector` callbacks pass through to each {@link RunnerRow}.
+ */
 export function RepoExpansion({
   loader,
   reloadSignal = 0,

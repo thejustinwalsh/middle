@@ -1,10 +1,3 @@
-/**
- * The Repos list: a per-repo header (slot pills + auto-dispatch state) that
- * expands to NEXT UP (top of the recommender's ready ranking) and IN FLIGHT
- * (the running runners). The expansion body ({@link RepoExpansion}) fetches its
- * own detail lazily on open and owns its loading/error/retry UI, so a collapsed
- * repo costs nothing and a failed fetch recovers in place.
- */
 import type { RepoDetail, RepoSummary } from "../../wire.ts";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
@@ -84,6 +77,17 @@ export function RepoRow({
   );
 }
 
+/**
+ * The Repos list: renders one {@link RepoRow} per `repos` entry, each a header
+ * (slot pills + auto-dispatch state) that, when its id is in the `expanded` set,
+ * reveals NEXT UP and IN FLIGHT. The expansion body ({@link RepoExpansion})
+ * fetches its own detail lazily via `loadDetail(repo, signal)` (must honor the
+ * abort signal) and owns its loading/error/retry UI, so a collapsed repo costs
+ * nothing and a failed fetch recovers in place. `reloadSignals` maps a repo id to
+ * a counter — bumping it refreshes that open panel; `now` anchors relative
+ * timestamps. `onToggle` fires with the clicked repo; the optional `onWatch`/
+ * `onTakeControl`/`onOpenInspector` receive a session id.
+ */
 export function Repos({
   repos,
   expanded,

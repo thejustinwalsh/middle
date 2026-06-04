@@ -1,4 +1,13 @@
 /**
+ * Build the `file://` href for an Epic file from its slug. The slug is a single
+ * path segment, URL-encoded so a malformed value can't break out of the
+ * `planning/epics/` directory or inject markup into the `href`.
+ */
+export function epicFileHref(slug: string): string {
+  return `file://planning/epics/${encodeURIComponent(slug)}.md`;
+}
+
+/**
  * Renders an Epic reference per the dispatch mode the workflow row carries:
  *
  * - **github mode** (`epicNumber !== null`) → plain `#N` text, byte-for-byte
@@ -14,16 +23,6 @@
  * empty rendering (the runner surfaces showed `#—`, others a bare `—`); keeping
  * it configurable preserves each surface's exact output.
  */
-
-/**
- * Build the `file://` href for an Epic file from its slug. The slug is a single
- * path segment, URL-encoded so a malformed value can't break out of the
- * `planning/epics/` directory or inject markup into the `href`.
- */
-export function epicFileHref(slug: string): string {
-  return `file://planning/epics/${encodeURIComponent(slug)}.md`;
-}
-
 export function EpicRef({
   epicNumber,
   epicRef,

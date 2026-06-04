@@ -1,10 +1,3 @@
-/**
- * The Epic browse view — the dashboard's primary surface. Lists a repo's open
- * Epics with sub-issue progress, the agent working each (if any), a high-value
- * decision callout from the state issue, and a force-dispatch control whose
- * adapter picker defaults to the recommender's choice. The repo filter lives in
- * {@link App}; this component renders the chosen repo's cards.
- */
 import { useState } from "react";
 import type { EpicCard } from "../../wire.ts";
 import { Button } from "./ui/button.tsx";
@@ -86,6 +79,16 @@ function DispatchControl({
   );
 }
 
+/**
+ * The Epic browse view — the dashboard's primary surface. Renders `epics` (a
+ * repo's open Epic cards) with sub-issue progress, the agent working each (if
+ * any), a high-value decision callout, and a force-dispatch control whose adapter
+ * picker is drawn from `adapters` and defaults to the recommender's choice (an
+ * empty `adapters` or `epics` simply renders empty/disabled). `onDispatch(repo,
+ * epicNumber, adapter)` fires synchronously from the dispatch button; the
+ * optional `onOpenInspector` receives a session id. The repo filter lives in
+ * {@link App}; this component renders the chosen repo's cards.
+ */
 export function Epics({
   epics,
   adapters,

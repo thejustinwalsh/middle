@@ -1,11 +1,12 @@
-/**
- * The "Needs You" panel — the dashboard's primary surface. Aggregates
- * `needsHumanInput` across every repo plus ready-for-review Epic PRs (the server
- * folds both into `/api/needs-you`). When it's empty, the system is working.
- */
 import type { NeedsYouItem } from "../../wire.ts";
 import { Button } from "./ui/button.tsx";
 
+/**
+ * The "Needs You" panel — the dashboard's primary surface. Renders the `items`
+ * (the server folds `needsHumanInput` across every repo plus ready-for-review
+ * Epic PRs into `/api/needs-you`); an empty list shows the "system is working"
+ * placeholder. `onOpen`, if given, is invoked with the clicked item.
+ */
 export function NeedsYou({
   items,
   onOpen,
