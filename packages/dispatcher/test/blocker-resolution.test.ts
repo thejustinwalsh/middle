@@ -152,6 +152,31 @@ describe("resolveBlockers", () => {
     expect(next.blocked[0]!.blocker).toBe("`upstream release`");
   });
 
+  test("an open blocker with an empty title falls back to the bare ref (never `#42 ()`)", async () => {
+    // Regression: `#42 ()` would fail the `validate` the verify step runs next.
+    const state = parse(bodyWith({ blocked: ["- **#10** waiting on acme/b#7 · dep"] }));
+    const next = await resolveBlockers(
+      state,
+      resolverFrom({ "acme/b#7": { state: "open", title: "   " } }),
+    );
+    expect(next.blocked[0]!.blocker).toBe("acme/b#7");
+    // And it round-trips + stays unchanged on re-resolution (idempotent).
+    const again = await resolveBlockers(
+      next,
+      resolverFrom({ "acme/b#7": { state: "open", title: "" } }),
+    );
+    expect(again.blocked[0]!.blocker).toBe("acme/b#7");
+  });
+
+  test("a long open-blocker title is truncated to 60 chars in the annotation", async () => {
+    const state = parse(bodyWith({ blocked: ["- **#10** waiting on acme/b#7 · dep"] }));
+    const next = await resolveBlockers(
+      state,
+      resolverFrom({ "acme/b#7": { state: "open", title: "y".repeat(80) } }),
+    );
+    expect(next.blocked[0]!.blocker).toBe(`acme/b#7 (${"y".repeat(59)}…)`);
+  });
+
   test("re-resolving is idempotent — a re-annotated open blocker does not accumulate", async () => {
     const state = parse(
       bodyWith({ blocked: ["- **#10** waiting on acme/b#7 (Old title) · cross-repo dep"] }),

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { resolve } from "node:path";
 
 /**
  * Per-repo dispatcher state in the `repo_config` table. v1 uses only the
@@ -92,17 +93,31 @@ export class RepoPathCollisionError extends Error {
 }
 
 /**
+ * Normalize a checkout path for collision comparison + storage so trivial
+ * spelling variants of the *same* directory (a trailing slash, a `.`/`..` segment)
+ * don't read as distinct checkouts and slip the guard (#226). `resolve` does NOT
+ * follow symlinks — two symlinked paths to one directory still read as distinct
+ * (resolving them would need fs access and fail for a not-yet-created path); that
+ * narrower case is out of scope.
+ */
+function normalizeCheckoutPath(checkoutPath: string): string {
+  return resolve(checkoutPath);
+}
+
+/**
  * Reject (throw {@link RepoPathCollisionError}) if `checkoutPath` is already
  * registered to a *different* repo. Same-slug re-registration is allowed (the
  * `repo != ?` filter excludes it), so an idempotent re-register / path update for
- * the same repo passes. Run by {@link registerManagedRepo} before it writes, and
- * by `mm init` *before* it scaffolds (so a rejected init writes nothing).
+ * the same repo passes. Paths are normalized so `/foo` and `/foo/` collide. Run by
+ * {@link registerManagedRepo} before it writes, and by `mm init` *before* it
+ * scaffolds (so a rejected init writes nothing).
  */
 export function assertNoRepoPathCollision(db: Database, repo: string, checkoutPath: string): void {
+  const normalized = normalizeCheckoutPath(checkoutPath);
   const row = db
     .query("SELECT repo FROM repo_config WHERE checkout_path = ? AND repo != ?")
-    .get(checkoutPath, repo) as { repo: string } | null;
-  if (row) throw new RepoPathCollisionError(row.repo, repo, checkoutPath);
+    .get(normalized, repo) as { repo: string } | null;
+  if (row) throw new RepoPathCollisionError(row.repo, repo, normalized);
 }
 
 /**
@@ -120,14 +135,16 @@ export function registerManagedRepo(
   now: number = Date.now(),
 ): void {
   // Reject a shared-checkout collision before writing — never silently overwrite
-  // another repo's path mapping (#226).
-  assertNoRepoPathCollision(db, repo, checkoutPath);
+  // another repo's path mapping (#226). Store the normalized path so the guard's
+  // comparison stays consistent across trailing-slash / `.`-segment variants.
+  const normalized = normalizeCheckoutPath(checkoutPath);
+  assertNoRepoPathCollision(db, repo, normalized);
   db.run(
     `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
        VALUES (?, '{}', ?, ?)
      ON CONFLICT(repo) DO UPDATE SET checkout_path = excluded.checkout_path,
        last_synced_at = excluded.last_synced_at`,
-    [repo, checkoutPath, now],
+    [repo, normalized, now],
   );
 }
 
