@@ -1,217 +1,391 @@
+/*
+ * The dashboard's design foundation: typography, palette, base reset.
+ *
+ * Direction: "operator console — refined" — a single-operator power tool, dense
+ * without feeling cramped, IBM Plex Sans (chrome) paired with IBM Plex Mono
+ * (data: IDs, hashes, paths, timestamps, code), one accent color used
+ * sparingly. Inspirations: Vercel, Linear, Datadog when they're at their
+ * tightest. Always dark — this runs on localhost for one operator, never a
+ * marketing surface, never light.
+ *
+ * Fonts are self-hosted via `@fontsource` (no Google CDN — the dashboard must
+ * work offline). Only the weights we actually use are loaded.
+ *
+ * Tokens here are the **single source of truth** for the dark palette; the
+ * shadcn semantic tokens (`--color-*`) are `@theme inline` aliases in
+ * `tailwind.css`, so a future light theme only has to override these vars.
+ */
+
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
 :root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --border: #30363d;
-  --fg: #e6edf3;
-  --muted: #8b949e;
-  --accent: #2f81f7;
-  --ok: #3fb950;
-  --warn: #d29922;
-  --bad: #f85149;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Type — distinctive but operator-coded. Plex Sans for chrome, Plex Mono
+     for data; tabular numbers everywhere there's a digit. */
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Surfaces — deep blue-black floor, faintly elevated panels. Not pure black
+     (#000 reads as a void); a 4-step elevation scale gives the eye enough
+     anchor to scan a dense layout without shadows. */
+  --bg: #0a0c10;
+  --panel: #11141a;
+  --panel-2: #161a22;
+  --panel-hover: #1a1f29;
+  --border: #1e242d;
+  --border-strong: #2a313c;
+
+  /* Foreground — three shades, no more. Off-white for primary, two muted
+     levels so secondary text recedes without disappearing. */
+  --fg: #e6eaf2;
+  --fg-muted: #8a93a3;
+  --fg-dim: #5a6271;
+
+  /* The one accent — electric green for live / running / primary action.
+     Used sparingly; ubiquity would kill the signal. */
+  --accent: #39d98a;
+  --accent-soft: #39d98a1a;     /* 10% tint for hover backgrounds */
+  --accent-fg: #052013;          /* dark fg for use on solid accent */
+
+  /* Status — distinct from accent so the eye reads "state" not "action". */
+  --ok: var(--accent);
+  --warn: #f7b955;
+  --warn-soft: #f7b9551a;
+  --bad: #f0626a;
+  --bad-soft: #f0626a1a;
+  --info: #5aa2ff;
+
+  /* Type scale — tight, opinionated. No font-size under 11px (legibility
+     floor). 13px is the body baseline, which makes a dense table readable. */
+  --text-2xs: 10.5px;
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-base: 13.5px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+
+  /* Spacing — 4px grid, plus a few half-steps for tight chips. */
+  --s-0: 0px;
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 6px;
+  --s-4: 8px;
+  --s-5: 12px;
+  --s-6: 16px;
+  --s-7: 24px;
+  --s-8: 32px;
+  --s-9: 48px;
+
+  /* Radii — small. Heavy radii belong in marketing pages. */
+  --radius: 6px;
+
+  /* The chrome's silent grid — a hairline rule the eye registers as
+     "structured" without reading. Used on empty states and the sidebar edge. */
+  --rule: 1px solid var(--border);
+
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11", "tnum";  /* tnum = tabular numbers */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 * {
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
+  height: 100%;
+}
+
+body {
   background: var(--bg);
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--text-base);
+  line-height: 1.45;
+  /* The faintest possible vertical-rule hairline grid — present, not noisy.
+     This is the "atmosphere" the design skill calls for on dark surfaces:
+     not a gradient mesh, not a noise overlay, just a 64px column rule that
+     makes the eye register the layout as deliberate. */
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+  background-size: 64px 100%;
 }
 
-.banner {
-  display: flex;
-  gap: 1.5rem;
-  align-items: center;
-  padding: 0.6rem 1rem;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+#root {
+  min-height: 100%;
 }
 
-.banner-title {
-  font-weight: 700;
+/* Mono everywhere there's a number, ID, hash, or path. Add `class="num"` to
+   inline display numbers; `<code>` and `<pre>` already pick up mono. */
+code, pre, kbd, samp, .mono, .num {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum", "zero", "ss01";
 }
 
-.banner-limits {
-  display: flex;
-  gap: 1rem;
+/* Type rhythm — small uppercase section labels (tracked), readable body. */
+h1, h2, h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+h1 { font-size: var(--text-xl); }
+h2 { font-size: var(--text-lg); }
+h3 { font-size: var(--text-base); }
+
+/* The section-label pattern (used for `EPICS`, `Needs human input`, etc).
+   `.section-label` is the new canonical class; legacy `h2` falls back to it. */
+.section-label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
 }
 
-.limit-available {
-  color: var(--ok);
+/* Links — accent only on hover. Underlines deferred to `:hover` keeps the
+   layout calm. */
+a {
+  color: var(--fg);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 120ms ease-out, color 120ms ease-out;
 }
-.limit-rate_limited {
-  color: var(--warn);
+a:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
-.limit-unknown {
-  color: var(--muted);
+
+/* Form controls — quiet by default; the focus ring is the only thing that
+   shouts. */
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
 }
+
+ul, ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* -----------------------------------------------------------------------
+ * Legacy view classes — kept thin during the redesign so the current
+ * Repos/Settings/Inspector surfaces still render while their components are
+ * rewritten phase-by-phase. Each entry here is a deliberate compatibility
+ * shim; the goal is that this section EMPTIES OUT as components move to
+ * utility classes + shadcn primitives.
+ * --------------------------------------------------------------------- */
 
 main {
-  padding: 1rem;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: var(--s-7);
+  padding: var(--s-6) var(--s-7);
+  max-width: 1320px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 h2 {
-  font-size: 0.85rem;
+  font-size: var(--text-2xs);
+  font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--muted);
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding-bottom: var(--s-3);
   border-bottom: 1px solid var(--border);
-  padding-bottom: 0.3rem;
 }
 
 .count {
   float: right;
   color: var(--accent);
-}
-
-ul,
-ol {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum";
 }
 
 .empty {
-  color: var(--muted);
-  font-style: italic;
+  color: var(--fg-muted);
+  font-style: normal;
+  padding: var(--s-7) 0;
+  text-align: center;
 }
+
+.banner {
+  display: flex;
+  gap: var(--s-7);
+  align-items: center;
+  padding: var(--s-4) var(--s-7);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.banner-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.banner-limits {
+  display: flex;
+  gap: var(--s-5);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.limit-available { color: var(--accent); }
+.limit-rate_limited { color: var(--warn); }
+.limit-unknown { color: var(--fg-dim); }
 
 .repo-row,
 .needs-you-item {
-  padding: 0.4rem 0;
+  padding: var(--s-4) 0;
   border-bottom: 1px solid var(--border);
 }
 
 .runner-row {
   display: flex;
-  gap: 0.6rem;
+  gap: var(--s-4);
   align-items: center;
   flex-wrap: wrap;
-  padding: 0.2rem 0;
+  padding: var(--s-2) 0;
 }
 
 .copy-command {
   display: inline-flex;
-  gap: 0.3rem;
+  gap: var(--s-2);
   align-items: center;
 }
 .copy-command code {
-  background: #010409;
-  padding: 0.05rem 0.3rem;
-  border-radius: 0.3rem;
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: var(--text-sm);
 }
 
 .runner-panel {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.2rem 0.8rem;
+  gap: var(--s-2) var(--s-5);
 }
 .runner-panel dt {
-  color: var(--muted);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
 }
-.runner-panel .human {
-  color: var(--warn);
-}
+.runner-panel .human { color: var(--warn); }
 
 .error-bar {
-  background: var(--bad);
-  color: #fff;
-  padding: 0.3rem 1rem;
+  background: var(--bad-soft);
+  border-bottom: 1px solid var(--bad);
+  color: var(--bad);
+  padding: var(--s-3) var(--s-7);
+  font-size: var(--text-sm);
 }
 
 .settings fieldset {
   border: 1px solid var(--border);
-  border-radius: 0.4rem;
-  margin-bottom: 1rem;
+  border-radius: var(--radius);
+  margin-bottom: var(--s-6);
+  padding: var(--s-5) var(--s-6);
 }
 .settings label {
   display: block;
-  margin: 0.3rem 0;
+  margin: var(--s-3) 0;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
 }
 
-/* Queue tab — gauge tiles */
-.queue .tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 0.75rem;
-}
-.queue .tile {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  padding: 0.9rem 1rem;
-}
-.queue .tile .n {
-  font-size: 1.6rem;
-  font-weight: 700;
-}
-.queue .tile .l {
-  font-size: 0.75rem;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* Queue tab — in-flight table */
-.queue table.active {
-  width: 100%;
-  border-collapse: collapse;
-}
-.queue table.active th,
-.queue table.active td {
-  text-align: left;
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid var(--border);
-}
-.queue table.active th {
-  color: var(--muted);
-  font-weight: 500;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* Epics tab */
+/* Epics tab — placeholder; the real component rewrite in Phase 3 supersedes. */
 .epics .epic-card {
-  border: 1px solid var(--border, #333);
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--s-5) var(--s-6);
+  margin-bottom: var(--s-4);
+  background: var(--panel);
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+.epics .epic-card:hover {
+  background: var(--panel-hover);
+  border-color: var(--border-strong);
 }
 .epics .epic-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: var(--s-5);
 }
-.epics .epic-agent.idle {
-  opacity: 0.6;
-}
+.epics .epic-agent.idle { opacity: 0.5; }
 .epics .epic-decision {
-  font-size: 0.85rem;
-  margin: 0.25rem 0;
+  font-size: var(--text-sm);
+  margin: var(--s-3) 0;
+  color: var(--fg-muted);
 }
 
-/* Activity tab */
-.activity .run-section {
-  margin-bottom: 1rem;
+/* Queue tab. */
+.queue .tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--s-5);
 }
+.queue .tile {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--s-5) var(--s-6);
+}
+.queue .tile .n {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum";
+  font-size: var(--text-2xl);
+  font-weight: 500;
+  line-height: 1.1;
+  color: var(--fg);
+}
+.queue .tile .l {
+  font-size: var(--text-2xs);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: var(--s-2);
+}
+
+.queue table.active {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.queue table.active th,
+.queue table.active td {
+  text-align: left;
+  padding: var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--border);
+}
+.queue table.active th {
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Activity tab. */
+.activity .run-section { margin-bottom: var(--s-6); }
 .activity .run-row {
   display: flex;
   align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.15rem 0;
+  gap: var(--s-4);
+  padding: var(--s-2) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 .activity .run-when {
-  opacity: 0.7;
-  font-size: 0.8rem;
+  color: var(--fg-dim);
+  font-size: var(--text-2xs);
 }
 .activity .run-output {
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
 }
