@@ -887,6 +887,11 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // (post-restart) and for any repo `mm init` registered.
   const recommenderCronDeps = {
     db,
+    // Per-repo runs fire concurrently (#227); these bound the fan-out and the
+    // per-repo timeout from the daemon's global `[recommender]` config (a hung
+    // repo no longer blocks the others). Defaults live in recommender-cron.ts.
+    maxConcurrentRepos: config.recommender?.maxConcurrentRepos,
+    runTimeoutMs: config.recommender?.runTimeoutMs,
     loadRepoConfig: (checkoutPath: string) => {
       try {
         return loadConfig({
