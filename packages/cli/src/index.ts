@@ -158,8 +158,12 @@ program
   .command("doctor")
   .description("Check tmux/claude/git/gh preconditions for `mm dispatch`")
   .option("--fix", "write the bun PATH export to your shell rc (~/.zshrc / ~/.bashrc)")
-  .action(async (options: { fix?: boolean }) =>
-    process.exit(await runDoctor({ fix: options.fix })),
+  .option(
+    "--vocabulary-check",
+    "only check docs/vocabulary.md agrees with middle's label constants",
+  )
+  .action(async (options: { fix?: boolean; vocabularyCheck?: boolean }) =>
+    process.exit(await runDoctor({ fix: options.fix, vocabularyCheck: options.vocabularyCheck })),
   );
 
 program

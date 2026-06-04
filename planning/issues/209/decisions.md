@@ -1,5 +1,56 @@
 # Decisions — Issue #209 (operator docs hardening)
 
+## #217 — the integration check is a docs↔code drift guard, not a recommender replay
+**File(s):** `packages/cli/src/commands/doctor.ts` (`runVocabularyCheck`)
+**Date:** 2026-06-04
+
+**Decision:** Realize #217's "the check exits 0 only when the docs and the code
+agree" as `mm doctor --vocabulary-check` — parse `docs/vocabulary.md`, list its
+labels, and assert (a) every label middle's code deterministically keys on (the
+`NEEDS_DESIGN_LABEL` and `STATE_LABEL` constants + the middle-owned
+`NON_FEATURE_LABELS`, excluding generic GitHub triage labels) is documented, and
+(b) the full canonical vocabulary is present (catches a deleted section). Test it
+in the CLI suite (`packages/cli/test/doctor.test.ts`), booting the real `mm` binary
+via `Bun.spawn` for the integration evidence.
+
+**Why:** The sub-issue's literal wording wanted a test that "exercises each
+documented label against a fixture state issue and asserts the recommender's
+classification matches." But the recommender's classification is **LLM-driven** —
+`recommender.ts` assembles a prompt and the agent (via the skill) classifies; there
+is no deterministic classifier in code to assert against (confirmed: no label
+branching in `workflows/recommender.ts`; `setEpicStoreConfig`-style label handling
+is limited to the `NEEDS_DESIGN_LABEL`/`STATE_LABEL` constants and the rubric's
+`NON_FEATURE_LABELS`). A non-deterministic LLM assertion would be flaky and prove
+nothing. The honest, enforceable equivalent of "docs and code agree" is to assert
+the doc covers every label the code *actually* keys on — a real drift guard with
+teeth: rename a constant or add a new keyed label without documenting it and the
+check fails. The issue explicitly authorized "an extended `mm doctor` flag", and
+the doc-honors-the-vocabulary intent is fully served.
+
+**Why the CLI suite, not `packages/dispatcher/test/workflows/recommender.test.ts`:**
+that path doesn't exist (the recommender test is `recommender-workflow.test.ts`),
+and the drift guard lives in `mm doctor` (CLI), so its test belongs beside it. The
+integration evidence is the `Bun.spawn` boot of the real CLI against the shipped doc.
+
+**Evidence:** `packages/dispatcher/src/workflows/recommender.ts` (prompt assembly,
+no label classification); `packages/core/src/integration-rubric.ts:79-96`
+(`NON_FEATURE_LABELS`/`isFeatureIssue`); `packages/cli/src/bootstrap/types.ts:6`
+(`STATE_LABEL`); `packages/cli/src/commands/audit-issues.ts:12` (`NEEDS_DESIGN_LABEL`).
+
+## #217 — skills cross-link with an absolute GitHub URL, not a relative path
+**File(s):** the three skills' `SKILL.md`
+**Date:** 2026-06-04
+
+**Decision:** The skill cross-links to `docs/vocabulary.md` use the absolute URL
+`https://github.com/thejustinwalsh/middle/blob/main/docs/vocabulary.md`.
+
+**Why:** Skills are stamped into *target* repos (`.claude/skills/`, `.codex/skills/`
+via the `bootstrap-assets` mirror). A relative `../../docs/vocabulary.md` resolves
+in the middle repo but is broken everywhere middle is installed. The vocabulary is
+middle's own (the labels middle's recommender/dispatcher key on), so the canonical
+middle URL is correct from any repo. Red-flag *table* entries were left in place
+(action-shaped, per the sub-issue); only definition-shaped prose became a cross-link.
+
 ## #216 — flip-existing-repo is `mm init --epic-store=file`, not a hand TOML edit
 **File(s):** `docs/operator.md` (Enable file mode section)
 **Date:** 2026-06-04

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { loadConfig, type MiddleConfig } from "@middle/core";
+import { loadConfig, type MiddleConfig, NON_FEATURE_LABELS } from "@middle/core";
 import { currentSchemaVersion, openDb } from "@middle/dispatcher/src/db.ts";
 import { type EpicStoreConfig, readEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
 import { EPIC_DOC_MARKER } from "@middle/dispatcher/src/epic-store/epic-file/markers.ts";
@@ -15,6 +15,8 @@ import {
   tmuxVersionAtLeast,
 } from "@middle/dispatcher/src/tmux.ts";
 import { defaultPidFile, deriveRepoSlug } from "../paths.ts";
+import { NEEDS_DESIGN_LABEL } from "./audit-issues.ts";
+import { STATE_LABEL } from "../bootstrap/types.ts";
 import {
   BOOTSTRAP_SKILLS_DIR,
   CANONICAL_SKILLS_DIR,
@@ -567,7 +569,116 @@ export type DoctorOptions = {
   repoPath?: string;
   /** Resolve the repo's `owner/name` slug (defaults to the git-remote derivation). */
   resolveSlug?: (repoPath: string) => Promise<string>;
+  /** Run only the docs↔code label drift guard (`--vocabulary-check`). */
+  vocabularyCheck?: boolean;
+  /** Override the `docs/vocabulary.md` path the vocabulary check reads (tests). */
+  vocabularyDocPath?: string;
 };
+
+/**
+ * The standard GitHub triage labels that appear in {@link NON_FEATURE_LABELS}
+ * but are *not* part of middle's own vocabulary — they take an issue out of the
+ * integration rubric, but middle neither defines nor owns them, so the
+ * vocabulary check doesn't require `docs/vocabulary.md` to document them.
+ */
+const GENERIC_TRIAGE_LABELS = new Set([
+  "documentation",
+  "docs",
+  "chore",
+  "question",
+  "duplicate",
+  "invalid",
+]);
+
+/**
+ * The full operator-facing label vocabulary `docs/vocabulary.md` must document —
+ * the canonical set a reader learns the system from. The drift guard fails if the
+ * doc is missing any of these (a deleted section) on top of the code-agreement
+ * check below; kept here, beside the code that enforces it, so adding a label to
+ * the doc's contract is a deliberate edit.
+ */
+const REQUIRED_VOCABULARY: readonly string[] = [
+  "epic",
+  "approved",
+  "needs-design",
+  "blocked",
+  "wontfix",
+  "agent:claude",
+  "agent:codex",
+  "agent-queue:state",
+  "agent-queue:eligible",
+  "dogfood",
+  "bootstrap",
+  "housekeeping",
+  "phase:N",
+];
+
+/** Default `docs/vocabulary.md` path, resolved from this module (commands → src → cli → packages → root). */
+function defaultVocabularyDocPath(): string {
+  return join(import.meta.dir, "..", "..", "..", "..", "docs", "vocabulary.md");
+}
+
+/** Every label `docs/vocabulary.md` documents — the stems of its `### `<label>`` section headers. */
+function parseDocumentedLabels(doc: string): Set<string> {
+  const labels = new Set<string>();
+  const re = /^#{2,4}\s+`([^`]+)`/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(doc)) !== null) labels.add(m[1]!);
+  return labels;
+}
+
+/**
+ * `mm doctor --vocabulary-check` — the docs↔code label drift guard. Parses
+ * `docs/vocabulary.md`, lists every label it documents, and asserts the doc and
+ * the code agree:
+ * - **Code agreement:** every label middle's code deterministically keys on — the
+ *   `needs-design` and `agent-queue:state` constants plus every middle-owned
+ *   {@link NON_FEATURE_LABELS} entry (the generic GitHub triage labels are
+ *   excluded) — has a section in the doc. Rename a constant in code without
+ *   updating the doc and this fails.
+ * - **Completeness:** every label in {@link REQUIRED_VOCABULARY} is documented, so
+ *   a deleted section is caught even for labels code doesn't key on.
+ *
+ * Exits 0 only when both hold. Returns the process exit code.
+ */
+export function runVocabularyCheck(opts: Pick<DoctorOptions, "vocabularyDocPath"> = {}): number {
+  const docPath = opts.vocabularyDocPath ?? defaultVocabularyDocPath();
+  console.log("middle — vocabulary check\n");
+  if (!existsSync(docPath)) {
+    console.log(`  ✗ docs/vocabulary.md not found at ${docPath}`);
+    return 1;
+  }
+  const documented = parseDocumentedLabels(readFileSync(docPath, "utf8"));
+
+  // Labels the code deterministically keys on, minus the generic triage labels
+  // middle doesn't own. De-duplicated (NON_FEATURE_LABELS overlaps the constants).
+  const codeKeyed = [...new Set([NEEDS_DESIGN_LABEL, STATE_LABEL, ...NON_FEATURE_LABELS])].filter(
+    (l) => !GENERIC_TRIAGE_LABELS.has(l),
+  );
+
+  const missingFromCode = codeKeyed.filter((l) => !documented.has(l));
+  const missingRequired = REQUIRED_VOCABULARY.filter((l) => !documented.has(l));
+
+  console.log(`  documented labels (${documented.size}): ${[...documented].sort().join(", ")}\n`);
+
+  const fails: string[] = [];
+  for (const l of missingFromCode) {
+    fails.push(`code keys on \`${l}\` but docs/vocabulary.md doesn't document it`);
+  }
+  for (const l of missingRequired) {
+    fails.push(`docs/vocabulary.md is missing required label \`${l}\``);
+  }
+
+  if (fails.length === 0) {
+    console.log(`  ✓ docs and code agree — ${codeKeyed.length} code-keyed label(s) documented.`);
+    return 0;
+  }
+  for (const f of fails) console.log(`  ✗ ${f}`);
+  console.log(
+    `\n${fails.length} drift issue(s) — update docs/vocabulary.md or the label constants.`,
+  );
+  return 1;
+}
 
 /**
  * `mm doctor` — full operator health check. Validates the toolchain every
@@ -582,6 +693,9 @@ export type DoctorOptions = {
  * missing adapter binary among others present) do not fail the run.
  */
 export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
+  if (opts.vocabularyCheck) {
+    return runVocabularyCheck({ vocabularyDocPath: opts.vocabularyDocPath });
+  }
   const { fix } = opts;
   const { check: configCheck, config } = loadDoctorConfig();
   const epicStore = await resolveEpicStore(config, opts);
