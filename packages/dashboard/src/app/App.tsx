@@ -27,6 +27,7 @@ import {
   type ControlMetrics,
   type ControlWorkflowFrame,
 } from "./control-client.ts";
+import { Menu } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
 import {
   Select,
@@ -35,6 +36,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select.tsx";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "./components/ui/sheet.tsx";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Activity } from "./components/Activity.tsx";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
@@ -48,6 +56,10 @@ import { Settings } from "./components/Settings.tsx";
 
 /** Poll cadence for the top-level read model until SSE replaces it (#57). */
 const POLL_MS = 4000;
+
+/** The top-nav views, in order. Drives both the desktop Tabs and the mobile menu. */
+const VIEWS = ["epics", "dashboard", "queue", "activity", "settings"] as const;
+type View = (typeof VIEWS)[number];
 
 /** Lifecycle states that drop a workflow from the live queue (mirrors the old status page). */
 const TERMINAL_QUEUE_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
@@ -73,9 +85,8 @@ export function App() {
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
   );
-  const [view, setView] = useState<"epics" | "dashboard" | "queue" | "activity" | "settings">(
-    "epics",
-  );
+  const [view, setView] = useState<View>("epics");
+  const [navOpen, setNavOpen] = useState(false);
   const [epics, setEpics] = useState<EpicCard[]>([]);
   const [epicRepo, setEpicRepo] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsWire | null>(null);
@@ -345,19 +356,46 @@ export function App() {
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
       {error ? <div className="error-bar">API error: {error.message}</div> : null}
-      <Tabs
-        value={view}
-        onValueChange={(v) => setView(v as typeof view)}
-        className="border-b border-border px-4 py-2"
-      >
-        <TabsList aria-label="views">
-          <TabsTrigger value="epics">epics</TabsTrigger>
-          <TabsTrigger value="dashboard">dashboard</TabsTrigger>
-          <TabsTrigger value="queue">queue</TabsTrigger>
-          <TabsTrigger value="activity">activity</TabsTrigger>
-          <TabsTrigger value="settings">settings</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+        {/* Mobile (<640px): the tabs collapse to a hamburger that opens a Sheet menu. */}
+        <Sheet open={navOpen} onOpenChange={setNavOpen}>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon" aria-label="menu" className="sm:hidden">
+              <Menu />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" aria-describedby={undefined} className="w-64">
+            <SheetHeader>
+              <SheetTitle>Views</SheetTitle>
+            </SheetHeader>
+            <nav className="flex flex-col gap-1">
+              {VIEWS.map((v) => (
+                <Button
+                  key={v}
+                  variant={view === v ? "secondary" : "ghost"}
+                  className="justify-start"
+                  onClick={() => {
+                    setView(v);
+                    setNavOpen(false);
+                  }}
+                >
+                  {v}
+                </Button>
+              ))}
+            </nav>
+          </SheetContent>
+        </Sheet>
+        {/* Desktop (≥640px): the shadcn Tabs strip. */}
+        <Tabs value={view} onValueChange={(v) => setView(v as View)} className="hidden sm:block">
+          <TabsList aria-label="views">
+            {VIEWS.map((v) => (
+              <TabsTrigger key={v} value={v}>
+                {v}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
       {view === "epics" ? (
         <>
           <div className="epics-toolbar flex items-center gap-2 px-4 pt-4">

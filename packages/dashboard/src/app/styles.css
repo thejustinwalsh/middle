@@ -88,10 +88,6 @@ ol {
   border-bottom: 1px solid var(--border);
 }
 
-.repo-expansion {
-  padding: 0.5rem 0 0.5rem 1rem;
-}
-
 .runner-row {
   display: flex;
   gap: 0.6rem;

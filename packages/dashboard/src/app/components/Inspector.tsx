@@ -12,6 +12,8 @@
  */
 import type { RunnerPanel, SessionEvent } from "../../wire.ts";
 import { ago } from "../format.ts";
+import { cn } from "../lib/utils.ts";
+import { useMediaQuery } from "../useMediaQuery.ts";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "./ui/sheet.tsx";
@@ -43,6 +45,11 @@ export function Inspector({
   onRelease?: (session: string) => void;
 }) {
   const verification = events.filter((e) => isVerificationEvent(e.type));
+  // Anchor the Sheet to the right edge on desktop (≥1024px) and slide it up from
+  // the bottom on narrower viewports (#222). The breakpoint must branch in JS, so
+  // it reads the media query rather than a CSS-only utility.
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const side = isDesktop ? "right" : "bottom";
   return (
     <Sheet
       open
@@ -51,10 +58,13 @@ export function Inspector({
       }}
     >
       <SheetContent
-        side="right"
+        side={side}
         aria-label={`Inspector for ${panel.session}`}
         aria-describedby={undefined}
-        className="inspector w-full gap-2 text-sm sm:max-w-md"
+        className={cn(
+          "inspector w-full gap-2 text-sm",
+          side === "right" ? "sm:max-w-md" : "max-h-[85vh]",
+        )}
       >
         <SheetHeader className="inspector-head">
           <SheetTitle>

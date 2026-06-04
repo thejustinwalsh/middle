@@ -114,3 +114,20 @@ the Epics view and asserts it becomes `activeElement`, plus that the primitives 
 traversal + the painted ring go to the Playwright smoke (#224). NB: assert
 `activeElement === el` as a BOOLEAN — `toBe(el)` serializes the whole happy-dom node on a
 mismatch (a 279s hang).
+
+## Responsive: JS-driven Inspector side, CSS-driven nav/stacking
+**File(s):** `useMediaQuery.ts`, `components/Inspector.tsx`, `App.tsx`, `Repos.tsx`, `test/responsive.test.tsx`
+**Date:** 2026-06-04
+
+**Decision:** The Inspector Sheet's anchor edge branches in JS via a `useMediaQuery`
+hook (`right` ≥1024px, `bottom` <1024 — so <768 is covered). The nav collapse
+(`hidden sm:block` Tabs + a `sm:hidden` hamburger that opens a left Sheet menu) and the
+repo-expansion stacking (`flex flex-col md:flex-row`) are pure CSS responsive utilities —
+no px widths in JSX.
+**Why:** The anchor edge changes a *prop* (`side`), which CSS can't do — it needs JS. The
+nav/stacking are presentation-only, so Tailwind breakpoints keep them declarative and
+out of the render logic. The `<768` and `≥1024` bounds are explicit in the AC; the
+768–1024 band falls to `bottom` (the simplest split that honors both bounds).
+**Evidence:** `responsive.test.tsx` mocks `matchMedia` at 360px → asserts the Inspector's
+SheetContent carries the bottom-anchor classes (`bottom-0 inset-x-0`, not `inset-y-0`),
+and at 1280px → the right-anchor classes. The CSS-only bits are verified visually in #224.
