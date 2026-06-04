@@ -95,3 +95,22 @@ keep asserting state without coupling to the deleted color rules — the color n
 from the Badge variant.
 **Evidence:** Served-CSS probe confirms `bg-primary`/`border-input`/`ring-ring`/`bg-card`/
 `animate-pulse` compile and `border-style: solid` is in the base layer.
+
+## Focus-visible rides on the shadcn primitives; anchors get a base fallback
+**File(s):** `tailwind.css`, `components/Inspector.tsx`, `test/focus-visible.test.tsx`
+**Date:** 2026-06-04
+
+**Decision:** The shadcn primitives already carry `focus-visible:ring-2 ring-ring
+ring-offset-2` from #220, so #221 is mostly additive: a base-layer `:focus-visible`
+outline for plain anchors / `[tabindex]` (not covered by a primitive), and an
+`aria-label` ("session alive"/"session ended") on the Inspector liveness Badge with the
+`●/○` glyph marked `aria-hidden` so screenreaders announce the semantic, not "black
+circle". (Queue uses text state labels, not a glyph — already screenreader-friendly.)
+**Why:** Keeps the focus styling DRY (one ring convention, defined where the primitive
+lives) and the a11y fix localized.
+**Evidence:** `focus-visible.test.tsx` (happy-dom) focuses each tab-reachable element on
+the Epics view and asserts it becomes `activeElement`, plus that the primitives carry the
+`focus-visible:ring` class. happy-dom can't move focus on a synthetic Tab, so real Tab
+traversal + the painted ring go to the Playwright smoke (#224). NB: assert
+`activeElement === el` as a BOOLEAN — `toBe(el)` serializes the whole happy-dom node on a
+mismatch (a 279s hang).
