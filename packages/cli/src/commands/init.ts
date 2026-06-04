@@ -35,6 +35,15 @@ export type InitCliOptions = {
    * `registerRepo`. Omitted → no write (e.g. unit tests that don't assert it).
    */
   setEpicStore?: (repo: string, cfg: EpicStoreRegistration) => void;
+  /**
+   * Shared-checkout collision guard (#226) — wired by the CLI entry to a daemon-db
+   * lookup (`assertNoRepoPathCollision`). Run *before* any files are written (so a
+   * rejected init scaffolds nothing) with the resolved `owner/name` slug + the
+   * checkout path; a throw aborts the init with a non-zero exit. Unlike
+   * `registerRepo`/`setEpicStore`, this is NOT best-effort — a collision must fail
+   * the init. Omitted → no guard (unit tests that don't assert it).
+   */
+  checkCollision?: (repo: string, repoPath: string) => void;
 };
 
 /**
@@ -49,6 +58,10 @@ export async function runInit(pathArg: string, opts: InitCliOptions = {}): Promi
     const result = await initRepo(repo, deps, {
       dryRun: opts.dryRun ?? false,
       epicStore: opts.epicStore ?? "github",
+      // The guard runs inside initRepo (after the slug resolves, before any write)
+      // so a collision aborts the init before it scaffolds. The throw propagates to
+      // the catch below → `mm init: <message>` on stderr, non-zero exit (#226).
+      checkCollision: opts.checkCollision ? (slug) => opts.checkCollision!(slug, repo) : undefined,
     });
     const slug = `${result.info.owner}/${result.info.name}`;
 

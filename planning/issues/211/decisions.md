@@ -60,3 +60,34 @@ the first dataPath (see `packages/dispatcher/CLAUDE.md`). A second engine in-pro
 cross-talks with the first; reusing one engine is the established pattern (mirrors
 `recommender-workflow.test.ts`).
 **Evidence:** dispatcher `CLAUDE.md` → "bunqueue lifecycle & the lock-token race".
+
+## #226 — one collision helper, two callers; the guard runs before any write
+**File(s):** `packages/dispatcher/src/repo-config.ts`, `packages/cli/src/bootstrap/init.ts`
+**Date:** 2026-06-04
+
+**Decision:** `assertNoRepoPathCollision(db, repo, path)` is the single guard.
+`registerManagedRepo` calls it before its INSERT (so the daemon's `rememberRepoPath`
+rejects too), and `mm init` calls it via an injected `checkCollision` hook in
+`initRepo` *right after the slug resolves and before any file is written*.
+**Why:** The AC requires "before writing anything" so a rejected init leaves no
+half-scaffolded `.middle/`. `registerRepo` is wired late (after scaffolding) and is
+best-effort, so it can't be the guard — hence a separate early hook. A `repo != ?`
+filter keeps a same-slug re-register idempotent (the daemon re-registers a repo's path
+on every dispatch; that must never self-collide).
+**Evidence:** `init-collision.test.ts` asserts `.middle/acme-b.toml` is absent after a
+rejected second init; `repo-config.test.ts` (a)/(b)/(c) cases.
+
+## #226 — the dispatch route maps the collision class to 400, re-throws everything else
+**File(s):** `packages/dispatcher/src/hook-server.ts`
+**Date:** 2026-06-04
+
+**Decision:** `#handleControlDispatch` wraps `startDispatch` in a try/catch that maps
+`RepoPathCollisionError` → 400 (naming both repos + path) and re-throws any other
+error.
+**Why:** A shared-checkout collision is a client config error (this `repoPath` belongs
+to another slug), not a server fault — 400, not 500. The catch is deliberately narrow
+(`instanceof RepoPathCollisionError`) so a genuine engine failure is never masked as a
+client error. (The "non-collision still fails" path is left to the code's narrowness —
+an HTTP test of it is brittle because Bun resets the connection on an uncaught fetch
+throw rather than returning 500.)
+**Evidence:** `control-routes.test.ts` — collision → 400 with both slugs + path.

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { openAndMigrate } from "../src/db.ts";
 import {
+  assertNoRepoPathCollision,
   clearPaused,
   getLastRecommenderRun,
   getManagedRepoPath,
@@ -10,6 +11,7 @@ import {
   listManagedRepos,
   markRecommenderRun,
   registerManagedRepo,
+  RepoPathCollisionError,
   setLastRecommenderRun,
   setPausedUntil,
 } from "../src/repo-config.ts";
@@ -121,5 +123,67 @@ describe("managed-repo registry (#135)", () => {
     registerManagedRepo(db, "o/r", "/checkouts/r");
     expect(getLastRecommenderRun(db, "o/r")).toBe(1_700_000);
     expect(getManagedRepoPath(db, "o/r")).toBe("/checkouts/r");
+  });
+});
+
+// #226 — two repo slugs must never share one checkout path: the second's
+// dispatches collide on `git worktree add`. registerManagedRepo (and the explicit
+// guard) rejects it; a same-slug re-register stays idempotent.
+describe("shared-checkout collision guard (#226)", () => {
+  test("(a) registering acme/a at /tmp/X succeeds", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    expect(getManagedRepoPath(db, "acme/a")).toBe("/tmp/X");
+  });
+
+  test("(b) re-registering the SAME repo at the same path is idempotent and succeeds", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    expect(() => registerManagedRepo(db, "acme/a", "/tmp/X")).not.toThrow();
+    const { n } = db
+      .query("SELECT count(*) AS n FROM repo_config WHERE repo = ?")
+      .get("acme/a") as {
+      n: number;
+    };
+    expect(n).toBe(1);
+  });
+
+  test("(c) registering a DIFFERENT repo at the same path rejects, naming both repos + the path", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    let caught: unknown;
+    try {
+      registerManagedRepo(db, "acme/b", "/tmp/X");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RepoPathCollisionError);
+    const err = caught as RepoPathCollisionError;
+    expect(err.existingRepo).toBe("acme/a");
+    expect(err.attemptedRepo).toBe("acme/b");
+    expect(err.checkoutPath).toBe("/tmp/X");
+    expect(err.message).toContain("acme/a");
+    expect(err.message).toContain("acme/b");
+    expect(err.message).toContain("/tmp/X");
+  });
+
+  test("the rejected repo is NOT written (the collision guard runs before the insert)", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    expect(() => registerManagedRepo(db, "acme/b", "/tmp/X")).toThrow(RepoPathCollisionError);
+    // acme/b never got a row; acme/a still owns the path.
+    expect(getManagedRepoPath(db, "acme/b")).toBeNull();
+    expect(listManagedRepos(db)).toEqual([{ repo: "acme/a", checkoutPath: "/tmp/X" }]);
+  });
+
+  test("the same repo can move to a new path (no self-collision)", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    registerManagedRepo(db, "acme/a", "/tmp/Y");
+    expect(getManagedRepoPath(db, "acme/a")).toBe("/tmp/Y");
+    // And another repo can then claim the now-freed /tmp/X.
+    expect(() => registerManagedRepo(db, "acme/b", "/tmp/X")).not.toThrow();
+  });
+
+  test("assertNoRepoPathCollision is a standalone guard (used by mm init before scaffolding)", () => {
+    registerManagedRepo(db, "acme/a", "/tmp/X");
+    expect(() => assertNoRepoPathCollision(db, "acme/b", "/tmp/X")).toThrow(RepoPathCollisionError);
+    expect(() => assertNoRepoPathCollision(db, "acme/a", "/tmp/X")).not.toThrow(); // same repo ok
+    expect(() => assertNoRepoPathCollision(db, "acme/c", "/tmp/Z")).not.toThrow(); // free path ok
   });
 });

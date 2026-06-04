@@ -68,6 +68,13 @@ export type BootstrapOptions = {
    * local Epic directory + state file and makes ZERO `gh`/GitHub calls.
    */
   epicStore?: EpicStoreMode;
+  /**
+   * Shared-checkout collision guard (#226), run with the resolved `owner/name`
+   * slug *after* the repo is identified but *before* any files are written — so a
+   * rejected init scaffolds nothing. Throws to abort the init. Injected by the CLI
+   * (a daemon-db lookup); omitted in dry-run and in unit tests that don't assert it.
+   */
+  checkCollision?: (slug: string) => void;
 };
 
 /** What `mm init` did (or, under `--dry-run`, would do). */
