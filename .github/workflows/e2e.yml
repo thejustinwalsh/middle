@@ -13,8 +13,13 @@ jobs:
   dashboard-playwright:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      # Actions pinned to commit SHAs (not mutable tags) so a re-tag can't change
+      # what runs; `persist-credentials: false` keeps the checkout token out of
+      # the worktree's git config. Version comments track the pinned release.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
