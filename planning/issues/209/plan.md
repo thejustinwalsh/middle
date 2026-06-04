@@ -57,7 +57,7 @@ real integration test so the docs can't silently drift from the code.
 - `packages/skills/{creating,recommending,implementing}-github-issues/SKILL.md` — cross-links
 
 ## Decision note (recorded in decisions.md)
-#217's integration is realized as a **docs↔code drift guard** via `mm doctor
+Issue #217's integration is realized as a **docs↔code drift guard** via `mm doctor
 --vocabulary-check`, not a deterministic replay of the recommender's *classification*:
 the recommender's classification is LLM-driven (it assembles a prompt; the agent
 classifies), so there is no deterministic classifier to assert against. The honest,

@@ -78,7 +78,7 @@ Then `sudo systemctl daemon-reload && sudo systemctl enable --now middle`, check
 
 ## macOS — launchd
 
-launchd does **not** expand `~`, so use absolute paths. Replace `<you>` with your account (run `whoami`). Write `~/Library/LaunchAgents/io.middle.dispatcher.plist`:
+launchd does **not** expand `~`, so use absolute paths. Replace `YOUR_USERNAME` with your account (run `whoami`). Write `~/Library/LaunchAgents/io.middle.dispatcher.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -89,23 +89,23 @@ launchd does **not** expand `~`, so use absolute paths. Replace `<you>` with you
   <string>io.middle.dispatcher</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/<you>/.bun/bin/mm</string>
+    <string>/Users/YOUR_USERNAME/.bun/bin/mm</string>
     <string>start</string>
     <string>--foreground</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/<you>/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>/Users/YOUR_USERNAME/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/Users/<you>/Library/Logs/middle.log</string>
+  <string>/Users/YOUR_USERNAME/Library/Logs/middle.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/<you>/Library/Logs/middle.log</string>
+  <string>/Users/YOUR_USERNAME/Library/Logs/middle.log</string>
 </dict>
 </plist>
 ```
