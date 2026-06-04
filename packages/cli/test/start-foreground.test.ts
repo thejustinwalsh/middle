@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStartCommand } from "../src/commands/start.ts";
@@ -64,6 +65,50 @@ describe("runStartCommand --foreground (unit, injected runner)", () => {
       restore();
     }
   });
+
+  test("refuses when a live dispatcher is already recorded (pidfile preflight)", async () => {
+    const restore = silence();
+    let ran = false;
+    try {
+      // The current test process is itself alive, so its pid stands in for a
+      // running background dispatcher. Foreground must not launch a second one.
+      writeFileSync(pidFile, String(process.pid));
+      const code = await runStartCommand({
+        foreground: true,
+        pidFile,
+        runForeground: async () => {
+          ran = true;
+        },
+      });
+      expect(code).toBe(1);
+      expect(ran).toBe(false);
+      // A live pidfile is left untouched — it belongs to the running daemon.
+      expect(existsSync(pidFile)).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  test("clears a stale pid file and runs (pidfile preflight)", async () => {
+    const restore = silence();
+    let ran = false;
+    try {
+      writeFileSync(pidFile, "999999999"); // a pid that is not alive
+      const code = await runStartCommand({
+        foreground: true,
+        pidFile,
+        runForeground: async () => {
+          ran = true;
+        },
+      });
+      expect(code).toBe(0);
+      expect(ran).toBe(true);
+      // The stale pidfile is removed; foreground itself writes none.
+      expect(existsSync(pidFile)).toBe(false);
+    } finally {
+      restore();
+    }
+  });
 });
 
 // Integration (sub-issue #218): boot the REAL `mm start --foreground` via
@@ -74,14 +119,28 @@ describe("runStartCommand --foreground (unit, injected runner)", () => {
 describe("mm start --foreground (integration, real daemon boot)", () => {
   const CLI = join(import.meta.dir, "..", "src", "index.ts");
   const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-  // A high, uncommon port so the test daemon doesn't collide with a real one on 4120.
-  const PORT = 41877;
 
-  async function healthy(deadlineMs: number): Promise<boolean> {
+  // Pick an ephemeral free port at runtime instead of hard-coding one: a fixed
+  // port makes the test flaky under parallel CI or when a local process already
+  // owns it. Bind port 0, read what the OS assigned, then release it for the
+  // daemon to claim.
+  async function freePort(): Promise<number> {
+    return await new Promise<number>((resolve, reject) => {
+      const srv = createServer();
+      srv.once("error", reject);
+      srv.listen(0, "127.0.0.1", () => {
+        const addr = srv.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        srv.close((err) => (err ? reject(err) : resolve(port)));
+      });
+    });
+  }
+
+  async function healthy(port: number, deadlineMs: number): Promise<boolean> {
     const deadline = Date.now() + deadlineMs;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(`http://127.0.0.1:${PORT}/health`);
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) {
           const body = (await res.json().catch(() => null)) as { ok?: unknown } | null;
           if (body?.ok === true) return true;
@@ -95,6 +154,7 @@ describe("mm start --foreground (integration, real daemon boot)", () => {
   }
 
   test("stays running, writes no pid file, and exits cleanly on SIGTERM", async () => {
+    const PORT = await freePort();
     const configPath = join(dir, "config.toml");
     writeFileSync(
       configPath,
@@ -112,7 +172,7 @@ describe("mm start --foreground (integration, real daemon boot)", () => {
     });
 
     try {
-      const ready = await healthy(20_000);
+      const ready = await healthy(PORT, 20_000);
       expect(ready).toBe(true);
       // Still running, and NO pid file written (the service manager owns lifecycle).
       expect(proc.killed).toBe(false);
