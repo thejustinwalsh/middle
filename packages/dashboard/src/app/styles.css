@@ -65,9 +65,9 @@
   --bad-soft: #f0626a1a;
   --info: #5aa2ff;
 
-  /* Type scale — tight, opinionated. No font-size under 11px (legibility
-     floor). 13px is the body baseline, which makes a dense table readable. */
-  --text-2xs: 10.5px;
+  /* Type scale — tight, opinionated. 11px is the legibility floor (no token
+     below it); 13px is the body baseline, which keeps a dense table readable. */
+  --text-2xs: 11px;
   --text-xs: 11.5px;
   --text-sm: 12.5px;
   --text-base: 13.5px;

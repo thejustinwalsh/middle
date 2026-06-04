@@ -96,7 +96,7 @@ function NavButton({
       {count !== null && count > 0 ? (
         <span
           className={cn(
-            "rounded-full px-1.5 py-0.5 font-mono text-[10px] leading-none tabular-nums",
+            "rounded-full px-1.5 py-0.5 font-mono text-[11px] leading-none tabular-nums",
             active
               ? "bg-primary/15 text-primary"
               : "bg-[color:var(--panel-2)] text-[color:var(--fg-muted)]",
