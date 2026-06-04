@@ -13,7 +13,7 @@ import { ghGitHub } from "./github.ts";
 import type { EpicGateway } from "./github.ts";
 import { ghStateIssueGateway } from "./state-issue.ts";
 import type { StateGateway } from "./state-issue.ts";
-import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
+import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
 import {
   buildRecommenderContext,
   createRecommenderWorkflow,
@@ -285,7 +285,10 @@ export async function dispatchRecommender(
         db,
         getAdapter: opts.getAdapter,
         sessionGate,
-        tmux: ov.tmux ?? { newSession, sendText, sendEnter, killSession },
+        // `status` lets the spawn step race the Stop hook against tmux liveness
+        // (mirrors the daemon's wiring) — a session killed mid-run fails fast
+        // rather than blocking for the full agent timeout.
+        tmux: ov.tmux ?? { newSession, sendText, sendEnter, killSession, status },
         worktree: ov.worktree ?? { createWorktree, destroyWorktree },
         resolveRepoPath: () => opts.repoPath,
         worktreeRoot: opts.worktreeRoot,

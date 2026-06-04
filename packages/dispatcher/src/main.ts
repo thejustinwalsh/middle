@@ -655,7 +655,13 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       db,
       getAdapter,
       sessionGate: deps.sessionGate,
-      tmux: { newSession, sendText, sendEnter, killSession },
+      // `status` is wired so the spawn-recommender-agent step races the Stop
+      // hook against tmux liveness — a session killed out from under the drive
+      // (watchdog, force-close, manual `tmux kill-session`) fails the step
+      // immediately instead of blocking on the Stop wait for the full agent
+      // timeout. Mirrors how `buildImplementationDeps` wires the implementation
+      // drive's liveness probe.
+      tmux: { newSession, sendText, sendEnter, killSession, status },
       worktree: { createWorktree, destroyWorktree },
       resolveRepoPath: (repo) => {
         const path = repoPaths.get(repo);

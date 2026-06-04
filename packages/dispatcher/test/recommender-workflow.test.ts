@@ -132,6 +132,19 @@ function makeHarness(opts?: {
   autoDispatch?: boolean;
   wireTrigger?: boolean;
   failSession?: boolean;
+  /**
+   * Session-liveness test seam (#229-followup): when set, `tmux.status` reports
+   * the session alive until this many ms have elapsed (since the test started),
+   * then `alive: false`. Combined with a `neverStopping` gate this drives the
+   * spawn step's `awaitStopOrSessionEnd` race onto the `session-ended` branch.
+   */
+  sessionDiesAfterMs?: number;
+  /**
+   * Make the gate's `awaitStop` never resolve (until its own internal timeout) so
+   * the only way the spawn step finishes is via the session-liveness race. Used
+   * with `sessionDiesAfterMs` to exercise the session-ended failure path.
+   */
+  neverStopping?: boolean;
 }) {
   const trace: string[] = [];
   const created: string[] = [];
@@ -142,6 +155,7 @@ function makeHarness(opts?: {
   const bodies = opts?.bodies ?? [validBody(), validBody()];
   let readCount = 0;
   let written: string | null = null;
+  const harnessStart = Date.now();
 
   const tmux = {
     async newSession(o: { sessionName: string }) {
@@ -155,6 +169,17 @@ function makeHarness(opts?: {
     async killSession(sessionName: string) {
       killed.push(sessionName);
     },
+    // Wired only when the test cares about session-liveness; otherwise omitted
+    // (so the spawn step's `awaitStopOrSessionEnd` degrades to Stop-or-timeout,
+    // matching the prior behavior the existing tests assert).
+    ...(opts?.sessionDiesAfterMs !== undefined
+      ? {
+          async status(_sessionName: string) {
+            const elapsed = Date.now() - harnessStart;
+            return { alive: elapsed < opts.sessionDiesAfterMs!, paneCount: 1 };
+          },
+        }
+      : {}),
   };
 
   const adapter: AgentAdapter = {
@@ -179,7 +204,14 @@ function makeHarness(opts?: {
       if (opts?.failSession) throw new Error("launch timeout");
       return { session_id: "s", transcript_path: "/tmp/s.jsonl" } as HookPayload;
     },
-    awaitStop: async () => ({ reason: "turn-end" }) as HookPayload,
+    awaitStop: opts?.neverStopping
+      ? // Promise that resolves only on the internal timeout — the test must end
+        // via the session-liveness race, not via the Stop hook.
+        (_n: string, ms: number) =>
+          new Promise<HookPayload>((_resolve, reject) => {
+            setTimeout(() => reject(new Error(`timed out waiting for stop:${_n}`)), ms);
+          })
+      : async () => ({ reason: "turn-end" }) as HookPayload,
   };
 
   const deps: RecommenderDeps = {
@@ -232,6 +264,9 @@ function makeHarness(opts?: {
     },
     launchTimeoutMs: 2000,
     agentTimeoutMs: 2000,
+    // Tight poll so the session-liveness race fires within the test budget;
+    // production defaults to 5s (matches the implementation drive).
+    livenessPollMs: 25,
     surfaceProblem: async (o) => {
       surfaced.push(o.problem);
     },
@@ -376,6 +411,30 @@ describe("recommender workflow — #43 shell: step order + dedicated slot", () =
 
     expect(getWorkflow(db, id)!.state).toBe("compensated");
     // Compensation tore the worktree down and freed the session.
+    expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
+    for (const s of new Set(h.created)) expect(h.killed).toContain(s);
+  });
+
+  test("a tmux session killed mid-run fails the spawn step fast (#229-followup)", async () => {
+    // Regression: the spawn step's `awaitStop` used to be the bare gate call.
+    // If the tmux session was killed out from under the drive (a watchdog kill,
+    // a daemon SIGTERM with `engine.close(true)` force-closing, a tmux crash),
+    // the Stop hook never arrived and the step blocked on `awaitStop` for the
+    // full `agentTimeout` (up to 30 minutes). With the liveness race wired the
+    // step fails immediately with a *specific* error — "session ended before
+    // Stop hook" — and `prepare-shallow-worktree`'s compensation tears the run
+    // down to a clean terminal state. Verifies: the harness pretends the
+    // session dies 80ms into the run while the Stop hook never fires, and the
+    // whole workflow settles inside the runToEnd budget (much less than the
+    // 2-second `agentTimeoutMs` the harness sets — proof the race won, not the
+    // Stop timeout).
+    const start = Date.now();
+    const h = makeHarness({ neverStopping: true, sessionDiesAfterMs: 80 });
+    const id = await runToEnd(h.deps, /* timeoutMs */ 1500);
+    const elapsed = Date.now() - start;
+
+    expect(getWorkflow(db, id)!.state).toBe("compensated");
+    expect(elapsed).toBeLessThan(1500); // race won before the Stop timeout
     expect(await listWorktrees({ repoPath, worktreeRoot })).toEqual([]);
     for (const s of new Set(h.created)) expect(h.killed).toContain(s);
   });
