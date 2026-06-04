@@ -107,7 +107,12 @@ const BOOT_POLL_INTERVAL_MS = 200;
  *     well before the boot deadline, which is load-bearing for the prompt-first
  *     order: a return that lagged to the full timeout would stall every launch.
  *
- * The boot-window deadline remains only as a last-resort fallback.
+ * **Resolving means "the composer is ready" — the only success path.** Every
+ * non-ready terminal exit throws so the caller can distinguish a ready session
+ * from a dead/never-readied one: a vanished session (capture-pane returns null)
+ * and an elapsed boot window both throw rather than resolving. Resolving on those
+ * would make the caller send the prompt-first keystrokes into a session that
+ * never reached the composer — the failure the third adapter's review surfaced.
  */
 async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   const tag = `copilot:${opts.sessionName}`;
@@ -117,8 +122,9 @@ async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
   while (Date.now() < deadline) {
     const pane = await capturePane(opts.sessionName);
     if (pane === null) {
-      console.error(`[${tag}] enterAutoMode: capture-pane failed (session gone) — stopping`);
-      return;
+      throw new Error(
+        `copilot session "${opts.sessionName}" disappeared (capture-pane failed) before reaching the ready-for-input composer`,
+      );
     }
 
     if (detectNeedsLogin(pane)) {
@@ -141,8 +147,8 @@ async function enterAutoMode(opts: { sessionName: string }): Promise<void> {
 
     await Bun.sleep(BOOT_POLL_INTERVAL_MS);
   }
-  console.error(
-    `[${tag}] enterAutoMode: boot window (${BOOT_DETECT_TIMEOUT_MS}ms) elapsed without a ready signal`,
+  throw new Error(
+    `copilot session "${opts.sessionName}" did not reach the ready-for-input composer within the ${BOOT_DETECT_TIMEOUT_MS}ms boot window`,
   );
 }
 
