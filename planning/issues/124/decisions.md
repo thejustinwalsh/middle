@@ -145,3 +145,18 @@ to N adapters is a schema (v2) change, out of this Epic's scope.
 **Why:** The criterion is "fixed, or documented as a deliberate exception." This is
 schema-bound, not an abstraction leak; left as-is by design, consistent with the
 precedent.
+
+## Self-review hardening: validate the derived-path sessionId
+**File(s):** `packages/adapters/copilot/src/transcript.ts`
+**Date:** 2026-06-03
+
+**Decision:** `resolveTranscriptPath` now rejects a `sessionId` that isn't a plain
+identifier (`/^[A-Za-z0-9_-]+$/`) before joining it into the path. Claude/Codex
+read a `transcript_path` handed over wholesale; Copilot is the only adapter that
+*joins an untrusted-shaped payload field into a filesystem path*, so a crafted
+`sessionId` (`../…`, `a/b`) would otherwise escape `<cwd>/.copilot/session-state/`.
+
+**Why:** Surfaced by the internal clean-eyes review pass (Phase 10b) — the class is
+"path component from a payload." The payload comes from the trusted `copilot`
+binary today, but the derivation shouldn't be the weak link if that changes.
+Covered by a `test.each` of escape attempts.

@@ -28,6 +28,14 @@ export function resolveTranscriptPath(payload: HookPayload): string {
   if (sessionId === null) {
     throw new Error("Copilot sessionStart payload has no sessionId");
   }
+  // Defense-in-depth: the sessionId is a path component, so reject anything that
+  // isn't a plain identifier (UUIDs and the like). A crafted value with `/` or
+  // `..` would otherwise escape `<cwd>/.copilot/session-state/` via `join`. The
+  // payload comes from the trusted copilot binary today, but the derivation must
+  // not be the weak link if that ever changes.
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) {
+    throw new Error(`Copilot sessionId is not a plain identifier: ${JSON.stringify(sessionId)}`);
+  }
   const cwd =
     typeof payload.cwd === "string" && payload.cwd.length > 0 ? payload.cwd : process.cwd();
   return join(cwd, ".copilot", "session-state", sessionId, "events.jsonl");
