@@ -4,6 +4,10 @@ import { isAbsolute, join } from "node:path";
 import { loadConfig, type MiddleConfig } from "@middle/core";
 import { currentSchemaVersion, openDb } from "@middle/dispatcher/src/db.ts";
 import { type EpicStoreConfig, readEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
+import { EPIC_DOC_MARKER } from "@middle/dispatcher/src/epic-store/epic-file/markers.ts";
+import { parseEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/parser.ts";
+import { renderEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/renderer.ts";
+import { epicFilePath, listEpicSlugs } from "@middle/dispatcher/src/epic-store/epic-file-io.ts";
 import { collectRetentionStatus, type RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   getTmuxVersion,
@@ -469,26 +473,84 @@ async function resolveEpicStore(
 }
 
 /**
- * The state-store check row, chosen by the cwd repo's Epic-store mode. File-mode
- * repos keep no GitHub state issue, so the parser round-trip check is irrelevant;
- * instead we confirm the configured Epic directory exists under the repo
- * (`✓ epics_dir <path> exists` / `✗ … missing`). GitHub-mode (and any repo whose
- * mode can't be determined) keeps the existing repo-agnostic `state-issue` check.
+ * The state-store check rows, chosen by the cwd repo's Epic-store mode. GitHub-mode
+ * (and any repo whose mode can't be determined) keeps the existing repo-agnostic
+ * `state-issue` parser round-trip check — one row.
+ *
+ * File-mode repos keep no GitHub state issue, so that check is irrelevant; instead
+ * we confirm the three things a file-mode repo's docs promise are sound — three rows:
+ * - `epics_dir` — the configured Epic directory exists under the repo;
+ * - `state_file` — the recommender's `state_file` is present;
+ * - `epic-files` — every Epic file under `epics_dir` (those starting with the
+ *   `<!-- middle:epic v1 -->` marker; the scaffold's `README.md` and other notes
+ *   are skipped) parses and renders byte-identically — the round-trip invariant the
+ *   whole file-mode design rests on, surfaced where an operator can act on it.
  */
-function checkEpicStore(store: EpicStoreConfig, opts: DoctorOptions): Check {
+function checkEpicStore(store: EpicStoreConfig, opts: DoctorOptions): Check[] {
   if (store.mode !== "file") {
     const stateIssue = checkStateIssue();
-    return { name: "state-issue", status: stateIssue.status, detail: stateIssue.detail };
+    return [{ name: "state-issue", status: stateIssue.status, detail: stateIssue.detail }];
   }
   const repoPath = opts.repoPath ?? process.cwd();
-  const absDir = isAbsolute(store.epicsDir) ? store.epicsDir : join(repoPath, store.epicsDir);
-  if (existsSync(absDir)) {
-    return { name: "epics_dir", status: "pass", detail: `${store.epicsDir} exists` };
+  const resolve = (p: string) => (isAbsolute(p) ? p : join(repoPath, p));
+  const absDir = resolve(store.epicsDir);
+
+  const epicsDirOk = existsSync(absDir);
+  const epicsDirCheck: Check = epicsDirOk
+    ? { name: "epics_dir", status: "pass", detail: `${store.epicsDir} exists` }
+    : {
+        name: "epics_dir",
+        status: "fail",
+        detail: `${store.epicsDir} missing — run \`mm init --epic-store=file\``,
+      };
+
+  const stateFileCheck: Check = existsSync(resolve(store.stateFile))
+    ? { name: "state_file", status: "pass", detail: `${store.stateFile} present` }
+    : {
+        name: "state_file",
+        status: "fail",
+        detail: `${store.stateFile} missing — run \`mm init --epic-store=file\``,
+      };
+
+  return [epicsDirCheck, stateFileCheck, checkEpicFilesRoundTrip(absDir, epicsDirOk)];
+}
+
+/**
+ * Parse+render every Epic file under `epicsDir` and confirm the result is
+ * byte-identical to the source — the load-bearing round-trip invariant. Only files
+ * that open with {@link EPIC_DOC_MARKER} are treated as Epics; the scaffold's
+ * `README.md` and any non-Epic markdown are skipped (not failed). The first file
+ * that throws on parse or fails to round-trip is named so an operator can fix it
+ * from the Epic file itself. A missing directory short-circuits to a warn (the
+ * `epics_dir` row already carries the actionable failure).
+ */
+function checkEpicFilesRoundTrip(absDir: string, epicsDirOk: boolean): Check {
+  if (!epicsDirOk) {
+    return { name: "epic-files", status: "warn", detail: "skipped — epics_dir missing" };
+  }
+  let checked = 0;
+  for (const slug of listEpicSlugs(absDir)) {
+    const path = epicFilePath(absDir, slug);
+    const body = readFileSync(path, "utf8");
+    if (!body.startsWith(EPIC_DOC_MARKER)) continue;
+    checked += 1;
+    try {
+      if (renderEpicFile(parseEpicFile(body)) !== body) {
+        return {
+          name: "epic-files",
+          status: "fail",
+          detail: `${slug}.md does not round-trip — re-render it (the dispatcher owns the marker lines)`,
+        };
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { name: "epic-files", status: "fail", detail: `${slug}.md malformed — ${reason}` };
+    }
   }
   return {
-    name: "epics_dir",
-    status: "fail",
-    detail: `${store.epicsDir} missing — run \`mm init --epic-store=file\``,
+    name: "epic-files",
+    status: "pass",
+    detail: checked === 0 ? "no Epic files yet" : `${checked} Epic file(s) round-trip`,
   };
 }
 
@@ -533,7 +595,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
     await checkGhAuth(),
     configCheck,
     await checkDispatcher(config),
-    checkEpicStore(epicStore, opts),
+    ...checkEpicStore(epicStore, opts),
     checkDatabase(config),
     checkSkillsDrift(),
     checkModuleIndexFrontmatter(),
