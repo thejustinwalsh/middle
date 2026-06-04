@@ -1,11 +1,12 @@
-/**
- * The top global banner: per-adapter rate-limit standing + GitHub quota. The
- * rate-limit cell is the surface the spec's "≤2s" requirement targets — its
- * data flows from the `/events/global` SSE channel (Phase #57).
- */
 import type { GlobalBanner as GlobalBannerData } from "../../wire.ts";
 import { rateLimitLabel, untilReset } from "../format.ts";
 
+/**
+ * The top global banner: per-adapter rate-limit standing + GitHub quota. The
+ * rate-limit cell is the surface the spec's "≤2s" requirement targets — its
+ * `banner` data flows from the `/events/global` SSE channel (Phase #57). `now`
+ * (optional) anchors the "until reset" countdown so it's deterministic in tests.
+ */
 export function GlobalBanner({ banner, now }: { banner: GlobalBannerData; now?: number }) {
   return (
     <header className="banner">

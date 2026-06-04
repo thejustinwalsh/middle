@@ -1,15 +1,17 @@
-/**
- * The Settings view: edit global config (max concurrent, default adapter) and
- * per-repo config (auto-dispatch pause/resume), plus manual rate-limit override
- * buttons per adapter. Every change goes through the API and the parent refetches
- * `/api/settings`, so the UI always reflects persisted state.
- */
 import { useEffect, useState } from "react";
 import type { GlobalBanner, SettingsWire } from "../../wire.ts";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { Input } from "./ui/input.tsx";
 
+/**
+ * The Settings view: edit global config (max concurrent, default adapter) and
+ * per-repo config (auto-dispatch pause/resume), plus manual rate-limit override
+ * buttons per adapter. Driven by `settings` (and `banner` for the rate-limit
+ * state); every edit calls the matching `onSaveGlobal`/`onPauseRepo`/
+ * `onResumeRepo`/`onClearRateLimit` callback, after which the parent refetches
+ * `/api/settings` so the inputs always reflect persisted state.
+ */
 export function Settings({
   settings,
   banner,

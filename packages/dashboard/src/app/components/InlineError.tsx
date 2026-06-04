@@ -1,10 +1,12 @@
-/**
- * An inline error-recovery panel scoped to a single view/section (#223) — not the
- * global error bar. Shows the failure (or the distinct "Connection lost" copy for
- * a network timeout) and a Retry button that re-fires the failed request.
- */
 import { Button } from "./ui/button.tsx";
 
+/**
+ * An inline error-recovery panel scoped to a single view/section (#223) — not the
+ * global error bar. Shows the failure (`message`, or a generic fallback) and, when
+ * `onRetry` is given, a Retry button that re-fires the failed request. When
+ * `timedOut` is true it shows the distinct "Connection lost — retrying…" state
+ * instead of `message` (a >10s network timeout). Rendered with `role="alert"`.
+ */
 export function InlineError({
   message,
   onRetry,

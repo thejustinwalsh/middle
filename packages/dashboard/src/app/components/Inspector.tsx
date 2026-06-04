@@ -1,15 +1,3 @@
-/**
- * The Issue Inspector drawer, rendered as a shadcn `Sheet` (Radix Dialog) instead
- * of a fixed-position `<aside>`. Surfaces a session's per-runner panel (workflow
- * state, `controlled_by`, tmux session + liveness, last heartbeat, context
- * tokens, transcript path), links to the PR + worktree, the hook-event timeline,
- * and the attach affordances: Watch / Take control / Release + copy-command.
- *
- * App renders this only while a session is selected, so the Sheet is controlled
- * `open`; dismissing it (Escape, overlay click, or the close button) routes
- * through `onOpenChange` → `onClose`. The anchor `side` is `right` here; #222
- * swaps it to `bottom` on small viewports.
- */
 import type { RunnerPanel, SessionEvent } from "../../wire.ts";
 import { ago } from "../format.ts";
 import { cn } from "../lib/utils.ts";
@@ -25,6 +13,21 @@ function isVerificationEvent(type: string): boolean {
   return /gate|verify|verification|check/i.test(type);
 }
 
+/**
+ * The Issue Inspector drawer, rendered as a shadcn `Sheet` (Radix Dialog) instead
+ * of a fixed-position `<aside>`. Surfaces a session's per-runner `panel` (workflow
+ * state, `controlled_by`, tmux session + liveness, last heartbeat, context
+ * tokens, transcript path), links to the PR + worktree, the hook-event `events`
+ * timeline, and the attach affordances. `now` anchors relative timestamps;
+ * `transcriptUrl` links the transcript. The optional `onWatch`/`onTakeControl`/
+ * `onRelease` callbacks each receive the session id.
+ *
+ * The caller renders this only while a session is selected, so the Sheet is
+ * controlled-`open`; dismissing it (Escape, overlay click, or the close button)
+ * routes through Radix `onOpenChange` and invokes `onClose` — the consumer owns
+ * teardown (clearing its selected-session state). The anchor `side` is `right` on
+ * desktop and `bottom` on small viewports (#222).
+ */
 export function Inspector({
   panel,
   events,

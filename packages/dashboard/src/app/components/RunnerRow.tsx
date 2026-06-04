@@ -1,9 +1,3 @@
-/**
- * One IN FLIGHT runner inside a repo's expansion: the Epic/adapter/progress,
- * Watch / Take control buttons, and the copy-paste-accurate `tmux attach`
- * command. `controlled_by = human` is surfaced so the operator sees who's
- * driving. Opening the row drills into the Inspector.
- */
 import type { RunnerSummary } from "../../wire.ts";
 import { ago } from "../format.ts";
 import { Badge } from "./ui/badge.tsx";
@@ -11,6 +5,14 @@ import { Button } from "./ui/button.tsx";
 import { CopyCommand } from "./CopyCommand.tsx";
 import { EpicRef } from "./EpicRef.tsx";
 
+/**
+ * One IN FLIGHT runner inside a repo's expansion: the Epic/adapter/progress,
+ * Watch / Take control buttons, and the copy-paste-accurate `tmux attach`
+ * command. `controlled_by = human` is surfaced so the operator sees who's
+ * driving. `now` (optional) anchors the relative "ago" timestamp. The optional
+ * `onWatch`/`onTakeControl`/`onOpenInspector` callbacks each receive the runner's
+ * session id; opening the row (the link) drills into the Inspector.
+ */
 export function RunnerRow({
   runner,
   now,
