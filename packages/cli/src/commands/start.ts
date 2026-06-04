@@ -55,6 +55,28 @@ function resolveDispatcherEntrypoint(): string {
 }
 
 /**
+ * Pid-file preflight shared by the background (`runStart`) and foreground
+ * (`runForegroundDaemon`) starts: refuse to start a second dispatcher when the
+ * recorded process is still alive, and clear a stale pid file (the recorded
+ * process is gone) so a fresh start can proceed. Returns `true` when it's safe
+ * to start, `false` when a live dispatcher already owns the lifecycle. Foreground
+ * starts honor this too — `--foreground` writes no pid file, but a live
+ * background dispatcher already holds the port, and a stale file should be
+ * cleaned rather than silently ignored.
+ */
+function pidFilePreflight(pidFile: string): boolean {
+  if (existsSync(pidFile)) {
+    const existing = Number(readFileSync(pidFile, "utf8").trim());
+    if (Number.isInteger(existing) && isAlive(existing)) {
+      console.error(`mm start: dispatcher already running (pid ${existing})`);
+      return false;
+    }
+    rmSync(pidFile, { force: true }); // stale — the recorded process is gone
+  }
+  return true;
+}
+
+/**
  * `mm start` — spawn the long-running dispatcher process (hook server + bunqueue
  * engine), detached, and record its pid for `mm stop`. A stale pid file (the
  * recorded process is gone) is cleared and a fresh dispatcher is started.
@@ -63,14 +85,7 @@ function resolveDispatcherEntrypoint(): string {
 export function runStart(opts: StartOptions = {}): number {
   const pidFile = opts.pidFile ?? defaultPidFile();
 
-  if (existsSync(pidFile)) {
-    const existing = Number(readFileSync(pidFile, "utf8").trim());
-    if (Number.isInteger(existing) && isAlive(existing)) {
-      console.error(`mm start: dispatcher already running (pid ${existing})`);
-      return 1;
-    }
-    rmSync(pidFile, { force: true }); // stale — the recorded process is gone
-  }
+  if (!pidFilePreflight(pidFile)) return 1;
 
   const entrypoint = opts.entrypoint ?? resolveDispatcherEntrypoint();
   const proc = Bun.spawn(["bun", entrypoint], {
@@ -111,6 +126,12 @@ async function defaultRunForeground(): Promise<void> {
  * doesn't know about. Blocks until the daemon shuts down (SIGTERM → exit 0).
  */
 async function runForegroundDaemon(opts: StartOptions): Promise<number> {
+  // Same preflight as the background path: a live background dispatcher already
+  // owns the lifecycle (don't start a second one), and a stale pid file is
+  // cleared. Foreground writes no pid file of its own afterward.
+  const pidFile = opts.pidFile ?? defaultPidFile();
+  if (!pidFilePreflight(pidFile)) return 1;
+
   console.log("mm start: running the dispatcher in the foreground (no pid file; SIGTERM to stop)");
   await (opts.runForeground ?? defaultRunForeground)();
   return 0;
