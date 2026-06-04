@@ -14,10 +14,7 @@ import { chipVariantForState, StatusChip } from "./StatusChip.tsx";
 function ProgressStrip({ closed, total }: { closed: number; total: number }) {
   const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
   return (
-    <div
-      className="flex items-center gap-3"
-      aria-label={`${closed} of ${total} sub-issues done`}
-    >
+    <div className="flex items-center gap-3" aria-label={`${closed} of ${total} sub-issues done`}>
       <Progress value={pct} className="h-1 flex-1" />
       <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-[color:var(--fg-muted)]">
         {closed} / {total}
@@ -118,10 +115,7 @@ export function Epics({
   onOpenInspector?: (session: string) => void;
 }) {
   return (
-    <section
-      className="flex flex-col gap-3 px-4 py-4 md:px-6 md:py-5"
-      aria-labelledby="epics-h"
-    >
+    <section className="flex flex-col gap-3 px-4 py-4 md:px-6 md:py-5" aria-labelledby="epics-h">
       {/* The page-level title is owned by the App's topbar; this remains the
           section's accessible name for screen readers. */}
       <h2 id="epics-h" className="sr-only">

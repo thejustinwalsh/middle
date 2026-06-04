@@ -9,18 +9,18 @@
  * brand mark glows when the recommender has run within the last
  * RECOMMENDER_LIVE_WINDOW_MS — silent confirmation the system is awake.
  */
-import { Activity, Layers, LayoutDashboard, ListTodo, Settings as SettingsIcon } from "lucide-react";
+import {
+  Activity,
+  Layers,
+  LayoutDashboard,
+  ListTodo,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import type { ComponentType } from "react";
 import type { GlobalBanner as BannerData, RepoSummary } from "../../wire.ts";
 import { rateLimitLabel, untilReset } from "../format.ts";
 import { cn } from "../lib/utils.ts";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
 
 /** The five top-level views. Drives both desktop nav + mobile Sheet menu. */
 export const SIDEBAR_VIEWS = ["epics", "dashboard", "queue", "activity", "settings"] as const;
@@ -137,9 +137,7 @@ function LimitRow({
       <span className="font-mono text-[11px] leading-none tracking-tight text-foreground">
         {label}
       </span>
-      <span
-        className={cn("ml-auto font-mono text-[10.5px] leading-none tabular-nums", labelClass)}
-      >
+      <span className={cn("ml-auto font-mono text-[10.5px] leading-none tabular-nums", labelClass)}>
         {detail ?? rateLimitLabel(status).toLowerCase()}
       </span>
     </div>
@@ -170,21 +168,14 @@ export type SidebarProps = {
  * across Plex Sans, Plex Mono, and fallback stacks). The LiveDot to its right
  * is the silent system-aliveness indicator.
  */
-function BrandMark({ recommenderLive, layout }: { recommenderLive: boolean; layout: "wide" | "narrow" }) {
+function BrandMark({ recommenderLive }: { recommenderLive: boolean }) {
   return (
     <div className="flex items-center gap-2.5 px-3 py-3.5">
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 12 16"
-        className="size-3 shrink-0"
-        fill="none"
-      >
+      <svg aria-hidden="true" viewBox="0 0 12 16" className="size-3 shrink-0" fill="none">
         <rect x="2" y="2" width="4" height="12" rx="1" fill="var(--accent)" />
         <rect x="7" y="2" width="3" height="12" rx="1" fill="var(--fg-muted)" />
       </svg>
-      <span className="text-[13px] font-semibold tracking-tight text-foreground">
-        middle
-      </span>
+      <span className="text-[13px] font-semibold tracking-tight text-foreground">middle</span>
       <span className="ml-auto">
         <LiveDot live={recommenderLive} />
       </span>
@@ -218,7 +209,7 @@ export function Sidebar(props: SidebarProps) {
         layout === "wide" ? "w-[232px]" : "w-full",
       )}
     >
-      <BrandMark recommenderLive={recommenderLive} layout={layout} />
+      <BrandMark recommenderLive={recommenderLive} />
 
       {/* Repo selector — only meaningful when multi-repo. Single-repo users
           never see this row; the App still resolves epicRepo to the only repo. */}

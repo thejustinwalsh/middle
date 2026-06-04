@@ -14,22 +14,22 @@ import { makeConfig, makeDb, seedWorkflow } from "./helpers.ts";
 // api-client round-trips against a live server with seeded db rows — i.e. the
 // app "reads from the JSON API and renders against live data".
 
-test("App nav includes a queue tab", () => {
+test("App nav includes a queue entry", () => {
   const html = renderToStaticMarkup(<App />);
-  expect(html).toContain(">queue<");
+  expect(html).toContain('data-view="queue"');
 });
 
-test("App nav includes an activity tab", () => {
+test("App nav includes an activity entry", () => {
   const html = renderToStaticMarkup(<App />);
-  expect(html).toContain(">activity<");
+  expect(html).toContain('data-view="activity"');
 });
 
-test("App nav is a shadcn Tabs primitive (#220): tabs-list + a trigger per view", () => {
+test("App nav is the Sidebar (operator-console redesign): one `data-view` button per view", () => {
   const html = renderToStaticMarkup(<App />);
-  expect(html).toContain('data-slot="tabs-list"');
-  // One shadcn TabsTrigger per view, each a real ARIA tab.
-  expect(html.match(/data-slot="tabs-trigger"/g)?.length).toBe(5);
-  expect(html).toContain('role="tab"');
+  // The Sidebar replaces the old shadcn Tabs strip. One bare <button data-view>
+  // per view, plus a stable `data-slot="sidebar"` for the aside container.
+  expect(html).toContain('data-slot="sidebar"');
+  expect(html.match(/data-view="[a-z]+"/g)?.length).toBe(5);
 });
 
 test("api.runs reads runs from a live server", async () => {
@@ -54,9 +54,11 @@ test("api.runs reads runs from a live server", async () => {
   }
 });
 
-test("App defaults to the Epics view (nav tab + empty state render)", () => {
+test("App defaults to the Epics view (active nav entry + empty state render)", () => {
   const html = renderToStaticMarkup(<App />);
-  expect(html).toContain(">epics<");
+  // The active Sidebar entry carries `data-active`; the Epics view body shows
+  // its empty-state copy when no Epics are loaded.
+  expect(html).toMatch(/data-view="epics"[^>]*data-active=""/);
   expect(html).toContain("No open Epics for this repo.");
 });
 
