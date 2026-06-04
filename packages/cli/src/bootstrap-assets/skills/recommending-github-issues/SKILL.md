@@ -104,7 +104,7 @@ classify(unit) → { category, adapter, subIssueCount, reason }
 
 Only units with no open PR proceed to the `ready`/`blocked`/`excluded` classification below.
 
-**Category** is one of: `ready`, `needs-human`, `blocked`, `excluded`.
+**Category** is one of: `ready`, `needs-human`, `blocked`, `excluded`. For what the labels referenced below (`epic`, `needs-design`, `blocked`, `wontfix`, `agent:<name>`, `agent-queue:eligible`) mean and who applies them, see the [label vocabulary](https://github.com/thejustinwalsh/middle/blob/main/docs/vocabulary.md); the rules here are how the recommender *acts* on them.
 
 `ready` requires ALL:
 - The unit has readable acceptance criteria — for an Epic, every open sub-issue has

@@ -16,8 +16,31 @@ import {
   defaultPlaywrightBrowsersDir,
   formatAgo,
   runDoctor,
+  runVocabularyCheck,
   summarizeRetention,
 } from "../src/commands/doctor.ts";
+
+/** Build a vocabulary.md body whose `### `<label>`` sections are exactly `labels`. */
+function vocabularyDocWith(labels: readonly string[]): string {
+  return `# Label vocabulary\n\n${labels.map((l) => `### \`${l}\`\n\n- **Means:** ${l}.\n`).join("\n")}`;
+}
+
+/** The full canonical vocabulary the real doc documents — kept in step with `REQUIRED_VOCABULARY`. */
+const ALL_LABELS = [
+  "epic",
+  "approved",
+  "needs-design",
+  "blocked",
+  "wontfix",
+  "agent:claude",
+  "agent:codex",
+  "agent-queue:state",
+  "agent-queue:eligible",
+  "dogfood",
+  "bootstrap",
+  "housekeeping",
+  "phase:N",
+];
 
 /** Repo root, resolved from this test file (packages/cli/test → three up). */
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -340,6 +363,99 @@ describe("summarizeRetention", () => {
     );
     expect(r.status).toBe("warn");
     expect(r.detail).toContain("retention FAILED 1m ago");
+  });
+});
+
+describe("runVocabularyCheck — docs↔code label drift guard (#217)", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "mm-vocab-"));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const runOn = (doc: string): { code: number; output: string } => {
+    const path = join(tmp, "vocabulary.md");
+    writeFileSync(path, doc);
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = runVocabularyCheck({ vocabularyDocPath: path });
+    } finally {
+      spy.mockRestore();
+    }
+    return { code, output: lines.join("\n") };
+  };
+
+  test("complete doc → exit 0, lists every documented label", () => {
+    const { code, output } = runOn(vocabularyDocWith(ALL_LABELS));
+    expect(code).toBe(0);
+    expect(output).toContain("docs and code agree");
+    for (const l of ALL_LABELS) expect(output).toContain(l);
+  });
+
+  test("missing a code-keyed label → exit 1, names the code disagreement", () => {
+    // Drop `needs-design` (the NEEDS_DESIGN_LABEL constant the audit/recommender key on).
+    const { code, output } = runOn(
+      vocabularyDocWith(ALL_LABELS.filter((l) => l !== "needs-design")),
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("code keys on `needs-design`");
+  });
+
+  test("missing a code-keyed internals label → exit 1", () => {
+    // Drop `agent-queue:state` (the STATE_LABEL constant).
+    const { code, output } = runOn(
+      vocabularyDocWith(ALL_LABELS.filter((l) => l !== "agent-queue:state")),
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("code keys on `agent-queue:state`");
+  });
+
+  test("missing a required-but-not-code-keyed label → exit 1 (deleted section caught)", () => {
+    // `phase:N` is grouping metadata code doesn't key on — completeness still requires it.
+    const { code, output } = runOn(vocabularyDocWith(ALL_LABELS.filter((l) => l !== "phase:N")));
+    expect(code).toBe(1);
+    expect(output).toContain("missing required label `phase:N`");
+  });
+
+  test("missing doc file → exit 1", () => {
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = runVocabularyCheck({ vocabularyDocPath: join(tmp, "nope.md") });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("not found");
+  });
+
+  // Integration: boot the real `mm` CLI against the real docs/vocabulary.md and
+  // require agreement. This is the wired path the operator runs — `mm doctor
+  // --vocabulary-check` — and it must exit 0 in a healthy tree, proving the
+  // shipped doc and the shipped label constants agree right now.
+  test("`mm doctor --vocabulary-check` boots the CLI and exits 0 against the shipped doc", async () => {
+    const proc = Bun.spawn(
+      [
+        "bun",
+        join(REPO_ROOT, "packages", "cli", "src", "index.ts"),
+        "doctor",
+        "--vocabulary-check",
+      ],
+      { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    expect(stdout).toContain("middle — vocabulary check");
+    expect(stdout).toContain("docs and code agree");
+    expect(code).toBe(0);
   });
 });
 
