@@ -67,6 +67,45 @@ export function isPaused(db: Database, repo: string, now: number = Date.now()): 
 export type ManagedRepo = { repo: string; checkoutPath: string };
 
 /**
+ * Thrown when a checkout path is already registered to a *different* repo slug
+ * (#226). Two slugs sharing one checkout collide on `git worktree add` — the first
+ * dispatch creates the branch, the second fails messily — so the registry rejects
+ * it rather than silently overwriting the in-memory map. Carries both slugs + the
+ * shared path so callers (the CLI, the `/control/dispatch` route) can name all
+ * three in their error. A *re-register of the same slug* is idempotent, never this.
+ */
+export class RepoPathCollisionError extends Error {
+  constructor(
+    /** The slug already registered at this checkout path. */
+    readonly existingRepo: string,
+    /** The slug being registered (rejected). */
+    readonly attemptedRepo: string,
+    /** The checkout path both want. */
+    readonly checkoutPath: string,
+  ) {
+    super(
+      `checkout path ${checkoutPath} is already registered to ${existingRepo}; ` +
+        `cannot also register ${attemptedRepo} there (two repos sharing a checkout collide on git worktree add)`,
+    );
+    this.name = "RepoPathCollisionError";
+  }
+}
+
+/**
+ * Reject (throw {@link RepoPathCollisionError}) if `checkoutPath` is already
+ * registered to a *different* repo. Same-slug re-registration is allowed (the
+ * `repo != ?` filter excludes it), so an idempotent re-register / path update for
+ * the same repo passes. Run by {@link registerManagedRepo} before it writes, and
+ * by `mm init` *before* it scaffolds (so a rejected init writes nothing).
+ */
+export function assertNoRepoPathCollision(db: Database, repo: string, checkoutPath: string): void {
+  const row = db
+    .query("SELECT repo FROM repo_config WHERE checkout_path = ? AND repo != ?")
+    .get(checkoutPath, repo) as { repo: string } | null;
+  if (row) throw new RepoPathCollisionError(row.repo, repo, checkoutPath);
+}
+
+/**
  * Record (or update) a repo's local checkout path — the act that makes a repo
  * "managed": it becomes visible to the recommender cron and survives a daemon
  * restart. Upserts the `repo_config` row (empty `config_json` placeholder if
@@ -80,6 +119,9 @@ export function registerManagedRepo(
   checkoutPath: string,
   now: number = Date.now(),
 ): void {
+  // Reject a shared-checkout collision before writing — never silently overwrite
+  // another repo's path mapping (#226).
+  assertNoRepoPathCollision(db, repo, checkoutPath);
   db.run(
     `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
        VALUES (?, '{}', ?, ?)

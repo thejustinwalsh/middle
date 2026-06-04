@@ -6,6 +6,7 @@ import { DEFAULT_HEARTBEAT_MS, type Event, type EventHub } from "./event-hub.ts"
 import type { PrReadyGateHandler } from "./gates/pr-ready-handler.ts";
 import type { HookStore } from "./hook-store.ts";
 import { type MetricsSnapshot, renderPrometheus } from "./metrics.ts";
+import { RepoPathCollisionError } from "./repo-config.ts";
 
 type BunServer = ReturnType<typeof Bun.serve>;
 
@@ -448,7 +449,18 @@ export class HookServer implements SessionGate {
       );
     }
 
-    const workflowId = await control.startDispatch(dispatchInput);
+    let workflowId: string | null;
+    try {
+      workflowId = await control.startDispatch(dispatchInput);
+    } catch (error) {
+      // A shared-checkout collision (#226) is a client config error, not a 500:
+      // this `repoPath` is already registered to a different repo slug. Surface it
+      // as a 400 naming both repos + the path (the error message carries all three).
+      if (error instanceof RepoPathCollisionError) {
+        return Response.json({ error: error.message }, { status: 400 });
+      }
+      throw error;
+    }
     if (workflowId === null) {
       return Response.json(
         { error: `Epic ${ref} in ${normalizedRepo} already has an active workflow` },

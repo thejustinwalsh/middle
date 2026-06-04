@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULT_HEARTBEAT_MS, EventHub } from "../src/event-hub.ts";
 import { type ControlPlane, HookServer, SSE_IDLE_TIMEOUT_SECONDS } from "../src/hook-server.ts";
+import { RepoPathCollisionError } from "../src/repo-config.ts";
 
 // The control surface (`/health`, `/control/events`, `/control/dispatch`) lives
 // on the existing localhost-only dispatcher server. These tests pin the route
@@ -200,6 +201,34 @@ describe("HookServer control routes", () => {
     });
     expect(res.status).toBe(409);
     expect(startCalls).toEqual([]);
+  });
+
+  test("POST /control/dispatch maps a shared-checkout collision to 400 (#226)", async () => {
+    // `startDispatch` calls `rememberRepoPath` → `registerManagedRepo`, which
+    // throws RepoPathCollisionError when this `repoPath` is already registered to a
+    // different repo slug. The route must surface that as a 400 naming both repos,
+    // not let it bubble to a 500.
+    startWith(
+      makeControl({
+        startDispatch: async (input) => {
+          throw new RepoPathCollisionError("acme/a", input.repo, input.repoPath);
+        },
+      }),
+    );
+    const res = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "acme/b",
+        repoPath: "/abs/shared",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("acme/a");
+    expect(body.error).toContain("acme/b");
+    expect(body.error).toContain("/abs/shared");
   });
 
   test("two concurrent dispatches of the same Epic: exactly one 200, one 409", async () => {
