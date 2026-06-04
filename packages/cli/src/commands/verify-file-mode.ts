@@ -44,12 +44,26 @@ export function printSmokeReport(
   return 1;
 }
 
+/** Options for {@link runVerifyFileMode}. */
+export type VerifyFileModeOptions = {
+  /** Run the real-GitHub smoke instead of the in-tmpdir integration fixture. */
+  live?: boolean;
+  /** `owner/name` of the designated test repo (required with `--live`). */
+  repo?: string;
+  /** Local checkout of the test repo for `--live` (defaults to cwd). */
+  repoPath?: string;
+};
+
 /**
- * Entry point for `mm verify-file-mode`. Runs the in-tmpdir integration fixture
- * and prints the structured report. Returns a process exit code (0 green / 1
- * failed). The `--live` real-GitHub path is added by the sibling sub-issue.
+ * Entry point for `mm verify-file-mode`. The default path runs the in-tmpdir
+ * integration fixture and prints the structured report; `--live` delegates to the
+ * real-GitHub smoke. Returns a process exit code (0 green / 1 failed).
  */
-export async function runVerifyFileMode(): Promise<number> {
+export async function runVerifyFileMode(opts: VerifyFileModeOptions = {}): Promise<number> {
+  if (opts.live) {
+    const { runVerifyFileModeLive } = await import("./verify-file-mode-live.ts");
+    return runVerifyFileModeLive({ repo: opts.repo, repoPath: opts.repoPath });
+  }
   const result = await runFileModeSmoke();
   return printSmokeReport(result);
 }

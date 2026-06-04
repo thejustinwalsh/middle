@@ -261,7 +261,18 @@ program
   .description(
     "Verify file mode end-to-end: drive the real file-mode workflow over a throwaway fixture and print a structured report",
   )
-  .action(async () => process.exit(await runVerifyFileMode()));
+  .option("--live", "run the real-GitHub smoke against a designated test repo (needs --repo)")
+  .option("--repo <owner/name>", "the throwaway test repo for --live")
+  .option("--repo-path <path>", "local checkout of the --live test repo (defaults to cwd)")
+  .action(async (options: { live?: boolean; repo?: string; repoPath?: string }) =>
+    process.exit(
+      await runVerifyFileMode({
+        live: options.live,
+        repo: options.repo,
+        repoPath: options.repoPath,
+      }),
+    ),
+  );
 
 program
   .command("version")
