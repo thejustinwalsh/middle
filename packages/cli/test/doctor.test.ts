@@ -8,6 +8,7 @@ import { setEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
 import type { RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   checkAdapterBinaries,
+  checkPlaywrightBrowser,
   formatAgo,
   runDoctor,
   summarizeRetention,
@@ -238,5 +239,31 @@ describe("summarizeRetention", () => {
     );
     expect(r.status).toBe("warn");
     expect(r.detail).toContain("retention FAILED 1m ago");
+  });
+});
+
+describe("checkPlaywrightBrowser", () => {
+  const saved = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mm-pw-"));
+    process.env.PLAYWRIGHT_BROWSERS_PATH = dir;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a chromium install in the browsers cache → pass", () => {
+    mkdirSync(join(dir, "chromium_headless_shell-1223"));
+    const check = checkPlaywrightBrowser();
+    expect(check.status).toBe("pass");
+  });
+
+  test("no chromium → warn, documents the install command", () => {
+    const check = checkPlaywrightBrowser();
+    expect(check.status).toBe("warn");
+    expect(check.detail).toContain("bunx playwright install chromium");
   });
 });

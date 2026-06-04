@@ -153,3 +153,25 @@ register/unregister-cycle — across 5 DOM test files it threw `removeChild` DOM
 on unmount and degraded its timers (both flaky only in the full suite). Registering ONCE
 and restoring the native web primitives the live-server tests need (`fetch`/`Response`/
 streams/timers) is stable: 117 dashboard tests green ×3 runs, full monorepo 1382 green.
+
+## #224 Playwright smoke + the unstyled-daemon catch
+**File(s):** `playwright.config.ts`, `playwright/*.pw.ts`, `playwright/serve.ts`, `.github/workflows/e2e.yml`, `commands/doctor.ts`
+**Date:** 2026-06-04
+
+**Decision:** Three Chromium smoke specs (Epics → Inspector, Queue waiting-human,
+Inspector-responsive bottom Sheet) run against a real served test daemon
+(`playwright/serve.ts`: db-backed `/api`+`/events` + stubbed `/control/*`). Specs are
+`*.pw.ts` so the `bun test` gate's `.test.`/`.spec.` glob never sweeps them (Playwright
+uses its own runner); run via `bunx playwright test` from the package dir; CI runs them
+as a separate `.github/workflows/e2e.yml` job (no GitHub Actions existed before — the
+repo's `bun test` gate can't host Chromium). `mm doctor` gained a `playwright` row.
+**Why (cwd):** the daemon MUST run from the repo root (`webServer.cwd = REPO_ROOT`) —
+Bun resolves the root `bunfig.toml` Tailwind plugin relative to cwd, and from the package
+dir it silently doesn't load, serving the SPA UNSTYLED. Visual verification (a real
+screenshot) caught this: the specs' `toBeVisible()`/`data-slot` assertions passed against
+an unstyled page. Added a computed-style assertion (`tabs-list` has a non-transparent
+`bg-muted`) so the smoke now fails if the styles don't compile.
+**Known constraint:** Tailwind compilation depends on the daemon's cwd being the repo
+root (where `bunfig` lives) — true for dogfooding (`mm start` runs from the middle repo).
+A packaged/global install run from an arbitrary cwd would need the plugin wired
+cwd-independently — noted as a follow-up, out of this Epic's scope.

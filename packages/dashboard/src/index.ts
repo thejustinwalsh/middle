@@ -29,16 +29,21 @@
  * - `attach.ts` — `tmux attach` command builders + terminal spawn
  * - `window.ts` — the optional `webview-bun` launcher (spawned by `mm start --window`)
  * - `index.html` + `app/` — the React 19 SPA, bundled by Bun's built-in bundler;
- *   `app/components/Epics.tsx` — the default Epic-centric browse view;
- *   `app/components/Activity.tsx` — the Activity (run history) view
+ *   `app/tailwind.css` — the Tailwind v4 token layer; `app/components/ui/` — the
+ *   vendored shadcn primitives; `app/components/Epics.tsx` — the default browse
+ *   view; `app/components/Activity.tsx` — the Activity (run history) view
+ * - `playwright/` — the Chromium e2e smoke (`*.pw.ts`) + its seeded test daemon
  *
  * Gotchas:
  * - Repo (`owner/name`) and session path params are URL-encoded by callers so a
  *   slash doesn't split the segment; the API decodes each.
  * - The SPA is imported lazily in `server.ts` (`serveSpa: false` skips it) so
  *   API/SSE tests never load the bundler.
+ * - Tailwind v4 compiles through Bun's HTML-import bundler via the root
+ *   `bunfig.toml` plugin — see this package's `CLAUDE.md` for the toolchain +
+ *   test conventions (happy-dom, Playwright) that aren't derivable from the code.
  *
- * claude-md: false
+ * claude-md: true
  */
 /** Start the dashboard `Bun.serve` (API + SSE + bundled SPA); `DASHBOARD_IDLE_TIMEOUT_SECONDS` is its idle-socket timeout. */
 export { createDashboardServer, DASHBOARD_IDLE_TIMEOUT_SECONDS } from "./server.ts";
