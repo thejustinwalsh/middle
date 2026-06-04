@@ -91,3 +91,37 @@ client error. (The "non-collision still fails" path is left to the code's narrow
 an HTTP test of it is brittle because Bun resets the connection on an uncaught fetch
 throw rather than returning 500.)
 **Evidence:** `control-routes.test.ts` — collision → 400 with both slugs + path.
+
+## #227 — stamp all due repos synchronously, THEN fan out (double-dispatch guard intact)
+**File(s):** `packages/dispatcher/src/recommender-cron.ts`
+**Date:** 2026-06-04
+
+**Decision:** The pass now has two phases: (1) due-check + `markRecommenderRun` for
+every due repo, synchronously with no intervening await; (2) fire the runs
+concurrently behind a hand-rolled bounded pool (`maxConcurrentRepos`, default 4),
+each under a `withTimeout` (`runTimeoutMs`, default 60s). A timeout/throw rolls that
+repo's stamp back and logs; others are untouched.
+**Why:** Stamping all due repos before any `await` preserves the existing
+"overlapping tick can't double-dispatch" invariant *even under concurrency* — an
+overlapping pass sees every fresh stamp before this one yields. A per-repo timeout is
+what actually delivers the fix: a hung `gh`/state-write on repo A is abandoned (the
+underlying promise is orphaned but no longer blocks) so repo B still runs.
+**Evidence:** `recommender-cron-parallel.test.ts` — B hangs 5s, A+C (100/200ms)
+succeed, the pass finishes <2s, B's stamp rolls back; a bounded-concurrency test
+asserts `maxInFlight` never exceeds the cap.
+
+## #227 — concurrency knobs are daemon-global; per-repo timeout is uniform per pass
+**File(s):** `packages/core/src/config.ts`, `packages/dispatcher/src/main.ts`
+**Date:** 2026-06-04
+
+**Decision:** `max_concurrent_repos` + `run_timeout_seconds` are read from the
+daemon's **global** config (`MIDDLE_CONFIG`), not per-repo policy. The cron applies
+one timeout to every repo's run in a pass.
+**Why:** Fan-out width and per-run timeout are properties of the *pass* (how many
+repos run at once, how long any one may take), not of an individual repo's ranking
+cadence — the daemon-global config is the natural home. The per-repo `[recommender]`
+policy still owns `enabled`/`interval_minutes`/`agent_timeout_minutes`. The
+"per-repo state-issue note" the AC mentions is satisfied by the existing log + the
+rolled-back watermark (the cron has no state-issue writer of its own — adding one
+would be new surface, deferred).
+**Evidence:** `config.test.ts` parses both keys (present → set, absent → undefined).

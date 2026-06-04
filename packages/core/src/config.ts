@@ -64,6 +64,21 @@ export type RecommenderSettings = {
    * rewriting the state issue doesn't finish inside the default window.
    */
   agentTimeoutMs?: number;
+  /**
+   * Max number of managed repos whose recommender runs fire **concurrently** in
+   * one cron pass (#227, from `max_concurrent_repos`). The cron parallelizes
+   * per-repo runs so a hung repo can't block the others; this bounds the fan-out
+   * to protect rate limits + memory. Daemon-global (read from the global config).
+   * Undefined → the cron's default (4).
+   */
+  maxConcurrentRepos?: number;
+  /**
+   * Hard timeout for a single repo's recommender run inside the cron pass, in
+   * milliseconds (#227, from `run_timeout_seconds`). A run exceeding this is
+   * abandoned and marked failed for that repo (stamp rolled back) without
+   * affecting the others. Undefined → the cron's default (60s).
+   */
+  runTimeoutMs?: number;
 };
 
 export type StateIssueSettings = {
@@ -285,6 +300,10 @@ function mapRecommender(raw: RawTable): RecommenderSettings | undefined {
     autoDispatch: r.auto_dispatch as boolean,
     agentTimeoutMs:
       typeof r.agent_timeout_minutes === "number" ? r.agent_timeout_minutes * 60_000 : undefined,
+    maxConcurrentRepos:
+      typeof r.max_concurrent_repos === "number" ? r.max_concurrent_repos : undefined,
+    runTimeoutMs:
+      typeof r.run_timeout_seconds === "number" ? r.run_timeout_seconds * 1000 : undefined,
   };
 }
 

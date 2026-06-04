@@ -65,6 +65,8 @@ interval_minutes = 15
 adapter = "claude"
 auto_dispatch = false
 agent_timeout_minutes = 20
+max_concurrent_repos = 6
+run_timeout_seconds = 90
 
 [state_issue]
 number = 142
@@ -200,6 +202,9 @@ describe("loadConfig — per-repo merge", () => {
     expect(config.recommender!.intervalMinutes).toBe(15);
     expect(config.recommender!.autoDispatch).toBe(false);
     expect(config.recommender!.agentTimeoutMs).toBe(20 * 60_000);
+    // #227 — per-repo cron parallelism knobs.
+    expect(config.recommender!.maxConcurrentRepos).toBe(6);
+    expect(config.recommender!.runTimeoutMs).toBe(90 * 1000);
     expect(config.stateIssue!.number).toBe(142);
     expect(config.bootstrap!.version).toBe(1);
   });
@@ -286,6 +291,9 @@ describe("loadConfig — committed policy layer", () => {
     expect(config.repo!.owner).toBe("thejustinwalsh");
     expect(config.limits!.complexityCeiling).toBe(5);
     expect(config.recommender!.autoDispatch).toBe(false);
+    // The #227 cron knobs are optional — absent → undefined (cron applies its defaults).
+    expect(config.recommender!.maxConcurrentRepos).toBeUndefined();
+    expect(config.recommender!.runTimeoutMs).toBeUndefined();
     // … and the local cache supplies the volatile fields.
     expect(config.stateIssue!.number).toBe(142);
     expect(config.bootstrap!.version).toBe(1);
