@@ -9,6 +9,7 @@ import type { RetentionStatus } from "@middle/dispatcher/src/retention.ts";
 import {
   checkAdapterBinaries,
   checkPlaywrightBrowser,
+  defaultPlaywrightBrowsersDir,
   formatAgo,
   runDoctor,
   summarizeRetention,
@@ -265,5 +266,27 @@ describe("checkPlaywrightBrowser", () => {
     const check = checkPlaywrightBrowser();
     expect(check.status).toBe("warn");
     expect(check.detail).toContain("bunx playwright install chromium");
+  });
+});
+
+describe("defaultPlaywrightBrowsersDir — OS-specific Playwright cache fallback", () => {
+  const home = join("/home", "tester");
+  test("linux → ~/.cache/ms-playwright", () => {
+    expect(defaultPlaywrightBrowsersDir("linux", home)).toBe(join(home, ".cache", "ms-playwright"));
+  });
+  test("macOS → ~/Library/Caches/ms-playwright", () => {
+    expect(defaultPlaywrightBrowsersDir("darwin", home)).toBe(
+      join(home, "Library", "Caches", "ms-playwright"),
+    );
+  });
+  test("windows → ~/AppData/Local/ms-playwright", () => {
+    expect(defaultPlaywrightBrowsersDir("win32", home)).toBe(
+      join(home, "AppData", "Local", "ms-playwright"),
+    );
+  });
+  test("unknown platforms fall back to the linux layout (no false warning)", () => {
+    expect(defaultPlaywrightBrowsersDir("freebsd" as NodeJS.Platform, home)).toBe(
+      join(home, ".cache", "ms-playwright"),
+    );
   });
 });

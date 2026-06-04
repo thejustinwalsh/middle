@@ -244,15 +244,30 @@ function checkTsdocCoverageWarn(): Check {
 }
 
 /**
+ * Playwright's default browsers-cache directory for a given platform — the path
+ * it installs to and reads from when `PLAYWRIGHT_BROWSERS_PATH` is unset. These
+ * are OS-specific (macOS uses `~/Library/Caches`, Windows `AppData\Local`), so a
+ * single Linux-style fallback would mis-detect on the other two and emit a false
+ * "not installed" warning. Mirrors Playwright's own registry defaults.
+ */
+export function defaultPlaywrightBrowsersDir(platform: NodeJS.Platform, home: string): string {
+  if (platform === "darwin") return join(home, "Library", "Caches", "ms-playwright");
+  if (platform === "win32") return join(home, "AppData", "Local", "ms-playwright");
+  return join(home, ".cache", "ms-playwright");
+}
+
+/**
  * Report whether the Playwright Chromium browser is installed — the dashboard's
  * end-to-end smoke (`packages/dashboard/playwright/`) needs it. **Advisory** (warn,
  * never fail): the browser is a dev/CI prerequisite, not a dispatch one, and the
  * detail carries the install command so an operator knows the fix. Detection is a
  * best-effort scan of the Playwright browsers cache (honoring
- * `PLAYWRIGHT_BROWSERS_PATH`).
+ * `PLAYWRIGHT_BROWSERS_PATH`, else the OS-specific default).
  */
 export function checkPlaywrightBrowser(): Check {
-  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), ".cache", "ms-playwright");
+  const base =
+    process.env.PLAYWRIGHT_BROWSERS_PATH ||
+    defaultPlaywrightBrowsersDir(process.platform, homedir());
   let installed = false;
   try {
     installed = existsSync(base) && readdirSync(base).some((d) => d.startsWith("chromium"));
