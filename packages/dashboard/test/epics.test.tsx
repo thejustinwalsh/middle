@@ -26,7 +26,10 @@ const html = (c: EpicCard) =>
 describe("Epics", () => {
   test("renders an Epic card with title, progress, and an enabled dispatch button", () => {
     const out = html(card());
-    expect(out).toContain("#247 OAuth refresh");
+    // The Phase-3 redesign puts the mono epic ref and the sans title in two
+    // adjacent <span>s so they're styled distinctly; assert each independently.
+    expect(out).toContain("#247");
+    expect(out).toContain("OAuth refresh");
     expect(out).toContain("2 / 4");
     expect(out).toContain("dispatch");
     // #220 shadcn primitives: Progress bar, Select adapter picker, Button dispatch.

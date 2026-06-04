@@ -47,8 +47,8 @@
   /* The one accent — electric green for live / running / primary action.
      Used sparingly; ubiquity would kill the signal. */
   --accent: #39d98a;
-  --accent-soft: #39d98a1a;     /* 10% tint for hover backgrounds */
-  --accent-fg: #052013;          /* dark fg for use on solid accent */
+  --accent-soft: #39d98a1a; /* 10% tint for hover backgrounds */
+  --accent-fg: #052013; /* dark fg for use on solid accent */
 
   /* Status — distinct from accent so the eye reads "state" not "action". */
   --ok: var(--accent);
@@ -89,7 +89,7 @@
   --rule: 1px solid var(--border);
 
   font-family: var(--font-sans);
-  font-feature-settings: "ss01", "cv11", "tnum";  /* tnum = tabular numbers */
+  font-feature-settings: "ss01", "cv11", "tnum"; /* tnum = tabular numbers */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -99,7 +99,8 @@
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   margin: 0;
   height: 100%;
 }
@@ -113,8 +114,7 @@ body {
      This is the "atmosphere" the design skill calls for on dark surfaces:
      not a gradient mesh, not a noise overlay, just a 64px column rule that
      makes the eye register the layout as deliberate. */
-  background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
+  background-image: linear-gradient(to right, rgba(255, 255, 255, 0.012) 1px, transparent 1px);
   background-size: 64px 100%;
 }
 
@@ -124,20 +124,33 @@ body {
 
 /* Mono everywhere there's a number, ID, hash, or path. Add `class="num"` to
    inline display numbers; `<code>` and `<pre>` already pick up mono. */
-code, pre, kbd, samp, .mono, .num {
+code,
+pre,
+kbd,
+samp,
+.mono,
+.num {
   font-family: var(--font-mono);
   font-feature-settings: "tnum", "zero", "ss01";
 }
 
 /* Type rhythm — small uppercase section labels (tracked), readable body. */
-h1, h2, h3 {
+h1,
+h2,
+h3 {
   margin: 0;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
-h1 { font-size: var(--text-xl); }
-h2 { font-size: var(--text-lg); }
-h3 { font-size: var(--text-base); }
+h1 {
+  font-size: var(--text-xl);
+}
+h2 {
+  font-size: var(--text-lg);
+}
+h3 {
+  font-size: var(--text-base);
+}
 
 /* The section-label pattern (used for `EPICS`, `Needs human input`, etc).
    `.section-label` is the new canonical class; legacy `h2` falls back to it. */
@@ -155,7 +168,9 @@ a {
   color: var(--fg);
   text-decoration: none;
   border-bottom: 1px solid transparent;
-  transition: border-color 120ms ease-out, color 120ms ease-out;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
 }
 a:hover {
   color: var(--accent);
@@ -166,7 +181,10 @@ a:hover {
    shouts. Without these three, native `<button>` falls back to the OS chrome
    (the cream-ish `ButtonFace` on Linux/Chromium) and bleeds through every
    custom-styled button row in the sidebar nav. */
-button, input, select, textarea {
+button,
+input,
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -182,7 +200,8 @@ button:not([data-slot]) {
   cursor: pointer;
 }
 
-ul, ol {
+ul,
+ol {
   margin: 0;
   padding: 0;
   list-style: none;
@@ -248,9 +267,15 @@ h2 {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
-.limit-available { color: var(--accent); }
-.limit-rate_limited { color: var(--warn); }
-.limit-unknown { color: var(--fg-dim); }
+.limit-available {
+  color: var(--accent);
+}
+.limit-rate_limited {
+  color: var(--warn);
+}
+.limit-unknown {
+  color: var(--fg-dim);
+}
 
 .repo-row,
 .needs-you-item {
@@ -288,7 +313,9 @@ h2 {
   color: var(--fg-muted);
   font-size: var(--text-sm);
 }
-.runner-panel .human { color: var(--warn); }
+.runner-panel .human {
+  color: var(--warn);
+}
 
 .error-bar {
   background: var(--bad-soft);
@@ -318,7 +345,9 @@ h2 {
   padding: var(--s-5) var(--s-6);
   margin-bottom: var(--s-4);
   background: var(--panel);
-  transition: background 120ms ease-out, border-color 120ms ease-out;
+  transition:
+    background 120ms ease-out,
+    border-color 120ms ease-out;
 }
 .epics .epic-card:hover {
   background: var(--panel-hover);
@@ -330,7 +359,9 @@ h2 {
   align-items: baseline;
   gap: var(--s-5);
 }
-.epics .epic-agent.idle { opacity: 0.5; }
+.epics .epic-agent.idle {
+  opacity: 0.5;
+}
 .epics .epic-decision {
   font-size: var(--text-sm);
   margin: var(--s-3) 0;
@@ -385,7 +416,9 @@ h2 {
 }
 
 /* Activity tab. */
-.activity .run-section { margin-bottom: var(--s-6); }
+.activity .run-section {
+  margin-bottom: var(--s-6);
+}
 .activity .run-row {
   display: flex;
   align-items: baseline;

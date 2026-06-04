@@ -48,7 +48,10 @@ export function Settings({
 
   return (
     <section className="settings" aria-labelledby="settings-h">
-      <h2 id="settings-h">SETTINGS</h2>
+      {/* Page-level title is owned by the App topbar; this is the accessible name. */}
+      <h2 id="settings-h" className="sr-only">
+        Settings
+      </h2>
 
       <fieldset className="settings-global">
         <legend>Global</legend>

@@ -71,10 +71,11 @@ function liveStream(): FakeEventSource | undefined {
 /** Select a view tab. Radix Tabs uses automatic activation (selects on focus), so
  * focus drives the switch; click is belt-and-suspenders. */
 function selectTab(container: HTMLElement, name: string): void {
-  const el = [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find(
-    (t) => t.textContent?.trim() === name,
-  );
-  if (!el) throw new Error(`no "${name}" tab; have: ${container.textContent}`);
+  // The operator-console Sidebar replaces the shadcn Tabs primitive — each
+  // nav row is a bare <button> carrying `data-view="<view>"`. This is the
+  // stable test seam (also used by the Playwright shot harness).
+  const el = container.querySelector<HTMLElement>(`button[data-view="${name}"]`);
+  if (!el) throw new Error(`no "${name}" nav entry; have: ${container.textContent}`);
   el.focus();
   el.click();
 }

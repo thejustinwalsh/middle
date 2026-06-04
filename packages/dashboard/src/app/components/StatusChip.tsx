@@ -66,7 +66,10 @@ export function StatusChip({
       )}
     >
       {dot ? (
-        <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", DOT_CLASS[variant])} />
+        <span
+          aria-hidden="true"
+          className={cn("size-1.5 shrink-0 rounded-full", DOT_CLASS[variant])}
+        />
       ) : null}
       <span className="truncate">{children}</span>
     </span>

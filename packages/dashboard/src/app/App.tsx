@@ -43,13 +43,12 @@ import { Epics } from "./components/Epics.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Repos } from "./components/Repos.tsx";
 import { Settings } from "./components/Settings.tsx";
-import { Sidebar, SIDEBAR_VIEWS, type SidebarView } from "./components/Sidebar.tsx";
+import { Sidebar, type SidebarView } from "./components/Sidebar.tsx";
 
 /** Poll cadence for the top-level read model until SSE replaces it (#57). */
 const POLL_MS = 4000;
 
 /** The top-nav views, in order. Mirrored from {@link SIDEBAR_VIEWS}. */
-const VIEWS = SIDEBAR_VIEWS;
 type View = SidebarView;
 
 /** Human-readable page titles for the breadcrumb topbar. */
