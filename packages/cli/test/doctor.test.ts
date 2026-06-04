@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterConfig, MiddleConfig } from "@middle/core";
 import { openAndMigrate } from "@middle/dispatcher/src/db.ts";
 import { setEpicStoreConfig } from "@middle/dispatcher/src/repo-config.ts";
+import { EPIC_DOC_MARKER } from "@middle/dispatcher/src/epic-store/epic-file/markers.ts";
+import { parseEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/parser.ts";
+import { renderEpicFile } from "@middle/dispatcher/src/epic-store/epic-file/renderer.ts";
 import type { RetentionStatus } from "@middle/dispatcher/src/retention.ts";
+import { renderEmptyStateBody } from "../src/bootstrap/file-store.ts";
 import {
   checkAdapterBinaries,
   checkPlaywrightBrowser,
@@ -14,6 +18,35 @@ import {
   runDoctor,
   summarizeRetention,
 } from "../src/commands/doctor.ts";
+
+/** Repo root, resolved from this test file (packages/cli/test → three up). */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
+
+/**
+ * Pull the first fenced code block out of `markdown` whose body opens with
+ * `firstLine`. Used to lift the worked-example Epic file straight from
+ * `docs/operator.md` so the doctor fixture IS the documented example — edit the
+ * doc into something that no longer parses and this test fails.
+ */
+function fencedBlockStartingWith(markdown: string, firstLine: string): string | null {
+  const lines = markdown.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i]!.startsWith("```")) {
+      const body: string[] = [];
+      i += 1;
+      while (i < lines.length && !lines[i]!.startsWith("```")) {
+        body.push(lines[i]!);
+        i += 1;
+      }
+      i += 1; // skip the closing fence
+      if (body[0] === firstLine) return `${body.join("\n")}\n`;
+      continue;
+    }
+    i += 1;
+  }
+  return null;
+}
 
 // runDoctor shells out to bun/tmux/claude/git/gh — these all exist on the
 // machine middle is built for, so the happy path is verifiable. We don't fake
@@ -129,6 +162,73 @@ describe("runDoctor — mode-aware Epic-store check", () => {
     const output = await run(tmp);
     expect(output).toContain("state-issue");
     expect(output).not.toContain("epics_dir");
+  });
+
+  // Integration (sub-issue #216): `mm doctor` against a file-mode repo laid out
+  // exactly as docs/operator.md's "Enable file mode on an existing repo"
+  // walkthrough specifies — the documented `[epic_store]` paths, a `state_file`,
+  // and the doc's own worked-example Epic file as the fixture — boots the CLI,
+  // runs the three file-mode checks (epics_dir, state_file, Epic-file round-trip),
+  // and exits 0. The Epic body is lifted from the doc itself, so an edit that
+  // breaks the example (or drops the section) fails here.
+  test("doctor honors the documented file-mode config", async () => {
+    const operatorDoc = readFileSync(join(REPO_ROOT, "docs", "operator.md"), "utf8");
+    const epicBody = fencedBlockStartingWith(operatorDoc, EPIC_DOC_MARKER);
+    expect(epicBody, "operator.md must carry a worked-example Epic file").not.toBeNull();
+    // The documented example must itself be a valid, round-tripping Epic file.
+    expect(renderEpicFile(parseEpicFile(epicBody!))).toBe(epicBody!);
+    const slug = parseEpicFile(epicBody!).meta.slug;
+
+    // Lay out the repo exactly as the walkthrough describes.
+    mkdirSync(join(tmp, "planning", "epics"), { recursive: true });
+    mkdirSync(join(tmp, ".middle"), { recursive: true });
+    writeFileSync(join(tmp, "planning", "epics", `${slug}.md`), epicBody!);
+    writeFileSync(join(tmp, ".middle", "state.md"), renderEmptyStateBody(new Date()));
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = await runDoctor({ repoPath: tmp, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join("\n");
+
+    expect(output).toContain("✓ epics_dir   planning/epics exists");
+    expect(output).toContain("✓ state_file  .middle/state.md present");
+    expect(output).toContain("✓ epic-files  1 Epic file(s) round-trip");
+    expect(output).not.toContain("state-issue");
+    expect(code).toBe(0);
+  });
+
+  // A malformed Epic file under epics_dir fails the round-trip check (and the run).
+  test("file mode + malformed Epic file → epic-files fail", async () => {
+    mkdirSync(join(tmp, "planning", "epics"), { recursive: true });
+    mkdirSync(join(tmp, ".middle"), { recursive: true });
+    // Opens with the Epic doc marker (so it's treated as an Epic) but is missing
+    // the required H1/meta — the parser throws, doctor surfaces it by filename.
+    writeFileSync(join(tmp, "planning", "epics", "broken.md"), `${EPIC_DOC_MARKER}\nnot an epic\n`);
+    writeFileSync(join(tmp, ".middle", "state.md"), renderEmptyStateBody(new Date()));
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      code = await runDoctor({ repoPath: tmp, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("✗ epic-files");
+    expect(output).toContain("broken.md malformed");
+    expect(code).toBe(1);
   });
 });
 
