@@ -198,3 +198,49 @@ describe("shared-checkout collision guard (#226)", () => {
     expect(getManagedRepoPath(db, "acme/a")).toBe("/tmp/X"); // stored normalized
   });
 });
+
+// The eager `assertNoRepoPathCollision` read-check is the friendly fast path, but
+// two *processes* (the daemon + a concurrent `mm init`) can both pass it before
+// either writes. Migration 011's partial UNIQUE index on `checkout_path` is the
+// atomic backstop that makes the second write fail at commit time — this is what
+// closes the TOCTOU race CodeRabbit flagged. The in-process eager check always
+// fires first here, so these tests exercise the DB constraint directly (the raw
+// write that a racing process would land).
+describe("checkout_path atomic uniqueness (DB constraint, #226 hardening)", () => {
+  const rawInsert = (repo: string, checkoutPath: string | null) =>
+    db.run(
+      "INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at) VALUES (?, '{}', ?, 0)",
+      [repo, checkoutPath],
+    );
+
+  test("the partial unique index rejects a second repo at the same non-null path", () => {
+    rawInsert("acme/a", "/tmp/X");
+    expect(() => rawInsert("acme/b", "/tmp/X")).toThrow(
+      /UNIQUE constraint failed: repo_config\.checkout_path/,
+    );
+  });
+
+  test("NULL checkout_paths are exempt — many repos can have no registered path", () => {
+    rawInsert("acme/a", null);
+    expect(() => rawInsert("acme/b", null)).not.toThrow();
+  });
+
+  test("registerManagedRepo translates a constraint violation into RepoPathCollisionError", () => {
+    // Simulate a racing process that already wrote the path (so the eager check is
+    // moot — the row landed after a competing caller's check passed). A subsequent
+    // register for a different repo must surface RepoPathCollisionError, not a raw
+    // SQLiteError, whether it trips the eager check or the DB constraint.
+    rawInsert("acme/winner", "/tmp/shared");
+    let caught: unknown;
+    try {
+      registerManagedRepo(db, "acme/loser", "/tmp/shared");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RepoPathCollisionError);
+    const err = caught as RepoPathCollisionError;
+    expect(err.existingRepo).toBe("acme/winner");
+    expect(err.attemptedRepo).toBe("acme/loser");
+    expect(err.checkoutPath).toBe("/tmp/shared");
+  });
+});

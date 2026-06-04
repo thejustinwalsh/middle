@@ -138,13 +138,42 @@ export function registerManagedRepo(
   // another repo's path mapping (#226). Store the normalized path so the guard's
   // comparison stays consistent across trailing-slash / `.`-segment variants.
   const normalized = normalizeCheckoutPath(checkoutPath);
+  // Eager check: the friendly fast path (precise error, no wasted write attempt).
   assertNoRepoPathCollision(db, repo, normalized);
-  db.run(
-    `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
-       VALUES (?, '{}', ?, ?)
-     ON CONFLICT(repo) DO UPDATE SET checkout_path = excluded.checkout_path,
-       last_synced_at = excluded.last_synced_at`,
-    [repo, normalized, now],
+  try {
+    db.run(
+      `INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at)
+         VALUES (?, '{}', ?, ?)
+       ON CONFLICT(repo) DO UPDATE SET checkout_path = excluded.checkout_path,
+         last_synced_at = excluded.last_synced_at`,
+      [repo, normalized, now],
+    );
+  } catch (error) {
+    // The partial UNIQUE index on `checkout_path` (migration 011) is the atomic
+    // backstop: a *concurrent* writer in another process can pass the eager check
+    // above and slip in between it and this INSERT. On that race the commit fails
+    // here; re-read the now-winning repo and surface the same RepoPathCollisionError
+    // the eager check would have. Anything that isn't this specific collision
+    // re-throws untouched.
+    if (isCheckoutPathUniqueViolation(error)) {
+      const row = db
+        .query("SELECT repo FROM repo_config WHERE checkout_path = ? AND repo != ?")
+        .get(normalized, repo) as { repo: string } | null;
+      if (row) throw new RepoPathCollisionError(row.repo, repo, normalized);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Whether a thrown DB error is specifically the `checkout_path` UNIQUE-index
+ * violation (migration 011) — matched narrowly on the index/column so an
+ * unrelated constraint failure is never mistaken for a path collision.
+ */
+function isCheckoutPathUniqueViolation(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /UNIQUE constraint failed: repo_config\.checkout_path/.test(error.message)
   );
 }
 

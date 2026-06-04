@@ -237,6 +237,51 @@ describe("fileEpicGateway", () => {
     ]);
   });
 
+  test("getIssueState reads open/closed + title from a local Epic file", async () => {
+    const dir = tmpEpicsDir();
+    seedEpic(dir, epicFixture());
+    const gw = makeFileEpicGateway({ epicsDir: dir, gh: ghStub().gh });
+    expect(await gw.getIssueState("o/r", "rollout-epic-store")).toEqual({
+      state: "open",
+      title: "feat: rollout the epic store",
+    });
+    seedEpic(dir, epicFixture({ meta: { slug: "rollout-epic-store", closed: true } }));
+    expect(await gw.getIssueState("o/r", "rollout-epic-store")).toMatchObject({ state: "closed" });
+  });
+
+  test("getIssueState delegates a numeric ref with no Epic file to gh", async () => {
+    const calls: string[] = [];
+    const gh = ghStub({
+      async getIssueState(_repo: string, ref: string) {
+        calls.push(ref);
+        return { state: "closed", title: "a github issue" };
+      },
+    } as unknown as Partial<EpicGateway>).gh;
+    const gw = makeFileEpicGateway({ epicsDir: tmpEpicsDir(), gh });
+    expect(await gw.getIssueState("o/r", "42")).toEqual({
+      state: "closed",
+      title: "a github issue",
+    });
+    expect(calls).toEqual(["42"]);
+  });
+
+  test("getIssueState returns null for a non-numeric slug with no file (never forwarded to gh)", async () => {
+    let delegated = false;
+    const gh = ghStub({
+      async getIssueState() {
+        delegated = true;
+        // gh's refToIssueNumber would throw on this non-numeric ref — proving the
+        // gateway must NOT delegate it.
+        throw new Error("should not be called for a non-numeric slug");
+      },
+    } as unknown as Partial<EpicGateway>).gh;
+    const gw = makeFileEpicGateway({ epicsDir: tmpEpicsDir(), gh });
+    expect(await gw.getIssueState("o/r", "no-such-epic")).toBeNull();
+    // A whitespace-padded slug is normalized the same way, still null.
+    expect(await gw.getIssueState("o/r", "  fancy-slug  ")).toBeNull();
+    expect(delegated).toBe(false);
+  });
+
   test("a present-but-malformed Epic file surfaces the parser's named error", async () => {
     const dir = tmpEpicsDir();
     writeFileSync(join(dir, "broken.md"), "not an epic file\n");

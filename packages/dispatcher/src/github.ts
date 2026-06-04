@@ -164,6 +164,27 @@ export interface EpicGateway {
  * file-mode reference) is rejected here with a clear error rather than silently
  * coercing to `NaN` and producing a confusing `gh` failure downstream.
  */
+/**
+ * Map a raw `gh issue view --json state` value to the resolver's
+ * {@link IssueState} (or `null` for unresolvable). `gh` reports github's
+ * uppercase states; only the *known* ones are mapped. `OPEN` → still-blocking;
+ * `CLOSED` and `MERGED` (a ref that points at a PR) → resolved, so both read as
+ * `closed` (the resolver's unblock branch). Any *other* value — a future or
+ * unexpected gh state — yields `null` (a *stale* blocker), never a default
+ * unblock: we never treat an unrecognized state as "resolved".
+ */
+export function mapGhIssueState(state: string, title: string): IssueState | null {
+  switch (state) {
+    case "OPEN":
+      return { state: "open", title };
+    case "CLOSED":
+    case "MERGED":
+      return { state: "closed", title };
+    default:
+      return null;
+  }
+}
+
 export function refToIssueNumber(ref: string): number {
   if (!/^\d+$/.test(ref.trim())) {
     throw new Error(
@@ -377,9 +398,7 @@ export const ghGitHub: EpicGateway = {
     // resolver treats `null` as a *stale* blocker, so don't throw here.
     if (result.exitCode !== 0) return null;
     const parsed = JSON.parse(result.stdout) as { state: string; title: string };
-    // `gh` reports github's uppercase `OPEN`/`CLOSED`; normalize to the lowercase
-    // the resolver branches on. Anything not `OPEN` (CLOSED) reads as closed.
-    return { state: parsed.state === "OPEN" ? "open" : "closed", title: parsed.title };
+    return mapGhIssueState(parsed.state, parsed.title);
   },
 
   async addLabel(repo, ref, label) {

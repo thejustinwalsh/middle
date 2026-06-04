@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentSchemaVersion, openAndMigrate, openDb, runMigrations } from "../src/db.ts";
@@ -33,6 +33,7 @@ const EXPECTED_INDEXES = [
   "idx_workflows_heartbeat",
   "idx_events_workflow_ts",
   "idx_events_ts",
+  "idx_repo_config_checkout_path",
 ];
 
 function names(db: Database, type: "table" | "index"): string[] {
@@ -61,8 +62,8 @@ describe("runMigrations", () => {
 
   test("applies every migration and reports the latest version", () => {
     const db = openDb(dbPath);
-    expect(runMigrations(db)).toBe(10);
-    expect(currentSchemaVersion(db)).toBe(10);
+    expect(runMigrations(db)).toBe(11);
+    expect(currentSchemaVersion(db)).toBe(11);
     db.close();
   });
 
@@ -85,8 +86,8 @@ describe("runMigrations", () => {
   test("is idempotent — running twice leaves version at the latest and does not throw", () => {
     const db = openDb(dbPath);
     runMigrations(db);
-    expect(runMigrations(db)).toBe(10);
-    expect(currentSchemaVersion(db)).toBe(10);
+    expect(runMigrations(db)).toBe(11);
+    expect(currentSchemaVersion(db)).toBe(11);
     db.close();
   });
 
@@ -160,7 +161,7 @@ describe("runMigrations", () => {
       db.run(`INSERT INTO events (workflow_id, ts, type) VALUES ('w1', 2, 'session.started')`);
 
       // Now apply the remaining migrations (003 rebuild, then 004, 005, 006) over the seeded data.
-      expect(runMigrations(db, realDir)).toBe(10);
+      expect(runMigrations(db, realDir)).toBe(11);
 
       // The row survived the rebuild...
       expect(
@@ -178,12 +179,61 @@ describe("runMigrations", () => {
       rmSync(through002, { recursive: true, force: true });
     }
   });
+
+  test("011 applies over a db that already holds duplicate checkout_path rows (de-dupes first)", () => {
+    // A db written before the unique index — by an older daemon or the TOCTOU race
+    // 011 closes — can carry two rows at one path. CREATE UNIQUE INDEX over that
+    // would abort the whole migration (bricking startup); 011 must de-dupe first.
+    const realDir = join(import.meta.dir, "..", "src", "db", "migrations");
+    const through010 = mkdtempSync(join(tmpdir(), "middle-mig-"));
+    try {
+      // Copy every migration EXCEPT 011 → migrate to v10, the pre-index world.
+      for (const name of readdirSync(realDir)) {
+        if (name.endsWith(".sql") && !name.startsWith("011_")) {
+          cpSync(join(realDir, name), join(through010, name));
+        }
+      }
+      const db = openDb(dbPath);
+      expect(runMigrations(db, through010)).toBe(10);
+
+      // Seed the illegal state: two repos sharing one non-null checkout_path.
+      db.run(
+        "INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at) VALUES ('acme/a', '{}', '/tmp/dup', 1)",
+      );
+      db.run(
+        "INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at) VALUES ('acme/b', '{}', '/tmp/dup', 2)",
+      );
+
+      // Applying the real dir (which adds 011) must NOT throw, and must converge.
+      expect(runMigrations(db, realDir)).toBe(11);
+
+      // The lowest-rowid row (acme/a) keeps the path; the loser was nulled out.
+      const rows = db.query("SELECT repo, checkout_path FROM repo_config ORDER BY repo").all() as {
+        repo: string;
+        checkout_path: string | null;
+      }[];
+      expect(rows).toEqual([
+        { repo: "acme/a", checkout_path: "/tmp/dup" },
+        { repo: "acme/b", checkout_path: null },
+      ]);
+
+      // And the index is now enforcing — a re-introduced duplicate is rejected.
+      expect(() =>
+        db.run(
+          "INSERT INTO repo_config (repo, config_json, checkout_path, last_synced_at) VALUES ('acme/c', '{}', '/tmp/dup', 3)",
+        ),
+      ).toThrow(/UNIQUE constraint failed: repo_config\.checkout_path/);
+      db.close();
+    } finally {
+      rmSync(through010, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("openAndMigrate", () => {
   test("opens, migrates, and returns a ready database", () => {
     const db = openAndMigrate(dbPath);
-    expect(currentSchemaVersion(db)).toBe(10);
+    expect(currentSchemaVersion(db)).toBe(11);
     db.close();
   });
 });

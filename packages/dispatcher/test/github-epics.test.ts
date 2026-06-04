@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseEpicsList } from "../src/github.ts";
+import { mapGhIssueState, parseEpicsList } from "../src/github.ts";
 
 describe("parseEpicsList", () => {
   test("maps sub_issues_summary into Epic rows", () => {
@@ -48,5 +48,32 @@ describe("parseEpicsList", () => {
     expect(parseEpicsList(ndjson)).toEqual([
       { ref: "2", number: 2, title: "y", state: "open", labels: [], subTotal: 1, subClosed: 0 },
     ]);
+  });
+});
+
+describe("mapGhIssueState", () => {
+  test("OPEN → open (still-blocking)", () => {
+    expect(mapGhIssueState("OPEN", "an issue")).toEqual({ state: "open", title: "an issue" });
+  });
+
+  test("CLOSED → closed (resolved → unblock)", () => {
+    expect(mapGhIssueState("CLOSED", "done")).toEqual({ state: "closed", title: "done" });
+  });
+
+  test("MERGED (a PR ref) → closed (resolved → unblock), not unresolvable", () => {
+    expect(mapGhIssueState("MERGED", "a merged pr")).toEqual({
+      state: "closed",
+      title: "a merged pr",
+    });
+  });
+
+  test("an unknown/future state → null (stale blocker), never a default unblock", () => {
+    // Anything we don't recognize must NOT read as closed (which would silently
+    // unblock a dependent Epic) — it's unresolvable.
+    expect(mapGhIssueState("DRAFT", "?")).toBeNull();
+    expect(mapGhIssueState("LOCKED", "?")).toBeNull();
+    expect(mapGhIssueState("", "?")).toBeNull();
+    // Casing matters — gh always reports uppercase; a lowercase value is unexpected.
+    expect(mapGhIssueState("open", "?")).toBeNull();
   });
 });

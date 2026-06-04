@@ -146,4 +146,51 @@ describe("runRecommenderCronPass — per-repo parallelism + timeout (#227)", () 
     expect(await runRecommenderCronPass(deps)).toBe(1);
     expect(getLastRecommenderRun(db, "solo/repo")).toBe(NOW);
   });
+
+  // A non-positive (or NaN) injected timeout/concurrency knob must NOT brick the
+  // pass: a 0/negative timeout would expire every run immediately (all stamps
+  // roll back, nothing ever completes), and a 0/NaN concurrency would zero out
+  // the worker pool. Both fall back to their defaults instead.
+  describe("non-positive config knobs fall back to defaults", () => {
+    for (const badTimeout of [0, -100, Number.NaN]) {
+      test(`runTimeoutMs=${badTimeout} → falls back to a real timeout, the run still completes`, async () => {
+        registerManagedRepo(db, "solo/repo", "/co/solo");
+        const deps = {
+          db,
+          now: () => NOW,
+          runTimeoutMs: badTimeout,
+          loadRepoConfig: () => config(),
+          runRecommender: async () => {
+            await Bun.sleep(10);
+          },
+        };
+        // With the bug (timeoutMs = 0/NaN) this would return 0 and roll the stamp
+        // back; with the guard it completes.
+        expect(await runRecommenderCronPass(deps)).toBe(1);
+        expect(getLastRecommenderRun(db, "solo/repo")).toBe(NOW);
+      });
+    }
+
+    for (const badLimit of [0, -3, Number.NaN]) {
+      test(`maxConcurrentRepos=${badLimit} → falls back, all due repos still run`, async () => {
+        for (const r of ["r/1", "r/2", "r/3"]) registerManagedRepo(db, r, `/co/${r}`);
+        const configByPath: Record<string, MiddleConfig> = Object.fromEntries(
+          ["r/1", "r/2", "r/3"].map((r) => [`/co/${r}`, config()]),
+        );
+        const deps = {
+          db,
+          now: () => NOW,
+          maxConcurrentRepos: badLimit,
+          runTimeoutMs: 1000,
+          loadRepoConfig: (p: string) => configByPath[p] ?? null,
+          runRecommender: async () => {
+            await Bun.sleep(5);
+          },
+        };
+        // A NaN limit would zero the worker pool (Math.min(NaN, n) → empty), so
+        // nothing would run; the guard keeps every due repo running.
+        expect(await runRecommenderCronPass(deps)).toBe(3);
+      });
+    }
+  });
 });
