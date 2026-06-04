@@ -3,14 +3,20 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isNormalizedEvent } from "@middle/core";
+import type { HookPayload } from "@middle/core";
 import { getAdapter, isKnownAdapter, knownAdapters } from "../src/adapters.ts";
 
-// The proof that the `AgentAdapter` abstraction holds across both adapters: the
-// SAME sequence of interface calls is driven against every registered adapter
-// through the SAME registry the dispatch workflow uses (`getAdapter`), asserting
-// each conforms — and that the adapter-agnostic parts (stop classification of
-// the universal `.middle/` sentinels) behave identically. A divergence here is a
-// leak in the abstraction, the exact failure mode Phase 10's verification guards.
+// The proof that the `AgentAdapter` abstraction holds across ALL THREE adapters
+// (claude, codex, copilot): the SAME sequence of interface calls is driven against
+// every registered adapter through the SAME registry the dispatch workflow uses
+// (`getAdapter`), asserting each conforms — and that the adapter-agnostic parts
+// (stop classification of the universal `.middle/` sentinels) behave identically.
+// A divergence here is a leak in the abstraction, the exact failure mode #124's
+// verification (#127) guards. Adding copilot was a one-line registry change here;
+// `describe.each(knownAdapters())` picked it up automatically — itself evidence the
+// abstraction generalizes. The one seam copilot strained (no per-turn stop hook →
+// `sessionEnd` mapped to `agent.stopped`) is documented in
+// `planning/issues/124/abstraction-notes.md`; it needed no `AgentAdapter` change.
 
 let dir: string;
 
@@ -29,8 +35,8 @@ function worktreeWithMiddle(): { worktree: string; middle: string } {
   return { worktree, middle };
 }
 
-test("the registry knows both adapters", () => {
-  expect(knownAdapters().sort()).toEqual(["claude", "codex"]);
+test("the registry knows all three adapters", () => {
+  expect(knownAdapters().sort()).toEqual(["claude", "codex", "copilot"]);
 });
 
 // Regression: a plain-object registry would inherit `Object.prototype` keys
@@ -48,8 +54,31 @@ describe("registry lookup is exact-key (no prototype walk)", () => {
   }
 });
 
+// Each adapter's ready (`session.started`) payload has a DIFFERENT shape — Claude
+// and Codex hand over a `transcript_path`; Copilot carries only `sessionId` + `cwd`
+// and the adapter *derives* the path. The conformance point is that
+// `resolveTranscriptPath` is satisfiable for every adapter from its own natural
+// payload, so the dispatcher never learns the difference. Adding a 4th adapter
+// means adding one row here.
+const READY_PAYLOADS: Record<string, HookPayload> = {
+  claude: { session_id: "s1", transcript_path: "/home/u/.claude/projects/x/s1.jsonl" },
+  codex: {
+    session_id: "s1",
+    transcript_path: "/home/u/.codex/sessions/2026/06/03/rollout-s1.jsonl",
+  },
+  copilot: { sessionId: "s1", cwd: "/home/u/wt", source: "new" },
+};
+
 describe.each(knownAdapters())("AgentAdapter contract — %s", (name) => {
   const adapter = getAdapter(name);
+
+  test("resolveTranscriptPath yields a path from this adapter's own ready payload", () => {
+    const payload = READY_PAYLOADS[name];
+    expect(payload).toBeDefined(); // a new adapter must add its ready-payload fixture
+    const path = adapter.resolveTranscriptPath(payload!);
+    expect(typeof path).toBe("string");
+    expect(path.length).toBeGreaterThan(0);
+  });
 
   test("identity: name matches its registry key and readyEvent is a normalized event", () => {
     expect(adapter.name).toBe(name);
