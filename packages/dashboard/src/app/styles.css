@@ -23,6 +23,13 @@
 @import "@fontsource/ibm-plex-mono/500.css";
 
 :root {
+  /* Tell the browser this surface is dark so native form chrome (scrollbars,
+     autofill, plain <input>, <select> popup) inherits a dark UA stylesheet
+     instead of bleeding the OS light theme through every focus / autofill /
+     unstyled control. The user-visible symptom without this was inputs that
+     went bright-white on focus or after Chrome autofilled them. */
+  color-scheme: dark;
+
   /* Type — distinctive but operator-coded. Plex Sans for chrome, Plex Mono
      for data; tabular numbers everywhere there's a digit. */
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
@@ -198,6 +205,22 @@ button:not([data-slot]) {
   border: 0;
   padding: 0;
   cursor: pointer;
+}
+
+/* Chrome's autofill paints the input bright yellow/white and there's no
+   "background: transparent" override that wins — only this WebKit-specific
+   inset shadow trick does. Pin both the background fill and the text color
+   so an autofilled value stays legible on the dark surface. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px var(--bg) inset;
+  -webkit-text-fill-color: var(--fg);
+  caret-color: var(--fg);
+  transition: background-color 0s 99999s; /* park the autofill fade */
 }
 
 ul,
