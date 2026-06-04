@@ -13,7 +13,6 @@ import type {
   EpicCard,
   GlobalBanner as BannerData,
   NeedsYouItem,
-  RepoDetail,
   RepoSummary,
   RunnerPanel,
   RunSummary,
@@ -80,7 +79,7 @@ export function App() {
   const [banner, setBanner] = useState<BannerData | null>(null);
   const [repos, setRepos] = useState<RepoSummary[]>([]);
   const [needs, setNeeds] = useState<NeedsYouItem[]>([]);
-  const [details, setDetails] = useState<Record<string, RepoDetail | undefined>>({});
+  const [reloadSignals, setReloadSignals] = useState<Record<string, number>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [inspector, setInspector] = useState<{ panel: RunnerPanel; events: SessionEvent[] } | null>(
     null,
@@ -93,6 +92,7 @@ export function App() {
   const [queueMetrics, setQueueMetrics] = useState<ControlMetrics | null>(null);
   const [queueLive, setQueueLive] = useState<ControlWorkflowFrame[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [runsLoaded, setRunsLoaded] = useState(false);
   const [error, setError] = useState<GuardError | null>(null);
 
   // The uniform async-error funnel for every fire-and-forget API call below —
@@ -122,13 +122,13 @@ export function App() {
     [guard],
   );
 
-  const refreshDetail = useCallback(
-    (repo: string) =>
-      guard(`detail:${repo}`, async () => {
-        const detail = await api.repo(repo);
-        setDetails((d) => ({ ...d, [repo]: detail }));
-      }),
-    [guard],
+  // The repo expansion fetches its own detail (`RepoExpansion` owns the loading /
+  // error / retry UI per #223); App only supplies the loader and bumps a per-repo
+  // signal to refresh an open panel on a poll tick or SSE event.
+  const loadDetail = useCallback((repo: string) => api.repo(repo), []);
+  const bumpReload = useCallback(
+    (repo: string) => setReloadSignals((s) => ({ ...s, [repo]: (s[repo] ?? 0) + 1 })),
+    [],
   );
 
   const pauseRepo = useCallback(
@@ -165,26 +165,26 @@ export function App() {
     return () => clearInterval(id);
   }, [refreshTop]);
 
-  // Keep every expanded repo's detail fresh on each poll tick.
+  // Refresh every OPEN repo expansion on each poll tick: `repos` is replaced by
+  // refreshTop every POLL_MS, so reacting to it bumps each expanded repo's reload
+  // signal. Reacting to `repos` only (not `expanded`) avoids a double-load when a
+  // repo is first opened — RepoExpansion already auto-loads on mount.
   useEffect(() => {
-    for (const repo of expanded) void refreshDetail(repo);
-  }, [expanded, repos, refreshDetail]);
+    for (const repo of expanded) bumpReload(repo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repos]);
 
-  const toggleRepo = useCallback(
-    (repo: string) => {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(repo)) {
-          next.delete(repo);
-        } else {
-          next.add(repo);
-          void refreshDetail(repo);
-        }
-        return next;
-      });
-    },
-    [refreshDetail],
-  );
+  const toggleRepo = useCallback((repo: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo)) {
+        next.delete(repo);
+      } else {
+        next.add(repo);
+      }
+      return next;
+    });
+  }, []);
 
   // Raw inspector refresh: fetch the panel + events and update state, letting
   // errors propagate. `openInspector` wraps it in a guard for the unguarded
@@ -241,17 +241,24 @@ export function App() {
     return () => clearInterval(id);
   }, [view, refreshSettings]);
 
-  // Fetch the queue metrics snapshot once when the Queue tab is opened. Routed
-  // through `guard` like every other fetch so a backend failure surfaces on the
-  // error bar (and clears on the next success) instead of silently blanking the
-  // tab — a hidden empty state would mask a real /control/metrics outage.
+  // Fetch the queue metrics snapshot. Routed through `guard` so a backend failure
+  // is keyed to the "queue" source — surfaced as an inline error panel in the
+  // Queue view (with Retry), not a silent blank tab (#223).
+  const refetchQueue = useCallback(
+    () => guard("queue", async () => setQueueMetrics(await fetchControlMetrics())),
+    [guard],
+  );
   useEffect(() => {
     if (view !== "queue") return;
-    void guard("queue", async () => setQueueMetrics(await fetchControlMetrics()));
-  }, [view, guard]);
+    void refetchQueue();
+  }, [view, refetchQueue]);
 
   const refreshRuns = useCallback(
-    () => guard("activity", async () => setRuns(await api.runs())),
+    () =>
+      guard("activity", async () => {
+        setRuns(await api.runs());
+        setRunsLoaded(true);
+      }),
     [guard],
   );
 
@@ -324,8 +331,8 @@ export function App() {
           key={repo}
           url={`/events/repos/${encodeURIComponent(repo)}`}
           handlers={{
-            repo: () => void refreshDetail(repo),
-            workflow: () => void refreshDetail(repo),
+            repo: () => bumpReload(repo),
+            workflow: () => bumpReload(repo),
           }}
         />
       ))}
@@ -355,7 +362,11 @@ export function App() {
         handlers={{ workflow: () => void refreshRuns() }}
       />
       {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
-      {error ? <div className="error-bar">API error: {error.message}</div> : null}
+      {/* The global bar covers sources without their own inline panel; queue /
+          activity surface their failure inline within the view (#223). */}
+      {error && error.source !== "queue" && error.source !== "activity" ? (
+        <div className="error-bar">API error: {error.message}</div>
+      ) : null}
       <div className="flex items-center gap-2 border-b border-border px-4 py-2">
         {/* Mobile (<640px): the tabs collapse to a hamburger that opens a Sheet menu. */}
         <Sheet open={navOpen} onOpenChange={setNavOpen}>
@@ -448,23 +459,34 @@ export function App() {
           )}
         </main>
       ) : view === "queue" ? (
-        <Queue metrics={queueMetrics} live={queueLive} />
+        <Queue
+          metrics={queueMetrics}
+          live={queueLive}
+          error={error?.source === "queue" ? error.message : undefined}
+          onRetry={refetchQueue}
+        />
       ) : view === "activity" ? (
-        <Activity runs={runs} onOpenInspector={openInspector} />
+        <Activity
+          runs={runs}
+          loaded={runsLoaded}
+          error={error?.source === "activity" ? error.message : undefined}
+          onRetry={refreshRuns}
+          onOpenInspector={openInspector}
+        />
       ) : (
         <main>
           <NeedsYou
             items={needs}
             onOpen={(item) => {
-              const repo = item.repo;
-              setExpanded((prev) => new Set(prev).add(repo));
-              void refreshDetail(repo);
+              // Opening expands the repo; RepoExpansion auto-loads its detail on mount.
+              setExpanded((prev) => new Set(prev).add(item.repo));
             }}
           />
           <Repos
             repos={repos}
-            details={details}
             expanded={expanded}
+            reloadSignals={reloadSignals}
+            loadDetail={loadDetail}
             onToggle={toggleRepo}
             onWatch={watch}
             onTakeControl={takeControl}

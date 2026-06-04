@@ -6,7 +6,9 @@
  * `textContent` discipline.
  */
 import type { ControlMetrics, ControlWorkflowFrame } from "../control-client.ts";
+import { InlineError } from "./InlineError.tsx";
 import { Badge, type BadgeProps } from "./ui/badge.tsx";
+import { Skeleton } from "./ui/skeleton.tsx";
 
 /**
  * Map a workflow state to a Badge intent. `waiting`/`compensating` stay neutral
@@ -31,7 +33,25 @@ type QueueProps = {
   metrics: ControlMetrics | null;
   /** Live workflow frames (most-recent state per id), parked-for-human first. */
   live: ControlWorkflowFrame[];
+  /** Inline error message for this view, if the metrics fetch failed (#223). */
+  error?: string;
+  /** Re-fire the failed metrics fetch. */
+  onRetry?: () => void;
 };
+
+/** Gauge-tile skeletons shown before the first `/control/metrics` snapshot arrives. */
+function QueueSkeleton() {
+  return (
+    <section className="tiles" aria-busy="true">
+      {["a", "b", "c"].map((k) => (
+        <div key={k} className="tile">
+          <Skeleton className="mb-2 h-6 w-10" />
+          <Skeleton className="h-3 w-20" />
+        </div>
+      ))}
+    </section>
+  );
+}
 
 /** Parked-waiting-on-human rows sort to the top — they're what needs attention. */
 function sortLive(rows: ControlWorkflowFrame[]): ControlWorkflowFrame[] {
@@ -49,11 +69,17 @@ function sortLive(rows: ControlWorkflowFrame[]): ControlWorkflowFrame[] {
  * `live` is the latest frame per workflow id (terminal ones already dropped by
  * the caller); it drives the table, while `metrics.totals` drives the tiles.
  */
-export function Queue({ metrics, live }: QueueProps) {
+export function Queue({ metrics, live, error, onRetry }: QueueProps) {
+  if (error)
+    return (
+      <main className="queue">
+        <InlineError message={error} onRetry={onRetry} />
+      </main>
+    );
   if (!metrics)
     return (
       <main className="queue">
-        <p className="empty">no data yet</p>
+        <QueueSkeleton />
       </main>
     );
   const rows = sortLive(live);

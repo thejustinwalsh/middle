@@ -9,9 +9,19 @@ const baseMetrics = {
   totals: { all: 2, active: 2, waitingHuman: 0 },
 };
 
-test("Queue shows an empty state with no data", () => {
+test("Queue shows loading skeletons before the first metrics snapshot (#223)", () => {
   const html = renderToStaticMarkup(<Queue metrics={null} live={[]} />);
-  expect(html).toContain("no data yet");
+  expect(html).toContain('data-slot="skeleton"');
+  expect(html).toContain('aria-busy="true"');
+});
+
+test("Queue shows an inline error panel with Retry when the metrics fetch fails (#223)", () => {
+  const html = renderToStaticMarkup(
+    <Queue metrics={null} live={[]} error="boom" onRetry={() => {}} />,
+  );
+  expect(html).toContain('role="alert"');
+  expect(html).toContain("boom");
+  expect(html).toContain("Retry");
 });
 
 test("Queue renders nothing-in-flight row when live is empty", () => {
