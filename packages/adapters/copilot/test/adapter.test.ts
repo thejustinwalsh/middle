@@ -360,6 +360,42 @@ describe("classifyStop", () => {
     if (result.kind === "failed") expect(result.reason).toBe("boom");
   });
 
+  // Precedence: the authoritative terminal sentinels the skill writes outrank a
+  // stale rate-limit line a finished session may have left in the transcript
+  // tail — otherwise a completed/failed session misroutes to rate-limited.
+  test("done.json outranks stale rate-limit text in the transcript → done", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 207 }));
+    writeFileSync(
+      transcript,
+      ev("assistant.message", "2026-06-04T12:30:00.000Z", { content: "Error 429: Too Many Requests" }),
+    );
+    const result = copilotAdapter.classifyStop({
+      payload: {},
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("done");
+  });
+
+  test("failed.json outranks stale rate-limit text in the transcript → failed", () => {
+    const { cwd, middle, transcript } = writeMiddleDir();
+    writeFileSync(join(middle, "failed.json"), JSON.stringify({ reason: "boom" }));
+    writeFileSync(
+      transcript,
+      ev("assistant.message", "2026-06-04T12:30:00.000Z", { content: "weekly quota exceeded" }),
+    );
+    const result = copilotAdapter.classifyStop({
+      payload: {},
+      transcriptPath: transcript,
+      sentinelPresent: false,
+      worktree: cwd,
+    });
+    expect(result.kind).toBe("failed");
+    if (result.kind === "failed") expect(result.reason).toBe("boom");
+  });
+
   test("sentinels are found even when payload.cwd is a worktree subdirectory", () => {
     const { cwd: worktree, middle, transcript } = writeMiddleDir();
     writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 207 }));

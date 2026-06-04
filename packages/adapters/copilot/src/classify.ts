@@ -27,6 +27,16 @@ const RATE_LIMIT_RE = /rate.?limit|\b429\b|too many requests|quota exceeded|usag
  * differs (text-regex over the transcript tail; Copilot has no structured block).
  * All sentinel paths anchor at `<worktree>/.middle/`, never `payload.cwd` (the
  * agent may have `cd`'d into a subdirectory).
+ *
+ * Precedence is deliberate: the authoritative on-disk sentinels the skill writes
+ * (`blocked` → `done` → `failed`) are checked **before** the heuristic rate-limit
+ * text scan. A completed or failed session can leave a stale `429`/`quota
+ * exceeded` line in the transcript tail; letting that text outrank a `done.json`
+ * would misroute a finished session down the rate-limited terminal path. The
+ * regex is the *last* signal before `bare-stop`, never an override of an explicit
+ * sentinel. (`detectRateLimit` stays independent of this ordering — the
+ * dispatcher uses it to refresh `rate_limit_state` on every stop regardless of
+ * the classification kind.)
  */
 export function classifyStop(opts: {
   payload: HookPayload;
@@ -41,15 +51,15 @@ export function classifyStop(opts: {
     return { kind: "asked-question", sentinelPath, sentinel: readBlockedSentinel(sentinelPath) };
   }
 
-  if (RATE_LIMIT_RE.test(readTail(opts.transcriptPath))) {
-    return { kind: "rate-limited", resetAt: "unknown" };
-  }
-
   if (existsSync(join(middleDir, "done.json"))) return { kind: "done" };
 
   const failedPath = join(middleDir, "failed.json");
   if (existsSync(failedPath)) {
     return { kind: "failed", reason: readFailedReason(failedPath) };
+  }
+
+  if (RATE_LIMIT_RE.test(readTail(opts.transcriptPath))) {
+    return { kind: "rate-limited", resetAt: "unknown" };
   }
 
   return { kind: "bare-stop" };
