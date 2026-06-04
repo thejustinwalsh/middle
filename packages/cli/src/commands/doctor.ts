@@ -533,10 +533,13 @@ function checkEpicFilesRoundTrip(absDir: string, epicsDirOk: boolean): Check {
   let checked = 0;
   for (const slug of listEpicSlugs(absDir)) {
     const path = epicFilePath(absDir, slug);
-    const body = readFileSync(path, "utf8");
-    if (!body.startsWith(EPIC_DOC_MARKER)) continue;
-    checked += 1;
+    // The read is inside the try: `listEpicSlugs` matches on name only, so a
+    // directory named `*.md` (EISDIR) or an unreadable `*.md` symlink would
+    // otherwise throw out of `mm doctor` and crash the whole health check.
     try {
+      const body = readFileSync(path, "utf8");
+      if (!body.startsWith(EPIC_DOC_MARKER)) continue;
+      checked += 1;
       if (renderEpicFile(parseEpicFile(body)) !== body) {
         return {
           name: "epic-files",
@@ -546,7 +549,11 @@ function checkEpicFilesRoundTrip(absDir: string, epicsDirOk: boolean): Check {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { name: "epic-files", status: "fail", detail: `${slug}.md malformed — ${reason}` };
+      return {
+        name: "epic-files",
+        status: "fail",
+        detail: `${slug}.md unreadable/malformed — ${reason}`,
+      };
     }
   }
   return {
@@ -618,20 +625,34 @@ function defaultVocabularyDocPath(): string {
   return join(import.meta.dir, "..", "..", "..", "..", "docs", "vocabulary.md");
 }
 
-/** Every label `docs/vocabulary.md` documents — the stems of its `### `<label>`` section headers. */
+/**
+ * Every label `docs/vocabulary.md` documents — the stems of its `### `<label>``
+ * section headers. Lines inside fenced code blocks (```` ``` ````) are ignored, so
+ * a documentation *example* that shows a `### `foo`` heading isn't miscounted as a
+ * real documented label.
+ */
 function parseDocumentedLabels(doc: string): Set<string> {
   const labels = new Set<string>();
-  const re = /^#{2,4}\s+`([^`]+)`/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(doc)) !== null) labels.add(m[1]!);
+  const headerRe = /^#{2,4}\s+`([^`]+)`/;
+  let inFence = false;
+  for (const line of doc.split("\n")) {
+    if (line.startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = headerRe.exec(line);
+    if (m) labels.add(m[1]!);
+  }
   return labels;
 }
 
 /**
  * `mm doctor --vocabulary-check` — the docs↔code label drift guard. Parses
- * `docs/vocabulary.md`, lists every label it documents, and asserts the doc and
- * the code agree:
- * - **Code agreement:** every label middle's code deterministically keys on — the
+ * `docs/vocabulary.md`, lists every label it documents, and asserts the doc
+ * *covers* what the code needs (a completeness/coverage check, not a bidirectional
+ * equality):
+ * - **Code coverage:** every label middle's code deterministically keys on — the
  *   `needs-design` and `agent-queue:state` constants plus every middle-owned
  *   {@link NON_FEATURE_LABELS} entry (the generic GitHub triage labels are
  *   excluded) — has a section in the doc. Rename a constant in code without
@@ -639,7 +660,8 @@ function parseDocumentedLabels(doc: string): Set<string> {
  * - **Completeness:** every label in {@link REQUIRED_VOCABULARY} is documented, so
  *   a deleted section is caught even for labels code doesn't key on.
  *
- * Exits 0 only when both hold. Returns the process exit code.
+ * Exits 0 only when both hold. (Extra documented labels are allowed — the doc may
+ * cover operator conventions the code doesn't key on.) Returns the process exit code.
  */
 export function runVocabularyCheck(opts: Pick<DoctorOptions, "vocabularyDocPath"> = {}): number {
   const docPath = opts.vocabularyDocPath ?? defaultVocabularyDocPath();

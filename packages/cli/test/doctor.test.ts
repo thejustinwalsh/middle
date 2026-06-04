@@ -228,6 +228,32 @@ describe("runDoctor — mode-aware Epic-store check", () => {
     expect(code).toBe(0);
   });
 
+  // A directory (or unreadable entry) named `*.md` under epics_dir must NOT crash
+  // the whole `mm doctor` run — listEpicSlugs matches on name only, so the read
+  // can EISDIR. Doctor surfaces it as an epic-files fail, never an uncaught throw.
+  test("file mode + a directory named *.md under epics_dir → epic-files fail, no crash", async () => {
+    mkdirSync(join(tmp, "planning", "epics", "subdir.md"), { recursive: true });
+    mkdirSync(join(tmp, ".middle"), { recursive: true });
+    writeFileSync(join(tmp, ".middle", "state.md"), renderEmptyStateBody(new Date()));
+    setMode({ mode: "file", epicsDir: "planning/epics", stateFile: ".middle/state.md" });
+
+    const lines: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    let code: number;
+    try {
+      // Must resolve (not throw) — the read is inside the try in checkEpicFilesRoundTrip.
+      code = await runDoctor({ repoPath: tmp, resolveSlug: async () => SLUG });
+    } finally {
+      spy.mockRestore();
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("✗ epic-files");
+    expect(output).toContain("subdir.md unreadable/malformed");
+    expect(code).toBe(1);
+  });
+
   // A malformed Epic file under epics_dir fails the round-trip check (and the run).
   test("file mode + malformed Epic file → epic-files fail", async () => {
     mkdirSync(join(tmp, "planning", "epics"), { recursive: true });
@@ -250,7 +276,7 @@ describe("runDoctor — mode-aware Epic-store check", () => {
     }
     const output = lines.join("\n");
     expect(output).toContain("✗ epic-files");
-    expect(output).toContain("broken.md malformed");
+    expect(output).toContain("broken.md unreadable/malformed");
     expect(code).toBe(1);
   });
 });
@@ -421,6 +447,16 @@ describe("runVocabularyCheck — docs↔code label drift guard (#217)", () => {
     const { code, output } = runOn(vocabularyDocWith(ALL_LABELS.filter((l) => l !== "phase:N")));
     expect(code).toBe(1);
     expect(output).toContain("missing required label `phase:N`");
+  });
+
+  test("a `### `label`` heading inside a fenced code block is not counted as documented", () => {
+    // The complete vocabulary, plus a fenced example that *shows* a heading for a
+    // label that isn't really documented. The fence must be ignored, so the check
+    // still passes (the example doesn't inflate the documented set).
+    const doc = `${vocabularyDocWith(ALL_LABELS)}\n## Example\n\n\`\`\`md\n### \`not-a-real-label\`\n\`\`\`\n`;
+    const { code, output } = runOn(doc);
+    expect(code).toBe(0);
+    expect(output).not.toContain("not-a-real-label");
   });
 
   test("missing doc file → exit 1", () => {
