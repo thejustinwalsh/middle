@@ -7,6 +7,7 @@
  */
 import { claudeAdapter } from "@middle/adapter-claude";
 import { codexAdapter } from "@middle/adapter-codex";
+import { copilotAdapter } from "@middle/adapter-copilot";
 import type { AgentAdapter } from "@middle/core";
 
 // `Map` (not a plain object) so lookups never resolve inherited keys: an
@@ -17,6 +18,7 @@ import type { AgentAdapter } from "@middle/core";
 const REGISTRY = new Map<string, AgentAdapter>([
   ["claude", claudeAdapter],
   ["codex", codexAdapter],
+  ["copilot", copilotAdapter],
 ]);
 
 /** The names of every implemented adapter. */

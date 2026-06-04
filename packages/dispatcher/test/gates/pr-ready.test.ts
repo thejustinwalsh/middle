@@ -52,11 +52,29 @@ describe("commandIsPrReady", () => {
 });
 
 describe("extractCommand", () => {
-  test("reads tool_input.command from a PreToolUse payload", () => {
+  test("reads tool_input.command from a Claude/Codex PreToolUse payload", () => {
     expect(extractCommand({ tool_input: { command: "gh pr ready 86" } })).toBe("gh pr ready 86");
+  });
+  test("parses Copilot's string-encoded toolArgs (else the gate never fires for copilot)", () => {
+    // Real copilot 1.0.54 preToolUse payload: toolArgs is a JSON STRING.
+    const payload = {
+      toolName: "bash",
+      toolArgs: JSON.stringify({ command: "gh pr ready 124", description: "mark ready" }),
+    };
+    expect(extractCommand(payload)).toBe("gh pr ready 124");
+    expect(commandIsPrReady(extractCommand(payload)!)).toBe(true);
+  });
+  test("accepts a tool_args object as a defensive snake_case variant", () => {
+    expect(extractCommand({ tool_args: { command: "gh pr ready 7" } })).toBe("gh pr ready 7");
+  });
+  test("returns null on malformed toolArgs JSON rather than throwing", () => {
+    expect(extractCommand({ toolName: "bash", toolArgs: "{ not json" })).toBeNull();
   });
   test("returns null when there is no command", () => {
     expect(extractCommand({ tool_input: {} })).toBeNull();
+    expect(
+      extractCommand({ toolArgs: JSON.stringify({ description: "no command here" }) }),
+    ).toBeNull();
     expect(extractCommand({})).toBeNull();
   });
 });

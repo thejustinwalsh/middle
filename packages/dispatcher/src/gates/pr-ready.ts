@@ -22,11 +22,32 @@ import { isIntegrationCriterion, parseAcceptanceCriteria } from "@middle/core";
 
 export { parseAcceptanceCriteria };
 
-/** Pull the Bash command out of a PreToolUse payload, or null if absent. */
+/**
+ * Pull the shell command out of a pre-tool-use payload, or null if absent.
+ * Adapter payload shapes differ, so this reads all of them:
+ *   - Claude / Codex: `tool_input.command` (an object).
+ *   - Copilot: `toolArgs` — a **JSON-encoded string** (`{"command":"…"}`) under a
+ *     camelCase key (confirmed against copilot 1.0.54). Without parsing it the gate
+ *     would never match `gh pr ready` for a Copilot session and silently let it
+ *     through. `tool_args` (object) is accepted as a defensive snake_case variant.
+ * A `toolArgs` string that isn't valid JSON yields null rather than throwing.
+ */
 export function extractCommand(payload: Record<string, unknown>): string | null {
   const toolInput = payload.tool_input as { command?: unknown } | undefined;
-  const command = toolInput?.command;
-  return typeof command === "string" ? command : null;
+  if (typeof toolInput?.command === "string") return toolInput.command;
+
+  const rawArgs = payload.toolArgs ?? payload.tool_args;
+  let args: { command?: unknown } | undefined;
+  if (typeof rawArgs === "string") {
+    try {
+      args = JSON.parse(rawArgs) as { command?: unknown };
+    } catch {
+      return null;
+    }
+  } else if (typeof rawArgs === "object" && rawArgs !== null) {
+    args = rawArgs as { command?: unknown };
+  }
+  return typeof args?.command === "string" ? args.command : null;
 }
 
 /** Whether a command is a `gh pr ready` invocation (substring match per spec). */
