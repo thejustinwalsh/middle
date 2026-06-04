@@ -67,10 +67,10 @@ export function RepoRow({
             <SlotPills summary={summary} />
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="repo-expansion">
+        <CollapsibleContent className="repo-expansion flex flex-col gap-4 py-2 pl-4 md:flex-row">
           {detail ? (
             <>
-              <div className="next-up">
+              <div className="next-up flex-1">
                 <h4>NEXT UP</h4>
                 {detail.nextUp.length === 0 ? (
                   <p className="empty">—</p>
@@ -84,7 +84,7 @@ export function RepoRow({
                   </ol>
                 )}
               </div>
-              <div className="in-flight">
+              <div className="in-flight flex-1">
                 <h4>IN FLIGHT</h4>
                 {detail.inFlight.length === 0 ? (
                   <p className="empty">—</p>
