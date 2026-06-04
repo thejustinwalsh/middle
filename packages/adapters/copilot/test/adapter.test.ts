@@ -368,7 +368,9 @@ describe("classifyStop", () => {
     writeFileSync(join(middle, "done.json"), JSON.stringify({ pr: 207 }));
     writeFileSync(
       transcript,
-      ev("assistant.message", "2026-06-04T12:30:00.000Z", { content: "Error 429: Too Many Requests" }),
+      ev("assistant.message", "2026-06-04T12:30:00.000Z", {
+        content: "Error 429: Too Many Requests",
+      }),
     );
     const result = copilotAdapter.classifyStop({
       payload: {},
