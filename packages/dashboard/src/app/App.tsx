@@ -75,6 +75,13 @@ export function applyWorkflowFrame(
   return TERMINAL_QUEUE_STATES.has(frame.state) ? without : [frame, ...without];
 }
 
+/**
+ * The dashboard SPA root. Owns all view state (the active tab, expanded repos,
+ * the open Inspector session, per-view data + errors) and wires the JSON API
+ * (`/api/*`, `/control/metrics`) to the views, refreshing on a poll tick and via
+ * the live SSE channels ({@link ChannelSubscriber}). Takes no props — it reads
+ * everything from the same-origin daemon. Rendered once by `main.tsx`.
+ */
 export function App() {
   const [banner, setBanner] = useState<BannerData | null>(null);
   const [repos, setRepos] = useState<RepoSummary[]>([]);
@@ -249,6 +256,12 @@ export function App() {
     [guard],
   );
   useEffect(() => {
+    // Reset the incremental live frames on every view change. queueLive only
+    // accumulates while the `/control/events` subscription is mounted (view ===
+    // "queue"); without this, frames left over from a previous Queue visit would
+    // linger — and re-merge with new frames — showing workflows that may have
+    // since transitioned away while we were unsubscribed.
+    setQueueLive([]);
     if (view !== "queue") return;
     void refetchQueue();
   }, [view, refetchQueue]);
