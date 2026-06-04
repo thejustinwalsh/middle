@@ -9,6 +9,14 @@ export type StartOptions = {
   /** Override the dispatcher entrypoint (defaults to the CLI-owned `daemon-entry.ts`). */
   entrypoint?: string;
   /**
+   * Run the dispatcher **in the foreground** (do not daemonize): no fork, no pid
+   * file — a service manager (systemd/launchd) owns the lifecycle and the process
+   * runs until SIGTERM. The call blocks until the daemon shuts down.
+   */
+  foreground?: boolean;
+  /** Seam: the in-process daemon runner used by `--foreground`. Injectable for tests. */
+  runForeground?: () => Promise<void>;
+  /**
    * Open the dashboard in a `webview-bun` window once the dispatcher is up. The
    * flag forces it on; absent, the `[dashboard] windowed` config default decides.
    */
@@ -83,6 +91,31 @@ export function runStart(opts: StartOptions = {}): number {
   return 0;
 }
 
+/**
+ * The default in-process daemon runner for `--foreground`: the same composition
+ * root `mm start` spawns (dispatcher + dashboard in one process), but run in *this*
+ * process so a service manager owns the lifecycle. Dynamically imported so the
+ * background path never loads the dashboard/daemon modules. `runDaemon` installs
+ * SIGTERM/SIGINT handlers that drain and `process.exit(0)`, so this never returns.
+ */
+async function defaultRunForeground(): Promise<void> {
+  const { dashboardHostExtras } = await import("../daemon-entry.ts");
+  const { runDaemon } = await import("@middle/dispatcher");
+  await runDaemon({ hostExtras: dashboardHostExtras });
+}
+
+/**
+ * `mm start --foreground` — run the dispatcher in-process without writing a pid
+ * file. A service manager (systemd `Restart=on-failure`, launchd `KeepAlive`)
+ * owns start/stop/restart, so middle must not fork or leave a pid file the manager
+ * doesn't know about. Blocks until the daemon shuts down (SIGTERM → exit 0).
+ */
+async function runForegroundDaemon(opts: StartOptions): Promise<number> {
+  console.log("mm start: running the dispatcher in the foreground (no pid file; SIGTERM to stop)");
+  await (opts.runForeground ?? defaultRunForeground)();
+  return 0;
+}
+
 /** Probe `GET /health`; true only on `{ ok: true }`. Connection errors are "down". */
 async function probeHealth(base: string): Promise<boolean> {
   try {
@@ -140,6 +173,10 @@ function resolveWindowConfig(configPath?: string): { port: number; windowed: boo
  * (the daemon is already up regardless). Returns the start exit code.
  */
 export async function runStartCommand(opts: StartOptions = {}): Promise<number> {
+  // Foreground: no fork, no pid file, no window step — the service manager owns
+  // the lifecycle and the call blocks until the daemon exits on SIGTERM.
+  if (opts.foreground) return runForegroundDaemon(opts);
+
   const code = runStart(opts);
   if (code !== 0) return code;
 
