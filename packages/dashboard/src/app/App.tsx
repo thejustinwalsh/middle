@@ -26,15 +26,8 @@ import {
   type ControlMetrics,
   type ControlWorkflowFrame,
 } from "./control-client.ts";
-import { Menu } from "lucide-react";
+import { Menu, RefreshCw } from "lucide-react";
 import { Button } from "./components/ui/button.tsx";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./components/ui/select.tsx";
 import {
   Sheet,
   SheetContent,
@@ -42,23 +35,31 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "./components/ui/sheet.tsx";
-import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs.tsx";
 import { Activity } from "./components/Activity.tsx";
 import { ChannelSubscriber } from "./components/ChannelSubscriber.tsx";
-import { GlobalBanner } from "./components/GlobalBanner.tsx";
 import { Inspector } from "./components/Inspector.tsx";
 import { NeedsYou } from "./components/NeedsYou.tsx";
 import { Epics } from "./components/Epics.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Repos } from "./components/Repos.tsx";
 import { Settings } from "./components/Settings.tsx";
+import { Sidebar, SIDEBAR_VIEWS, type SidebarView } from "./components/Sidebar.tsx";
 
 /** Poll cadence for the top-level read model until SSE replaces it (#57). */
 const POLL_MS = 4000;
 
-/** The top-nav views, in order. Drives both the desktop Tabs and the mobile menu. */
-const VIEWS = ["epics", "dashboard", "queue", "activity", "settings"] as const;
-type View = (typeof VIEWS)[number];
+/** The top-nav views, in order. Mirrored from {@link SIDEBAR_VIEWS}. */
+const VIEWS = SIDEBAR_VIEWS;
+type View = SidebarView;
+
+/** Human-readable page titles for the breadcrumb topbar. */
+const VIEW_TITLE: Record<View, string> = {
+  epics: "Epics",
+  dashboard: "Dashboard",
+  queue: "Queue",
+  activity: "Activity",
+  settings: "Settings",
+};
 
 /** Lifecycle states that drop a workflow from the live queue (mirrors the old status page). */
 const TERMINAL_QUEUE_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
@@ -330,11 +331,45 @@ export function App() {
 
   const inspectorSession = inspector?.panel.session ?? null;
 
+  // Live counts in the sidebar nav chips — derived from current state so they
+  // stay in sync without a separate fetch. `dashboard` counts items pending the
+  // operator; `queue` counts live active workflows; `epics` is the visible list
+  // for the selected repo. Activity / Settings carry no count.
+  const navCounts: Partial<Record<View, number>> = {
+    epics: epics.length,
+    dashboard: needs.length,
+    queue: queueLive.length,
+  };
+
+  // The sidebar nav owns the view selection in both the desktop column and the
+  // mobile Sheet — passed via this handler so the Sheet auto-closes on choose.
+  const selectView = (v: View) => {
+    setView(v);
+    setNavOpen(false);
+  };
+
+  // System-aliveness signal: any open SSE channel means the daemon is talking
+  // back. The actual recommender-tick wire-up is a Phase-5 follow-up — for now
+  // "we have a banner from /events/global" is a faithful proxy.
+  const recommenderLive = banner !== null;
+
+  const sidebarProps = {
+    view,
+    onSelectView: selectView,
+    banner,
+    recommenderLive,
+    repos,
+    epicRepo,
+    onSelectEpicRepo: (r: string) => {
+      setEpicRepo(r);
+      setEpics([]);
+    },
+    counts: navCounts,
+  };
+
   return (
-    <div className="app">
-      {/* Live channels: the banner updates within 2s of a rate-limit detection
-          (#57), each expanded repo refreshes on a transition, and the open
-          Inspector streams the session's hook events + runner-panel updates. */}
+    <div className="flex min-h-screen bg-background text-foreground">
+      {/* Live channels — no visual; subscribe based on view + open expansions. */}
       <ChannelSubscriber
         url="/events/global"
         handlers={{ banner: (d) => setBanner(d as BannerData) }}
@@ -374,139 +409,128 @@ export function App() {
         url={view === "activity" ? "/control/events" : null}
         handlers={{ workflow: () => void refreshRuns() }}
       />
-      {banner ? <GlobalBanner banner={banner} /> : <header className="banner">⏵ middle</header>}
-      {/* The global bar covers sources without their own inline panel; queue /
-          activity surface their failure inline within the view (#223). */}
-      {error && error.source !== "queue" && error.source !== "activity" ? (
-        <div className="error-bar">API error: {error.message}</div>
-      ) : null}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        {/* Mobile (<640px): the tabs collapse to a hamburger that opens a Sheet menu. */}
-        <Sheet open={navOpen} onOpenChange={setNavOpen}>
-          <SheetTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="menu" className="sm:hidden">
-              <Menu />
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" aria-describedby={undefined} className="w-64">
-            <SheetHeader>
-              <SheetTitle>Views</SheetTitle>
-            </SheetHeader>
-            <nav className="flex flex-col gap-1">
-              {VIEWS.map((v) => (
-                <Button
-                  key={v}
-                  variant={view === v ? "secondary" : "ghost"}
-                  className="justify-start"
-                  onClick={() => {
-                    setView(v);
-                    setNavOpen(false);
-                  }}
-                >
-                  {v}
-                </Button>
-              ))}
-            </nav>
-          </SheetContent>
-        </Sheet>
-        {/* Desktop (≥640px): the shadcn Tabs strip. */}
-        <Tabs value={view} onValueChange={(v) => setView(v as View)} className="hidden sm:block">
-          <TabsList aria-label="views">
-            {VIEWS.map((v) => (
-              <TabsTrigger key={v} value={v}>
-                {v}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+
+      {/* Desktop sidebar (≥md). The mobile sidebar lives in the Sheet below. */}
+      <div className="hidden shrink-0 md:flex">
+        <Sidebar {...sidebarProps} layout="wide" />
       </div>
-      {view === "epics" ? (
-        <>
-          <div className="epics-toolbar flex items-center gap-2 px-4 pt-4">
-            {repos.length > 1 ? (
-              <Select
-                value={epicRepo ?? ""}
-                onValueChange={(v) => {
-                  setEpicRepo(v);
-                  setEpics([]);
-                }}
-              >
-                <SelectTrigger aria-label="repo" className="w-64">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {repos.map((r) => (
-                    <SelectItem key={r.repo} value={r.repo}>
-                      {r.repo}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+
+      <div className="flex min-h-screen flex-1 flex-col">
+        {/* Topbar — single hairline of structure across the top of the main
+            column. Mobile hamburger (left) opens the sidebar Sheet. Breadcrumb
+            (center-left) names the current view. Right cluster is per-view
+            quick actions (e.g. epics refresh). */}
+        <div className="sticky top-0 z-10 flex h-12 items-center gap-2 border-b border-border bg-background/85 px-4 backdrop-blur-sm">
+          <Sheet open={navOpen} onOpenChange={setNavOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="menu" className="md:hidden">
+                <Menu className="size-4" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent
+              side="left"
+              aria-describedby={undefined}
+              className="w-[260px] border-r border-border bg-[color:var(--panel)] p-0"
+            >
+              <SheetHeader className="sr-only">
+                <SheetTitle>Views</SheetTitle>
+              </SheetHeader>
+              <Sidebar {...sidebarProps} layout="narrow" />
+            </SheetContent>
+          </Sheet>
+
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-[15px] font-semibold tracking-tight text-foreground">
+              {VIEW_TITLE[view]}
+            </h1>
+            {view === "epics" && epicRepo ? (
+              <span className="font-mono text-[11.5px] text-[color:var(--fg-muted)]">
+                {epicRepo}
+              </span>
             ) : null}
-            {epicRepo ? (
-              <Button variant="outline" size="sm" onClick={() => forceRefreshEpics(epicRepo)}>
+          </div>
+
+          <div className="ml-auto flex items-center gap-1">
+            {view === "epics" && epicRepo ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => forceRefreshEpics(epicRepo)}
+                className="h-8 gap-1.5 px-2 text-[12px] font-medium text-[color:var(--fg-muted)] hover:text-foreground"
+              >
+                <RefreshCw className="size-3.5" />
                 refresh
               </Button>
             ) : null}
           </div>
+        </div>
+
+        {/* The error rail — only for sources without an inline panel; queue /
+            activity surface their failure inside the view body (#223). */}
+        {error && error.source !== "queue" && error.source !== "activity" ? (
+          <div className="error-bar">API error: {error.message}</div>
+        ) : null}
+
+        {view === "epics" ? (
           <Epics
             epics={epics}
             adapters={(banner?.adapters ?? []).map((a) => a.adapter)}
             onDispatch={dispatchEpic}
             onOpenInspector={openInspector}
           />
-        </>
-      ) : view === "settings" ? (
-        <main>
-          {settings ? (
-            <Settings
-              settings={settings}
-              banner={banner}
-              onSaveGlobal={saveGlobal}
-              onPauseRepo={pauseRepo}
-              onResumeRepo={resumeRepo}
-              onClearRateLimit={clearRateLimit}
-            />
-          ) : (
-            <p className="empty">Loading settings…</p>
-          )}
-        </main>
-      ) : view === "queue" ? (
-        <Queue
-          metrics={queueMetrics}
-          live={queueLive}
-          error={error?.source === "queue" ? error.message : undefined}
-          onRetry={refetchQueue}
-        />
-      ) : view === "activity" ? (
-        <Activity
-          runs={runs}
-          loaded={runsLoaded}
-          error={error?.source === "activity" ? error.message : undefined}
-          onRetry={refreshRuns}
-          onOpenInspector={openInspector}
-        />
-      ) : (
-        <main>
-          <NeedsYou
-            items={needs}
-            onOpen={(item) => {
-              // Opening expands the repo; RepoExpansion auto-loads its detail on mount.
-              setExpanded((prev) => new Set(prev).add(item.repo));
-            }}
+        ) : view === "settings" ? (
+          <main>
+            {settings ? (
+              <Settings
+                settings={settings}
+                banner={banner}
+                onSaveGlobal={saveGlobal}
+                onPauseRepo={pauseRepo}
+                onResumeRepo={resumeRepo}
+                onClearRateLimit={clearRateLimit}
+              />
+            ) : (
+              <p className="empty">Loading settings…</p>
+            )}
+          </main>
+        ) : view === "queue" ? (
+          <Queue
+            metrics={queueMetrics}
+            live={queueLive}
+            error={error?.source === "queue" ? error.message : undefined}
+            onRetry={refetchQueue}
           />
-          <Repos
-            repos={repos}
-            expanded={expanded}
-            reloadSignals={reloadSignals}
-            loadDetail={loadDetail}
-            onToggle={toggleRepo}
-            onWatch={watch}
-            onTakeControl={takeControl}
+        ) : view === "activity" ? (
+          <Activity
+            runs={runs}
+            loaded={runsLoaded}
+            error={error?.source === "activity" ? error.message : undefined}
+            onRetry={refreshRuns}
             onOpenInspector={openInspector}
           />
-        </main>
-      )}
+        ) : (
+          <main>
+            <NeedsYou
+              items={needs}
+              onOpen={(item) => {
+                // Opening expands the repo; RepoExpansion auto-loads its detail on mount.
+                setExpanded((prev) => new Set(prev).add(item.repo));
+              }}
+            />
+            <Repos
+              repos={repos}
+              expanded={expanded}
+              reloadSignals={reloadSignals}
+              loadDetail={loadDetail}
+              onToggle={toggleRepo}
+              onWatch={watch}
+              onTakeControl={takeControl}
+              onOpenInspector={openInspector}
+            />
+          </main>
+        )}
+      </div>
+
       {inspector ? (
         <Inspector
           panel={inspector.panel}
