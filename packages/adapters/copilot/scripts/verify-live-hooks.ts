@@ -40,8 +40,26 @@ const SESSION = "middle-copilot-verify";
 
 type Received = { event: string; at: number; payload: Record<string, unknown> };
 
-async function sh(args: string[]): Promise<void> {
-  await Bun.spawn(args, { stdout: "ignore", stderr: "ignore" }).exited;
+/**
+ * Run a subprocess and fail fast on a non-zero exit. A missing `tmux`/`copilot`, a
+ * failed git commit, or a rejected `send-keys` otherwise degrades into a confusing
+ * downstream invariant failure instead of a clear setup error. `allowFailure` is
+ * for commands whose failure is expected and benign (e.g. `tmux kill-session` when
+ * no such session exists yet); `env` is merged onto the inherited environment.
+ */
+async function sh(
+  args: string[],
+  opts: { env?: Record<string, string>; allowFailure?: boolean } = {},
+): Promise<void> {
+  const proc = Bun.spawn(args, {
+    stdout: "ignore",
+    stderr: "inherit",
+    env: { ...process.env, ...opts.env },
+  });
+  const code = await proc.exited;
+  if (code !== 0 && !opts.allowFailure) {
+    throw new Error(`command failed (exit ${code}): ${args.join(" ")}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -51,18 +69,15 @@ async function main(): Promise<void> {
   writeFileSync(join(WORKTREE, "README.md"), "# copilot live-verify\n");
   await sh(["git", "-C", WORKTREE, "init", "-q"]);
   await sh(["git", "-C", WORKTREE, "add", "-A"]);
-  await sh([
-    "git",
-    "-C",
-    WORKTREE,
-    "-c",
-    "user.email=v@v",
-    "-c",
-    "user.name=v",
-    "commit",
-    "-qm",
-    "init",
-  ]);
+  // Git identity via the child-process env (repo convention), not `git -c user.*`.
+  await sh(["git", "-C", WORKTREE, "commit", "-qm", "init"], {
+    env: {
+      GIT_AUTHOR_NAME: "verify",
+      GIT_AUTHOR_EMAIL: "verify@example.com",
+      GIT_COMMITTER_NAME: "verify",
+      GIT_COMMITTER_EMAIL: "verify@example.com",
+    },
+  });
 
   // 1. Real adapter installs hooks/config into the worktree.
   await copilotAdapter.installHooks({
@@ -104,7 +119,7 @@ async function main(): Promise<void> {
     sessionToken: "verify-token",
     envOverrides: { MIDDLE_DISPATCHER_URL: dispatcherUrl, MIDDLE_EPIC: "124" },
   });
-  await sh(["tmux", "kill-session", "-t", SESSION]);
+  await sh(["tmux", "kill-session", "-t", SESSION], { allowFailure: true }); // no prior session yet
   const newSessionArgs = [
     "tmux",
     "new-session",
@@ -132,8 +147,6 @@ async function main(): Promise<void> {
   const enterMs = Date.now() - enterStart;
   console.log(`enterAutoMode returned in ${enterMs}ms (composer-ready)`);
 
-  const sessionStartedBeforePrompt = received.some((r) => r.event === "session.started");
-
   // Send the prompt, then Enter — split like the dispatcher's sendText/sendEnter.
   await sh([
     "tmux",
@@ -144,8 +157,12 @@ async function main(): Promise<void> {
     "Run exactly this one shell command and nothing else: echo copilot-live-ok",
   ]);
   await Bun.sleep(600);
-  await sh(["tmux", "send-keys", "-t", SESSION, "Enter"]);
+  // Stamp the submission moment BEFORE the Enter keystroke: a genuinely
+  // prompt-triggered session.started fires only after submission, so it must
+  // carry `at >= promptSentAt`. Recording after the keystroke would race a
+  // fast hook firing between the keystroke and the stamp.
   const promptSentAt = Date.now();
+  await sh(["tmux", "send-keys", "-t", SESSION, "Enter"]);
 
   // Wait for session.started (proves the hook fired post-prompt).
   const startDeadline = Date.now() + 90_000;
@@ -160,16 +177,18 @@ async function main(): Promise<void> {
   await Bun.sleep(3000); // let the turn settle
 
   // Trigger the turn boundary: copilot has no per-turn stop, so /exit fires
-  // sessionEnd → agent.stopped (the mapping under test).
-  await sh(["tmux", "send-keys", "-t", SESSION, "-l", "/exit"]);
+  // sessionEnd → agent.stopped (the mapping under test). These keystrokes tear
+  // the session down, so tolerate failure — the agent may have already exited /
+  // crashed, and a throw here would abort before the invariant report below.
+  await sh(["tmux", "send-keys", "-t", SESSION, "-l", "/exit"], { allowFailure: true });
   await Bun.sleep(300);
-  await sh(["tmux", "send-keys", "-t", SESSION, "Enter"]);
+  await sh(["tmux", "send-keys", "-t", SESSION, "Enter"], { allowFailure: true });
   const stopDeadline = Date.now() + 30_000;
   while (Date.now() < stopDeadline && !received.some((r) => r.event === "agent.stopped")) {
     await Bun.sleep(500);
   }
 
-  await sh(["tmux", "kill-session", "-t", SESSION]);
+  await sh(["tmux", "kill-session", "-t", SESSION], { allowFailure: true }); // /exit may have ended it
   await Bun.sleep(1000);
 
   // 5. Assert the heartbeat AND the prompt-first / transcript invariants.
@@ -188,7 +207,10 @@ async function main(): Promise<void> {
     }
   }
   const enterReturnedPromptly = enterMs < 60_000;
-  const promptTriggered = !sessionStartedBeforePrompt;
+  // Prompt-triggered iff session.started arrived (timestamp) at-or-after the
+  // prompt was submitted — not merely "hadn't arrived by a pre-send snapshot",
+  // which a session.started landing in the send window would slip past.
+  const promptTriggered = sessionStart !== undefined && sessionStart.at >= promptSentAt;
 
   console.log("\n=== received normalized events (in order) ===");
   console.log(events.join("\n") || "(none)");
@@ -196,7 +218,10 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(sessionStart?.payload ?? {}, null, 2));
   console.log("\n=== invariants ===");
   console.log(`enterAutoMode returned in ${enterMs}ms (promptly: ${enterReturnedPromptly})`);
-  console.log(`session.started before prompt sent: ${sessionStartedBeforePrompt} (want false)`);
+  console.log(
+    `session.started at ${sessionStart?.at ?? "<missing>"} vs prompt sent at ${promptSentAt} ` +
+      `(want started >= sent: ${promptTriggered})`,
+  );
   console.log(`prompt sent at +${promptSentAt - enterStart}ms from enterAutoMode start`);
   console.log(`derived transcript path: ${derivedPath} (exists: ${transcriptOk})`);
 
