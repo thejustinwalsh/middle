@@ -7,6 +7,9 @@ import type { InFlightItem, RateLimits, SlotUsage } from "@middle/state-issue";
 import { Workflow } from "bunqueue/workflow";
 import type { StepContext } from "bunqueue/workflow";
 import type { SessionGate } from "../hook-server.ts";
+import { parseBlockerRef, resolveBlockers } from "../blocker-resolution.ts";
+import type { BlockerResolver } from "../blocker-resolution.ts";
+import type { EpicGateway } from "../github.ts";
 import { applyDispatcherSections } from "../state-issue.ts";
 import type { DispatcherSections, StateGateway } from "../state-issue.ts";
 import { getRateLimitState } from "../rate-limits.ts";
@@ -112,6 +115,12 @@ export type RecommenderDeps = {
    * makes the dispatcher the sole writer of the three owned sections (#180).
    */
   stateIssue: StateGateway;
+  /**
+   * Resolves `BlockedItem.blocker` references against live state (#225) — the
+   * routing `EpicGateway` on the daemon (so a cross-repo blocker resolves against
+   * the *blocker's* repo). Used by the `resolve-blockers` step.
+   */
+  epicGateway: EpicGateway;
   /** Configured adapter names, for `validate()` in the verify step (static-runner path). */
   repoConfig?: RepoConfig;
   /** The `config` block reported to the recommender (static-runner path). */
@@ -411,7 +420,8 @@ type VerifyResult = { ok: boolean; errors: string[] };
  *
  *   check-rate-limit → prepare-shallow-worktree → build-prompt
  *     → spawn-recommender-agent (5-min hard cap) → reapply-dispatcher-sections
- *     → verify-state-issue-parses → trigger-auto-dispatch → cleanup-worktree
+ *     → resolve-blockers → verify-state-issue-parses → trigger-auto-dispatch
+ *     → cleanup-worktree
  *
  * Linear (no park/resume — the recommender is a short one-shot). The recommender
  * records its `workflows` row with `kind:"recommender"`, so it runs on its own
@@ -601,6 +611,65 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     await deps.stateIssue.writeBody(ctx.input.repo, ctx.input.stateIssue, after);
   }
 
+  /**
+   * Resolve cross-repo (and same-repo) `BlockedItem.blocker` references against
+   * live state and reclassify the blocked items (#225): a closed blocker unblocks
+   * the item into `Ready to dispatch`, an open one annotates the line with the
+   * blocker's title, an unresolvable one gets a `(stale blocker: …)` suffix. This
+   * is the runtime consumer of `BlockedItem.blocker` the audit found missing.
+   *
+   * Best-effort and idempotent, mirroring `reapply-dispatcher-sections`: if the
+   * agent body doesn't parse, skip (verify surfaces it); if there are no
+   * resolvable blockers, skip the read of `listOpenEpics` and any write. Runs
+   * AFTER the dispatcher-owned reapply so it reads the latest body, and BEFORE
+   * verify so the reclassified body is what gets validated.
+   */
+  async function resolveBlockersStep(ctx: StepContext<RecommenderInput>): Promise<void> {
+    const before = await deps.stateIssue.readBody(ctx.input.repo, ctx.input.stateIssue);
+    const parsed = parseStateIssue(before);
+    if (isParseError(parsed)) return; // verify-state-issue-parses surfaces it
+    // Skip the gateway round-trips entirely when no blocked item carries a
+    // resolvable issue reference (a backticked / free-text blocker never resolves).
+    const hasResolvable = parsed.blocked.some(
+      (b) => parseBlockerRef(b.blocker).kind !== "non-issue",
+    );
+    if (!hasResolvable) return;
+
+    const { settings } = ctx.steps["build-prompt"] as BuildPromptResult;
+    // Prefetch this repo's open Epics for accurate Ready rows on an unblock (title
+    // + open sub-issue count). Best-effort — a gh failure falls back to per-issue
+    // resolution with a sub-issue count of 1.
+    let selfEpic: BlockerResolver["selfEpic"];
+    try {
+      const epics = await deps.epicGateway.listOpenEpics(ctx.input.repo);
+      const byNumber = new Map<number, { title: string; openSubIssues: number }>();
+      for (const e of epics) {
+        if (e.number !== null) {
+          byNumber.set(e.number, {
+            title: e.title,
+            openSubIssues: Math.max(0, e.subTotal - e.subClosed),
+          });
+        }
+      }
+      selfEpic = (issue) => byNumber.get(issue);
+    } catch (error) {
+      console.error(
+        `[recommender] resolve-blockers: listOpenEpics for ${ctx.input.repo} failed: ${(error as Error).message}`,
+      );
+    }
+
+    const resolver: BlockerResolver = {
+      repo: ctx.input.repo,
+      defaultAdapter: settings.config.defaultAdapter,
+      resolveIssue: (repo, issue) => deps.epicGateway.getIssueState(repo, String(issue)),
+      selfEpic,
+    };
+    const next = await resolveBlockers(parsed, resolver);
+    const after = renderStateIssue(next);
+    if (after === before) return; // nothing reclassified — skip a no-op write
+    await deps.stateIssue.writeBody(ctx.input.repo, ctx.input.stateIssue, after);
+  }
+
   async function verifyStateIssueParses(ctx: StepContext<RecommenderInput>): Promise<VerifyResult> {
     const body = await deps.stateIssue.readBody(ctx.input.repo, ctx.input.stateIssue);
     const parsed = parseStateIssue(body);
@@ -677,6 +746,7 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
         timeout: launchTimeout + MAX_AGENT_TIMEOUT_MS + 30_000,
       })
       .step("reapply-dispatcher-sections", reapplyDispatcherSections)
+      .step("resolve-blockers", resolveBlockersStep)
       .step("verify-state-issue-parses", verifyStateIssueParses)
       .step("trigger-auto-dispatch", triggerAutoDispatch)
       .step("cleanup-worktree", cleanupWorktree)

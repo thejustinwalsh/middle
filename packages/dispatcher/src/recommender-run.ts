@@ -9,6 +9,8 @@ import { waitForSettle } from "./engine-settle.ts";
 import { HookServer } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import type { SessionGate } from "./hook-server.ts";
+import { ghGitHub } from "./github.ts";
+import type { EpicGateway } from "./github.ts";
 import { ghStateIssueGateway } from "./state-issue.ts";
 import type { StateGateway } from "./state-issue.ts";
 import { killSession, newSession, sendEnter, sendText } from "./tmux.ts";
@@ -36,6 +38,8 @@ export type RecommenderRunOverrides = {
   worktree?: WorktreeOps;
   sessionGate?: SessionGate;
   stateIssue?: StateGateway;
+  /** Resolves `BlockedItem.blocker` refs in the resolve-blockers step (#225); default `ghGitHub`. */
+  epicGateway?: EpicGateway;
   gatherContext?: (repo: string) => RecommenderContext;
   surfaceProblem?: (opts: { repo: string; stateIssue: number; problem: string }) => Promise<void>;
 };
@@ -288,6 +292,7 @@ export async function dispatchRecommender(
         dispatcherUrl,
         schemaPath: opts.schemaPath,
         stateIssue: ov.stateIssue ?? ghStateIssueGateway,
+        epicGateway: ov.epicGateway ?? ghGitHub,
         repoConfig: { adapters: opts.slots.adapters },
         config: opts.runConfig,
         agentTimeoutMs: opts.agentTimeoutMs,

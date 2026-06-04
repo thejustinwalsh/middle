@@ -91,6 +91,47 @@ describe("validate", () => {
     expect(validate(ok, config).ok).toBe(true);
   });
 
+  test("accepts a cross-repo blocker reference (#225)", () => {
+    const ok = {
+      ...fullState,
+      blocked: [{ issue: 9, blocker: "acme/other-repo#42", context: "x" }],
+    };
+    expect(validate(ok, config).ok).toBe(true);
+  });
+
+  test("accepts a blocker annotated with a resolved title (#225)", () => {
+    const ok = {
+      ...fullState,
+      blocked: [
+        { issue: 9, blocker: "#42 (Auth epic)", context: "x" },
+        { issue: 10, blocker: "acme/other-repo#7 (Repo B epic)", context: "y" },
+      ],
+    };
+    expect(validate(ok, config).ok).toBe(true);
+  });
+
+  test("accepts a blocker carrying a (stale blocker: <ref>) suffix (#225)", () => {
+    const ok = {
+      ...fullState,
+      blocked: [
+        {
+          issue: 9,
+          blocker: "acme/other-repo#999 (stale blocker: acme/other-repo#999)",
+          context: "x",
+        },
+      ],
+    };
+    expect(validate(ok, config).ok).toBe(true);
+  });
+
+  test("fails when a cross-repo blocker reference is malformed", () => {
+    const bad = {
+      ...fullState,
+      blocked: [{ issue: 9, blocker: "acme/other-repo#notanumber", context: "x" }],
+    };
+    expect(validate(bad, config).ok).toBe(false);
+  });
+
   test("collects multiple errors", () => {
     const bad = {
       ...fullState,
