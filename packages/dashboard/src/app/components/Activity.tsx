@@ -113,7 +113,10 @@ export function Activity({
   const documentation = runs.filter((r) => r.kind === "documentation");
   return (
     <section className="activity" aria-labelledby="activity-h">
-      <h2 id="activity-h">ACTIVITY</h2>
+      {/* Page-level title is the App topbar; this is the accessible name only. */}
+      <h2 id="activity-h" className="sr-only">
+        Activity
+      </h2>
       {error ? (
         <InlineError message={error} onRetry={onRetry} />
       ) : !loaded ? (

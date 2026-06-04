@@ -1,25 +1,35 @@
 import { useState } from "react";
 import type { EpicCard } from "../../wire.ts";
+import { cn } from "../lib/utils.ts";
 import { Button } from "./ui/button.tsx";
 import { Progress } from "./ui/progress.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
 import { EpicRef } from "./EpicRef.tsx";
+import { chipVariantForState, StatusChip } from "./StatusChip.tsx";
 
-function ProgressBar({ closed, total }: { closed: number; total: number }) {
+/**
+ * The Epic-card progress strip — a thin filled bar plus a mono `closed / total`
+ * label, aligned to the right so the eye reads "3 of 4 done" instantly.
+ */
+function ProgressStrip({ closed, total }: { closed: number; total: number }) {
   const pct = total > 0 ? Math.round((closed / total) * 100) : 0;
   return (
     <div
-      className="epic-progress my-1 flex items-center gap-2"
+      className="flex items-center gap-3"
       aria-label={`${closed} of ${total} sub-issues done`}
     >
-      <Progress value={pct} />
-      <span className="epic-progress-label whitespace-nowrap text-xs">
+      <Progress value={pct} className="h-1 flex-1" />
+      <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-[color:var(--fg-muted)]">
         {closed} / {total}
       </span>
     </div>
   );
 }
 
+/**
+ * The dispatch-row — an adapter picker + the dispatch button. Gated when the
+ * adapter has no free slot or the Epic is already in flight.
+ */
 function DispatchControl({
   card,
   adapters,
@@ -42,14 +52,20 @@ function DispatchControl({
   const isFileEpic = card.number === null;
   const disabled = card.dispatch.inFlight || noSlot || isFileEpic;
   return (
-    <div className="epic-dispatch flex items-center gap-2">
+    <div className="flex items-center justify-end gap-1.5 pt-1">
       <Select value={adapter} onValueChange={setAdapter} disabled={card.dispatch.inFlight}>
-        <SelectTrigger aria-label="agent" className="w-40">
+        <SelectTrigger
+          aria-label="agent"
+          className={cn(
+            "h-7 w-36 border-[color:var(--border)] bg-[color:var(--panel-2)]",
+            "font-mono text-[11.5px]",
+          )}
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {adapters.map((a) => (
-            <SelectItem key={a} value={a}>
+            <SelectItem key={a} value={a} className="font-mono text-[12px]">
               {a}
               {a === card.dispatch.recommendedAdapter ? " ★" : ""}
             </SelectItem>
@@ -60,6 +76,7 @@ function DispatchControl({
         size="sm"
         aria-label={`Dispatch Epic ${card.ref}`}
         disabled={disabled}
+        className="h-7 px-3 text-[12px] font-medium"
         title={
           isFileEpic
             ? "file-mode Epic — dispatch from the CLI: mm dispatch " + card.ref
@@ -101,49 +118,84 @@ export function Epics({
   onOpenInspector?: (session: string) => void;
 }) {
   return (
-    <section className="epics" aria-labelledby="epics-h">
+    <section
+      className="flex flex-col gap-3 px-4 py-4 md:px-6 md:py-5"
+      aria-labelledby="epics-h"
+    >
       {/* The page-level title is owned by the App's topbar; this remains the
           section's accessible name for screen readers. */}
       <h2 id="epics-h" className="sr-only">
         Open Epics
       </h2>
       {epics.length === 0 ? (
-        <p className="empty">No open Epics for this repo.</p>
+        <p className="py-12 text-center text-[13px] text-[color:var(--fg-muted)]">
+          No open Epics for this repo.
+        </p>
       ) : (
-        <ul>
-          {epics.map((card) => (
-            <li key={`${card.repo}#${card.ref}`} className="epic-card" data-epic={card.ref}>
-              <div className="epic-head">
-                <span className="epic-title">
-                  <EpicRef epicNumber={card.number} epicRef={card.ref} /> {card.title}
-                </span>
-                {card.runner ? (
-                  <Button
-                    variant="link"
-                    className="epic-agent h-auto p-0"
-                    onClick={() => onOpenInspector?.(card.runner!.session)}
-                  >
-                    {card.runner.adapter} · {card.runner.state}
-                  </Button>
-                ) : (
-                  <span className="epic-agent idle">idle</span>
+        <ul className="flex flex-col gap-2.5">
+          {epics.map((card) => {
+            const variant = card.runner ? chipVariantForState(card.runner.state) : "idle";
+            return (
+              <li
+                key={`${card.repo}#${card.ref}`}
+                data-epic={card.ref}
+                className={cn(
+                  "group rounded-md border border-[color:var(--border)] bg-[color:var(--panel)] px-4 py-3",
+                  "transition-colors duration-100 hover:border-[color:var(--border-strong)] hover:bg-[color:var(--panel-hover)]",
                 )}
-              </div>
-              <ProgressBar closed={card.progress.closed} total={card.progress.total} />
-              {card.decision ? (
-                <div className="epic-decision">
-                  <span className="label">{card.decision.label}</span> — {card.decision.oneLiner}
-                  {card.decision.link ? (
-                    <>
-                      {" "}
-                      <a href={card.decision.link}>open</a>
-                    </>
-                  ) : null}
+              >
+                {/* Head row: epic ref (mono) + title (sans) — left; status chip — right. */}
+                <div className="flex items-baseline gap-3">
+                  <span className="min-w-0 flex-1 truncate text-[13.5px] leading-tight">
+                    <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">
+                      <EpicRef epicNumber={card.number} epicRef={card.ref} />
+                    </span>{" "}
+                    <span className="font-medium text-foreground">{card.title}</span>
+                  </span>
+                  {card.runner ? (
+                    <button
+                      type="button"
+                      className="cursor-pointer"
+                      onClick={() => onOpenInspector?.(card.runner!.session)}
+                      aria-label={`Open inspector for ${card.runner.session}`}
+                    >
+                      <StatusChip variant={variant}>
+                        {card.runner.adapter} · {card.runner.state}
+                      </StatusChip>
+                    </button>
+                  ) : (
+                    <StatusChip variant="idle">idle</StatusChip>
+                  )}
                 </div>
-              ) : null}
-              <DispatchControl card={card} adapters={adapters} onDispatch={onDispatch} />
-            </li>
-          ))}
+
+                {/* Progress strip — thin bar, breathing room above and below. */}
+                <div className="pt-3">
+                  <ProgressStrip closed={card.progress.closed} total={card.progress.total} />
+                </div>
+
+                {/* Optional decision callout — muted, lower visual weight. */}
+                {card.decision ? (
+                  <div className="pt-2 text-[12px] text-[color:var(--fg-muted)]">
+                    <span className="font-medium text-foreground">{card.decision.label}</span>
+                    <span> — {card.decision.oneLiner}</span>
+                    {card.decision.link ? (
+                      <>
+                        {" "}
+                        <a
+                          href={card.decision.link}
+                          className="font-mono text-[11.5px] text-[color:var(--accent)]"
+                        >
+                          open
+                        </a>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <DispatchControl card={card} adapters={adapters} onDispatch={onDispatch} />
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
