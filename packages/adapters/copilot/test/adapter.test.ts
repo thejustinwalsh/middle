@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -604,16 +604,17 @@ describe("detectTrustPrompt", () => {
 });
 
 describe("enterAutoMode", () => {
-  test("returns immediately when the target session does not exist", async () => {
-    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  // A non-ready terminal exit must REJECT, never resolve: resolving is the
+  // single "composer is ready" signal the caller relies on to start sending the
+  // prompt-first keystrokes. A vanished session resolving would feed those keys
+  // into a dead session. (Boot-window timeout shares this contract but isn't
+  // unit-exercised — forcing a 90s deadline would stall the suite; it's covered
+  // by the live verify script and the shared throw path.)
+  test("throws fast when the target session does not exist (never treated as ready)", async () => {
     const start = Date.now();
-    try {
-      await expect(
-        copilotAdapter.enterAutoMode({ sessionName: "middle-does-not-exist" }),
-      ).resolves.toBeUndefined();
-    } finally {
-      errSpy.mockRestore();
-    }
+    await expect(
+      copilotAdapter.enterAutoMode({ sessionName: "middle-does-not-exist" }),
+    ).rejects.toThrow(/disappeared|capture-pane|ready-for-input/i);
     expect(Date.now() - start).toBeLessThan(2000);
   });
 });
