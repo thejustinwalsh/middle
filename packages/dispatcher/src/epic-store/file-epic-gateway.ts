@@ -138,10 +138,14 @@ export function makeFileEpicGateway(deps: FileEpicGatewayDeps): EpicGateway {
 
     async getIssueState(repo, ref) {
       // A slug with a local Epic file resolves from disk (same-repo file-mode
-      // blocker); a numeric/github-native ref falls through to gh (a GitHub issue
-      // can still be a blocker in a file-mode repo). A slug with no file → null
-      // (unresolvable / stale), mirroring gh's 404.
-      if (!epicFileExists(epicsDir, ref)) return gh.getIssueState(repo, ref);
+      // blocker). With no file, only a *numeric* ref falls through to gh (a GitHub
+      // issue can still be a blocker in a file-mode repo); a *non-numeric* slug
+      // with no file is unresolvable → null (stale), NOT forwarded to gh — gh's
+      // `refToIssueNumber` would throw on the non-numeric ref. Mirrors gh's 404.
+      if (!epicFileExists(epicsDir, ref)) {
+        if (!/^\d+$/.test(ref.trim())) return null;
+        return gh.getIssueState(repo, ref);
+      }
       const epic = readEpicFile(epicsDir, ref);
       if (!epic) return null;
       return { state: epic.meta.closed ? "closed" : "open", title: epic.title };

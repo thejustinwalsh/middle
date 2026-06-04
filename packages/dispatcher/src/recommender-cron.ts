@@ -45,14 +45,16 @@ export type RecommenderCronDeps = {
    * Max repos whose runs fire concurrently in one pass (#227). The daemon resolves
    * this from the global config's `[recommender] max_concurrent_repos`. Bounds the
    * fan-out so a many-repo daemon doesn't blow rate limits / memory. Default
-   * {@link DEFAULT_MAX_CONCURRENT_REPOS}; a non-positive value is clamped to 1.
+   * {@link DEFAULT_MAX_CONCURRENT_REPOS}; a non-positive / non-finite value falls
+   * back to that default.
    */
   maxConcurrentRepos?: number;
   /**
    * Hard timeout for a single repo's run (#227). A run exceeding this is abandoned
    * (its stamp rolled back, marked failed) without blocking the others — the whole
    * point of parallelizing: a hung `gh`/state-write on repo A no longer stalls
-   * repo B. Default {@link DEFAULT_RUN_TIMEOUT_MS}.
+   * repo B. Default {@link DEFAULT_RUN_TIMEOUT_MS}; a non-positive / non-finite
+   * value falls back to that default (a 0 would expire every run immediately).
    */
   runTimeoutMs?: number;
   now?: () => number;
@@ -60,6 +62,12 @@ export type RecommenderCronDeps = {
 
 /** A repo that passed the due-check, with the prior stamp to roll back to on failure. */
 type DueRepo = { managed: ManagedRepo; prev: number | null };
+
+/** A finite, strictly-positive number — the shape every injected timeout/concurrency
+ *  knob must have before it's trusted (rejects `undefined`, `NaN`, `0`, negatives). */
+function isPositiveNumber(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
 
 /**
  * Run `task` with a hard timeout. Resolves to `"ok"` if it settles first, or
@@ -117,8 +125,18 @@ async function runBounded(tasks: Array<() => Promise<void>>, limit: number): Pro
  */
 export async function runRecommenderCronPass(deps: RecommenderCronDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
-  const timeoutMs = deps.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
-  const limit = deps.maxConcurrentRepos ?? DEFAULT_MAX_CONCURRENT_REPOS;
+  // A non-positive (or NaN) injected `runTimeoutMs` would expire every run
+  // immediately — every stamp rolls back and no repo can ever complete — so it
+  // falls back to the default rather than dead-locking the cron. `maxConcurrentRepos`
+  // gets the same positive-number guard (runBounded also clamps with Math.max(1, …),
+  // but a NaN would slip that and zero out the worker pool). Mirrors the
+  // `intervalMs > 0` due-check guard below.
+  const timeoutMs = isPositiveNumber(deps.runTimeoutMs)
+    ? deps.runTimeoutMs
+    : DEFAULT_RUN_TIMEOUT_MS;
+  const limit = isPositiveNumber(deps.maxConcurrentRepos)
+    ? deps.maxConcurrentRepos
+    : DEFAULT_MAX_CONCURRENT_REPOS;
 
   // Phase 1 — due-check + stamp, SYNCHRONOUSLY before any run fires. Stamping all
   // due repos up front (no intervening await) preserves the double-dispatch guard:
