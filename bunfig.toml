@@ -1,0 +1,10 @@
+# Root Bun config.
+#
+# `[serve.static].plugins` registers the Tailwind v4 bundler plugin on the path
+# `Bun.serve` uses to bundle HTML imports — the dashboard SPA (`packages/dashboard`)
+# is served that way (`createDashboardServer` → `import("./index.html")`), and the
+# same path runs under `bun test` (see `packages/dashboard/test/spa.test.ts`). The
+# plugin is resolved relative to this file, so `bun-plugin-tailwind` + `tailwindcss`
+# live in the ROOT devDependencies, not the dashboard package's.
+[serve.static]
+plugins = ["bun-plugin-tailwind"]
