@@ -13,7 +13,6 @@ import {
   armWaitForSignal,
   consumeWaitForSignal,
   createWorkflowRecord,
-  isWaitForArmed,
   updateWorkflow,
   type WorkflowState,
 } from "../workflow-record.ts";
@@ -1023,54 +1022,62 @@ export function createImplementationWorkflow(
   async function parkForResume(ctx: StepContext<ImplementationInput>): Promise<void> {
     const { outcome } = ctx.steps["launch-and-drive"] as DriveResult;
     const reason = reasonFor(outcome.kind);
-    // Idempotent arm: the watchdog's sentinel re-arm (`blocked:<id>`) may have
-    // already armed a wait while the agent hung before this park. Don't add a
-    // second row (PK is signal_name, so they wouldn't collide) — the poller
-    // would then see two pollable waits for one workflow. Keep the existing one;
-    // its earlier `created_at` also avoids filtering out a reply made during the
-    // hang. Both names map to the same resume reason via `reasonFromSignalName`.
-    if (!isWaitForArmed(deps.db, ctx.executionId)) {
-      armWaitForSignal(
-        deps.db,
-        signalNameFor(ctx.input.epicRef, reason),
-        ctx.executionId,
-        JSON.stringify({ reason }),
-      );
-    }
+    // Always arm the signal for the ACTUAL park reason — even if the watchdog's
+    // sentinel fallback (`blocked:<id>`) is already armed from a stale
+    // `.middle/blocked.json` written during an earlier phase. The two names map
+    // to DIFFERENT resume reasons (`blocked:<id>` → `answered-question`,
+    // `epic-N-review-resolved` → `review-changes`; see
+    // `reasonFromSignalName`), so leaving review-resolved unarmed when the
+    // agent's actual stop was `done` orphans the workflow: CR's review event
+    // would never wake it because no review-resolved signal is armed. (Real
+    // incident — PR #230 / Epic #208 sat parked ~11h with only `blocked:` armed
+    // after CR posted CHANGES_REQUESTED.)
+    //
+    // `armWaitForSignal` is `INSERT OR IGNORE` keyed on `signal_name`, so
+    // re-arming the same name is a no-op; arming a *different* name leaves both
+    // wake paths live, which is correct when the workflow is genuinely waiting
+    // on either a human answer or a CR re-review.
+    armWaitForSignal(
+      deps.db,
+      signalNameFor(ctx.input.epicRef, reason),
+      ctx.executionId,
+      JSON.stringify({ reason }),
+    );
     updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
-    if (outcome.kind === "asked-question") {
-      if (deps.postQuestion) {
-        // The sentinel's `kind` distinguishes a complexity pause (surfaced under the
-        // `complexity pause` state-issue label) from a plain question.
-        const kind = outcome.sentinel?.kind === "complexity" ? "complexity" : "question";
-        try {
-          await deps.postQuestion({
-            repo: ctx.input.repo,
-            epicRef: ctx.input.epicRef,
-            question: outcome.sentinel?.question ?? "(question text unavailable)",
-            context: outcome.sentinel?.context,
-            kind,
-          });
-        } catch (error) {
-          // Visibility is best-effort — the wait is already armed and durable, so
-          // a failed comment must not abort the park.
-          console.error(`[workflow] postQuestion failed: ${(error as Error).message}`);
-        }
-      }
-      // Consume the sentinel (#205): remove `<worktree>/.middle/blocked.json` once
-      // the question has been surfaced, so a re-dispatch / the watchdog's rule-4
-      // re-arm pass doesn't treat the stale file as fresh and re-post on the next
-      // cron tick. Anchored on the worktree handle (the stable home of the
-      // workstream's sentinels), not the adapter-reported `sentinelPath`. The
-      // `waitFor` is already durably armed, so removing the file can't strand the
-      // resume — and unconditional removal (even if the post above threw) is what
-      // stops the next tick re-posting "(question text unavailable)".
-      const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
+    if (outcome.kind === "asked-question" && deps.postQuestion) {
+      // The sentinel's `kind` distinguishes a complexity pause (surfaced under the
+      // `complexity pause` state-issue label) from a plain question.
+      const kind = outcome.sentinel?.kind === "complexity" ? "complexity" : "question";
       try {
-        rmSync(join(handle.path, ".middle", "blocked.json"), { force: true });
+        await deps.postQuestion({
+          repo: ctx.input.repo,
+          epicRef: ctx.input.epicRef,
+          question: outcome.sentinel?.question ?? "(question text unavailable)",
+          context: outcome.sentinel?.context,
+          kind,
+        });
       } catch (error) {
-        console.error(`[workflow] sentinel cleanup failed: ${(error as Error).message}`);
+        // Visibility is best-effort — the wait is already armed and durable, so
+        // a failed comment must not abort the park.
+        console.error(`[workflow] postQuestion failed: ${(error as Error).message}`);
       }
+    }
+    // Consume the sentinel (#205, extended for the dual-signal bug): remove
+    // `<worktree>/.middle/blocked.json` on EVERY park, not just `asked-question`.
+    // On a `done`/review-changes park, a stale sentinel left from an earlier
+    // phase would still cause the watchdog's rule-4 pass to re-arm `blocked:<id>`
+    // on the next tick, racing the legitimate `epic-N-review-resolved` arm and
+    // re-introducing the orphaned-resume class this fix closes.  Anchored on
+    // the worktree handle (the stable home of the workstream's sentinels), not
+    // the adapter-reported `sentinelPath`. The `waitFor` is already durably
+    // armed, so removing the file can't strand the resume; unconditional
+    // removal (even if `postQuestion` threw above) is also what stops the next
+    // tick re-posting "(question text unavailable)".
+    const { handle } = ctx.steps["prepare-worktree"] as PrepareResult;
+    try {
+      rmSync(join(handle.path, ".middle", "blocked.json"), { force: true });
+    } catch (error) {
+      console.error(`[workflow] sentinel cleanup failed: ${(error as Error).message}`);
     }
   }
 
