@@ -9,7 +9,7 @@
  * Public surface:
  * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
  *   `dispatch`, `pause`, `resume`, `config`, `run-recommender`, `docs`,
- *   `audit-issues`, `version`
+ *   `audit-issues`, `verify-file-mode`, `version`
  *
  * Where things live:
  * - `commands/` — one `run*` function per subcommand
@@ -91,6 +91,7 @@ import { runStartCommand } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninit } from "./commands/uninit.ts";
+import { runVerifyFileMode } from "./commands/verify-file-mode.ts";
 
 const VERSION = "0.0.0";
 
@@ -279,6 +280,24 @@ program
         }),
       );
     },
+  );
+
+program
+  .command("verify-file-mode")
+  .description(
+    "Verify file mode end-to-end: drive the real file-mode workflow over a throwaway fixture and print a structured report",
+  )
+  .option("--live", "run the real-GitHub smoke against a designated test repo (needs --repo)")
+  .option("--repo <owner/name>", "the throwaway test repo for --live")
+  .option("--repo-path <path>", "local checkout of the --live test repo (defaults to cwd)")
+  .action(async (options: { live?: boolean; repo?: string; repoPath?: string }) =>
+    process.exit(
+      await runVerifyFileMode({
+        live: options.live,
+        repo: options.repo,
+        repoPath: options.repoPath,
+      }),
+    ),
   );
 
 program
