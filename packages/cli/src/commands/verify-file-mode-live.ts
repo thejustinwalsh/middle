@@ -126,6 +126,7 @@ export async function runVerifyFileModeLive(opts: LiveOptions = {}): Promise<num
 
 // ── Production IO — the GitHub/daemon/git boundary (operator-run; not CI-tested) ──
 
+/** Render the throwaway Epic file body for a `--live` run, keyed to `slug` (one sub-issue, one question). */
 const EPIC_BODY = (slug: string): string =>
   [
     "<!-- middle:epic v1 -->",
@@ -153,6 +154,7 @@ const EPIC_BODY = (slug: string): string =>
 
 const ANSWER_TEXT = "Confirmed — finish the sub-issue and leave the PR as a draft.";
 
+/** Run a `gh` subcommand, capturing stdout/stderr; returns `ok` instead of throwing so callers can branch on failure. */
 async function gh(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["gh", ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const [stdout, stderr] = await Promise.all([
@@ -162,6 +164,7 @@ async function gh(args: string[]): Promise<{ ok: boolean; stdout: string; stderr
   return { ok: (await proc.exited) === 0, stdout, stderr };
 }
 
+/** Run a git subcommand in `cwd`; throws with stderr on non-zero exit. */
 async function git(cwd: string, args: string[]): Promise<void> {
   const proc = Bun.spawn(["git", "-C", cwd, ...args], { stdout: "ignore", stderr: "pipe" });
   if ((await proc.exited) !== 0) {

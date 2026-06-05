@@ -104,6 +104,7 @@ const GIT_ENV = {
   GIT_COMMITTER_EMAIL: "middle-smoke@example.invalid",
 };
 
+/** Run a git subcommand in `cwd` with the smoke's fixed identity env; throws with stderr on non-zero exit. */
 async function git(cwd: string, args: string[]): Promise<void> {
   const proc = Bun.spawn(["git", "-C", cwd, ...args], {
     stdout: "ignore",
