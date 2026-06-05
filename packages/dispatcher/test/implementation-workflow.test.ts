@@ -548,7 +548,21 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
     expectNoSessionLeak(tmux);
   });
 
-  test("parkForResume keeps a pre-armed blocked signal (no duplicate)", async () => {
+  test("parkForResume arms the actual-reason signal alongside a pre-armed blocked signal", async () => {
+    // Pre-fix behavior was: skip arming when ANY signal exists ("no duplicate"
+    // intent), keeping only `blocked:<id>`. That intent assumed both names
+    // mapped to the same resume reason, but they don't — `blocked:<id>` →
+    // `answered-question`, `epic-N-review-resolved` → `review-changes`. So when
+    // the agent's actual stop was `done` (review-changes) and the watchdog had
+    // pre-armed `blocked:`, the review-resolved signal never got armed and a
+    // CR event could not wake the workflow. (PR #230 / Epic #208 sat parked
+    // ~11h.) Post-fix: always arm the actual-reason signal; `armWaitForSignal`
+    // is `INSERT OR IGNORE` keyed on `signal_name` so same-name re-arms remain
+    // no-ops while different-name arms leave both wake paths live.
+    //
+    // This scenario covers the asked-question side of the same class: both
+    // signals end up armed; they happen to map to the same wake path here, so
+    // either firing is equivalent — but having both is correct.
     const tmux = makeTmuxStub();
     const deps = makeDeps({
       tmux: { ...tmux.ops, status: async () => ({ alive: false }) },
@@ -569,11 +583,13 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
     const id = await start(deps);
     await awaitParked(id);
 
-    const rows = db
-      .query("SELECT signal_name FROM waitfor_signals WHERE workflow_id = ?")
-      .all(id) as Array<{ signal_name: string }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.signal_name).toBe(`blocked:${id}`);
+    const names = (
+      db
+        .query("SELECT signal_name FROM waitfor_signals WHERE workflow_id = ?")
+        .all(id) as Array<{ signal_name: string }>
+    ).map((r) => r.signal_name);
+    expect(names).toContain(`blocked:${id}`);
+    expect(names).toContain(signalNameFor(EPIC_REF, "answered-question"));
   });
 
   test("a hung agent with NO sentinel still fails (compensates, worktree pruned)", async () => {
@@ -815,6 +831,51 @@ describe("implementation workflow — complexity pause (#52)", () => {
     // Give any stray surface call a chance to land before asserting it didn't.
     await Bun.sleep(50);
     expect(surfaced).toBe(false);
+  });
+
+  test("a `done` park arms `epic-N-review-resolved` even when the watchdog already armed `blocked:<id>` (dual-signal class)", async () => {
+    // Regression for the orphaned-resume class that left PR #230 / Epic #208
+    // sitting in `waiting-human` for ~11h after CR posted CHANGES_REQUESTED.
+    //
+    // Pre-condition: a stale `.middle/blocked.json` from an earlier phase
+    // causes the watchdog's rule-4 sentinel pass to arm `blocked:<id>` before
+    // the agent finishes the current phase with `kind = "done"` (opened a PR,
+    // parks for review). The fix: `parkForResume` must arm
+    // `epic-N-review-resolved` for the ACTUAL park reason regardless of what's
+    // already armed — otherwise the CR event has no matching signal to fire
+    // and the workflow stays parked forever.
+    //
+    // Simulate the race by wrapping the adapter's `classifyStop` (the last
+    // step that runs *inside* launch-and-drive, before parkForResume). When
+    // the wrapper fires, the workflow row exists in the DB; look it up by the
+    // single-row guarantee of the fresh per-test DB, then arm `blocked:<id>`
+    // directly. That seeds the DB state the watchdog's rule-4 pass would have
+    // produced, ahead of parkForResume.
+    const baseAdapter = makeAdapterStub({ kind: "done" });
+    const deps = makeDeps({
+      getAdapter: () => ({
+        ...baseAdapter,
+        classifyStop: (payload) => {
+          const row = db
+            .query("SELECT id FROM workflows ORDER BY created_at DESC LIMIT 1")
+            .get() as { id: string } | null;
+          if (row) armWaitForSignal(db, `blocked:${row.id}`, row.id, null);
+          return baseAdapter.classifyStop(payload);
+        },
+      }),
+    });
+    const workflowId = await start(deps);
+    await awaitRow(workflowId, "waiting-human");
+
+    // Both signals are armed on the workflow — the watchdog's fallback AND the
+    // actual-reason review-resolved arm. They map to DIFFERENT resume reasons
+    // (`reasonFromSignalName`), so each fires its own wake path independently.
+    const armed = db
+      .query("SELECT signal_name FROM waitfor_signals WHERE workflow_id = ? ORDER BY signal_name")
+      .all(workflowId) as Array<{ signal_name: string }>;
+    const names = armed.map((r) => r.signal_name);
+    expect(names).toContain(`blocked:${workflowId}`);
+    expect(names).toContain(signalNameFor(EPIC_REF, "review-changes"));
   });
 
   test("an approved Epic's brief authorizes proceeding past a complexity overrun (#53)", async () => {
