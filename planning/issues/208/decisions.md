@@ -5,9 +5,9 @@
 **Date:** 2026-06-04
 
 **Decision:** Put the smoke drive in a single runner in the dispatcher package,
-returning structured per-section results, and have both #212's `bun test` and
-#213's `mm verify-file-mode` call it.
-**Why:** #213's AC explicitly allows "delegating to the integration fixture from
+returning structured per-section results, and have both `#212`'s `bun test` and
+`#213`'s `mm verify-file-mode` call it.
+**Why:** `#213`'s AC explicitly allows "delegating to the integration fixture from
 the sibling sub-issue". A second hand-rolled drive would be a parity hazard — the
 exact failure the Epic exists to prevent. The runner lives in the dispatcher (not
 the CLI) because it depends on dispatcher internals (`Engine`,
@@ -24,7 +24,7 @@ both drive the real workflow; this consolidates that drive into a reusable seam.
 block to the Epic file (via `writeEpicFile`), then drives `runFileWatcherTick`
 (the real watcher) to detect it and fire the resume — rather than calling
 `engine.signal(RESUME_EVENT)` directly like `parity.test.ts` does.
-**Why:** #212's framing is "resume-via-edit"; exercising the real watcher proves
+**Why:** `#212`'s framing is "resume-via-edit"; exercising the real watcher proves
 the file-mode resume path end to end (mtime poll → open-question-with-answer
 detection → `fireSignal` → flip to `resolved`), which is exactly the seam the
 live gap left unproven. `engine.signal` would skip the watcher entirely.

@@ -49,6 +49,7 @@ export const SMOKE_SECTIONS = [
   "resume",
   "complete",
 ] as const;
+/** A smoke section identifier — one of {@link SMOKE_SECTIONS}; orders the drive and names a report line. */
 export type SmokeSectionName = (typeof SMOKE_SECTIONS)[number];
 
 /** One phase's result: did it pass, how long it took, and a one-line detail. */
