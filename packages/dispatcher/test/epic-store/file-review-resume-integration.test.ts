@@ -184,4 +184,99 @@ describe("file-mode PR-review resume (real poller path)", () => {
     expect(prSnapshotCalls).toEqual([]); // nothing to fetch
     expect(fired).toEqual([]);
   });
+
+  test("an APPROVED review on the stamped PR resumes the parked file-mode Epic as resolved", async () => {
+    seedEpic(PR);
+    const id = seedParkedOnReview();
+
+    // Backend returns APPROVED review + APPROVED decision.
+    const prSnapshotCalls: number[] = [];
+    const gh: PollGateway = {
+      async listIssueComments(): Promise<never[]> {
+        return [];
+      },
+      async findPrForEpic(): Promise<PrSnapshot | null> {
+        return null;
+      },
+      async findEpicPrLifecycle(): Promise<EpicPrLifecycle | null> {
+        return null;
+      },
+      async prSnapshot(_repo, prNumber): Promise<PrSnapshot | null> {
+        prSnapshotCalls.push(prNumber);
+        return {
+          number: prNumber,
+          reviewDecision: "APPROVED",
+          reviews: [
+            {
+              id: 9,
+              state: "APPROVED",
+              authorLogin: "reviewer",
+              submittedAt: ARMED_AT + 20, // fresh: after the wait armed
+              body: "LGTM",
+            },
+          ],
+          labels: [],
+        };
+      },
+      async prLifecycle(_repo, prNumber): Promise<EpicPrLifecycle | null> {
+        return { number: prNumber, state: "OPEN" };
+      },
+      async getRateLimit(): Promise<RateLimitStatus> {
+        return { remaining: 5000, resetAt: 0 };
+      },
+    };
+    const github = makeRoutingPollGateway({ db, resolveRepoPath: () => repoRoot, ghPoll: gh });
+    const { fired, fireSignal } = captureFires();
+
+    const n = await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 1000 });
+
+    expect(n).toBe(1);
+    expect(prSnapshotCalls).toEqual([PR]);
+    expect(fired).toEqual([
+      {
+        workflowId: id,
+        payload: {
+          reason: "review-changes",
+          outcome: "resolved",
+          reviewId: 9,
+          decision: "APPROVED",
+        },
+      },
+    ]);
+  });
+
+  test("meta.pr stamp added after parking is picked up on the next tick", async () => {
+    // Seed Epic WITHOUT a meta.pr stamp — PR hasn't been opened yet.
+    seedEpic(); // no meta.pr
+    const id = seedParkedOnReview();
+    const { gh, prSnapshotCalls } = ghBackend();
+    const github = makeRoutingPollGateway({ db, resolveRepoPath: () => repoRoot, ghPoll: gh });
+    const { fired, fireSignal } = captureFires();
+
+    // Tick 1: no meta.pr stamp → no PR fetch, no fire.
+    const n1 = await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 1000 });
+    expect(n1).toBe(0);
+    expect(prSnapshotCalls).toEqual([]);
+    expect(fired).toEqual([]);
+
+    // The agent opens a PR and stamps meta.pr into the Epic file.
+    seedEpic(PR);
+
+    // Tick 2: same gateway re-reads the Epic file fresh (no caching of the PR
+    // number). The wait is still armed (not fired), so the poller resumes it.
+    const n2 = await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 2000 });
+    expect(n2).toBe(1);
+    expect(prSnapshotCalls).toEqual([PR]);
+    expect(fired).toEqual([
+      {
+        workflowId: id,
+        payload: {
+          reason: "review-changes",
+          outcome: "changes-requested",
+          reviewId: 7,
+          decision: "CHANGES_REQUESTED",
+        },
+      },
+    ]);
+  });
 });
