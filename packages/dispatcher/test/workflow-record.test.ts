@@ -365,6 +365,39 @@ describe("countActiveImplementationSlots", () => {
     mk("a", "implementation", "claude", 1);
     expect(countActiveImplementationSlots(db)).toEqual({ total: 1, perAdapter: { claude: 1 } });
   });
+
+  test("excludes waiting-human (parked) rows — a parked epic holds a worktree but no live session", () => {
+    // A parked epic must not count against the per-repo or global concurrency cap.
+    // Before the fix this test asserts, a waiting-human row was treated the same as
+    // running/launching, starving every other ready epic for the park duration.
+    mk("parked", "implementation", "claude", 1);
+    updateWorkflow(db, "parked", { state: "waiting-human" });
+    expect(countActiveImplementationSlots(db)).toEqual({ total: 0, perAdapter: {} });
+
+    // A second running row alongside the parked one counts; the parked one still doesn't.
+    mk("running", "implementation", "codex", 2);
+    updateWorkflow(db, "running", { state: "running" });
+    expect(countActiveImplementationSlots(db)).toEqual({ total: 1, perAdapter: { codex: 1 } });
+  });
+
+  test("scopes waiting-human exclusion to per-repo query", () => {
+    // Per-repo call: a parked row for the target repo is excluded; a running row
+    // for a different repo does not appear in the per-repo count.
+    mk("parked-or", "implementation", "claude", 1);
+    updateWorkflow(db, "parked-or", { state: "waiting-human" });
+    createWorkflowRecord(db, {
+      id: "running-other",
+      kind: "implementation",
+      repo: "other/repo",
+      epicRef: "2",
+      adapter: "claude",
+    });
+    updateWorkflow(db, "running-other", { state: "running" });
+    // Without a repo filter: only the running row from other/repo counts.
+    expect(countActiveImplementationSlots(db)).toEqual({ total: 1, perAdapter: { claude: 1 } });
+    // With repo filter: the parked row is excluded; the cross-repo row is also excluded.
+    expect(countActiveImplementationSlots(db, "o/r")).toEqual({ total: 0, perAdapter: {} });
+  });
 });
 
 describe("updateWorkflow", () => {
