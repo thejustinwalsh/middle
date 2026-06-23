@@ -167,6 +167,25 @@ export const DEFAULT_RATE_LIMIT_BUFFER = 100;
  */
 export const DEFAULT_MAX_POLLS_PER_PASS = 25;
 
+/**
+ * Slack window applied to the fresh-review filter in {@link classifyReviewVerdict}.
+ *
+ * CodeRabbit (and other fast bots) can post a review within seconds of a push.
+ * The drive pipeline — verify gates, nudges, `parkForResume` — takes 30–120 s
+ * to arm the wait. Reviews that land in that window would otherwise be filtered
+ * as "stale" (submitted before `sinceMs`) and the PR would sit in
+ * `waiting-human` forever. Adding a 5-minute lookback catches those fast
+ * reviews without meaningfully widening the staleness window for genuine old
+ * reviews (which are many minutes older).
+ *
+ * **Residual risk:** if the agent addresses a review and re-parks within this
+ * 5-minute slack window, the prior review is still inside the window; the
+ * poller would treat it as fresh and re-fire. A fuller fix would compare
+ * against the last-push timestamp rather than the arm timestamp — deferred
+ * until the push timestamp is reliably available in the parked row.
+ */
+export const REVIEW_WINDOW_SLACK_MS = 5 * 60 * 1000;
+
 const ACTIONABLE_RE = /actionable comments posted:\s*(\d+)/i;
 
 /** The resume reason a durable signal name encodes, or null if not poller-driven. */
@@ -233,8 +252,12 @@ type ReviewVerdict = { outcome: ReviewOutcome; reviewId: number | null; decision
  * Absent CI (`undefined` → `none`) is non-blocking, so the pre-CI review loop is
  * unchanged.
  */
-export function classifyReviewOutcome(snapshot: PrSnapshot, sinceMs: number): ReviewVerdict | null {
-  const review = classifyReviewVerdict(snapshot, sinceMs);
+export function classifyReviewOutcome(
+  snapshot: PrSnapshot,
+  sinceMs: number,
+  reviewSlackMs = REVIEW_WINDOW_SLACK_MS,
+): ReviewVerdict | null {
+  const review = classifyReviewVerdict(snapshot, sinceMs, reviewSlackMs);
   const ci = snapshot.ci ?? "none";
   if (review?.outcome === "changes-requested") return review;
   if (ci === "failing") {
@@ -250,9 +273,13 @@ export function classifyReviewOutcome(snapshot: PrSnapshot, sinceMs: number): Re
  * while the PR's `reviewDecision` still reads `CHANGES_REQUESTED`. Falls back to
  * the standing decision / `changes-requested` label when no fresh review exists.
  */
-function classifyReviewVerdict(snapshot: PrSnapshot, sinceMs: number): ReviewVerdict | null {
+function classifyReviewVerdict(
+  snapshot: PrSnapshot,
+  sinceMs: number,
+  reviewSlackMs = REVIEW_WINDOW_SLACK_MS,
+): ReviewVerdict | null {
   const fresh = snapshot.reviews
-    .filter((r) => r.submittedAt > sinceMs)
+    .filter((r) => r.submittedAt > sinceMs - reviewSlackMs)
     .sort((a, b) => b.submittedAt - a.submittedAt);
   const latest = fresh[0];
   if (latest) {
