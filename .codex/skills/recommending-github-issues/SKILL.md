@@ -173,6 +173,17 @@ In GitHub mode it's `gh issue edit <state_issue> --body-file …`. In file mode 
 write `state_file` **via the renderer** (`renderStateIssue`), never by hand — the
 renderer is the sole writer, which closes #180's class for this skill too.
 
+**Write-verification (GitHub mode only):** After `gh issue edit`, re-read the issue's
+`updatedAt` field and confirm it advanced past the value you saw before writing:
+
+```bash
+gh api /repos/{owner}/{repo}/issues/<state_issue> --jq '.updated_at'
+```
+
+If `updatedAt` did NOT advance, a live dispatcher daemon owns the issue body and your
+write was silently ignored. Do NOT post the run-summary comment in this case — stop
+cleanly. The dispatcher will post its own update on its next tick.
+
 Then log a single diff summary against prior_body. In GitHub mode that's a comment
 on the state issue; in file mode the run summary is recorded the same way the
 dispatcher records it (no separate GitHub comment — the state surface is a file):
@@ -193,8 +204,22 @@ dispatcher records it (no separate GitHub comment — the state surface is a fil
 > Rate-limit: claude AVAILABLE, codex LIMITED until 16:32Z, github 4180/5000.
 > Slots: claude 1/2, codex 0/1, total 1/3, global 2/4.
 
+**Idempotency guard before posting the run-summary comment (GitHub mode only):**
+Fetch the most recent comment on the state issue first:
+
+```bash
+gh api "/repos/{owner}/{repo}/issues/<state_issue>/comments?per_page=1&direction=desc"
+```
+
+If the most recent comment is from your own account (the account running `gh`) AND its
+body is identical to the summary you are about to post (or is exactly
+`"No changes this run."`), skip the comment entirely. Posting the same comment twice
+in a row is pure noise — it will be suppressed by the dispatcher's own deduplication
+anyway, and silently skipping is cleaner than double-posting.
+
 If zero changes from prior body, post "No changes this run." — confirms the
-recommender is alive without polluting timeline.
+recommender is alive without polluting timeline. (Subject to the idempotency guard
+above: if the last comment is already "No changes this run." from your account, skip.)
 
 ## Stop conditions
 
