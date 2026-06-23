@@ -24,14 +24,16 @@ import {
   getWaitForSignal,
   getWorkflow,
   getWorkflowSource,
+  hasEventOfType,
 } from "../src/workflow-record.ts";
 import {
   createImplementationWorkflow,
   RESUME_EVENT,
+  ROUND_CAP_EVENT,
   signalNameFor,
   type ImplementationDeps,
 } from "../src/workflows/implementation.ts";
-import { makeDefaultPostQuestion } from "../src/build-deps.ts";
+import { makeDefaultPostQuestion, makeDefaultPostRoundCapEscalation } from "../src/build-deps.ts";
 import { AGENT_COMMENT_MARKER } from "../src/poller.ts";
 import { createWorktree, destroyWorktree, listWorktrees } from "../src/worktree.ts";
 
@@ -584,9 +586,9 @@ describe("implementation workflow — blocked sentinel self-heal", () => {
     await awaitParked(id);
 
     const names = (
-      db
-        .query("SELECT signal_name FROM waitfor_signals WHERE workflow_id = ?")
-        .all(id) as Array<{ signal_name: string }>
+      db.query("SELECT signal_name FROM waitfor_signals WHERE workflow_id = ?").all(id) as Array<{
+        signal_name: string;
+      }>
     ).map((r) => r.signal_name);
     expect(names).toContain(`blocked:${id}`);
     expect(names).toContain(signalNameFor(EPIC_REF, "answered-question"));
@@ -1153,6 +1155,136 @@ describe("implementation workflow — review-round cap", () => {
     expect(continuationIds).toHaveLength(2); // id1, id2 — no third round
     expect(getWaitForSignal(db, id2)).toBeNull(); // consumed, not re-armed
     expect((await listWorktrees({ repoPath, worktreeRoot })).length).toBe(1);
+  });
+
+  /**
+   * Wait until the bunqueue execution for a capped round fully settles — the same
+   * "definitive barrier" the base test uses. Unlike `awaitRow`, this waits for
+   * `resume-or-finalize` to run to completion, so the post-park side effects
+   * (`recordEvent`, `postRoundCapEscalation`) have definitely executed.
+   */
+  async function awaitCappedSettled(id: string, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const s = engine.getExecution(id)?.state;
+      if (s === "completed" || s === "failed") return;
+      await Bun.sleep(15);
+    }
+    throw new Error(`capped execution ${id} did not settle within ${timeoutMs}ms`);
+  }
+
+  test("posts a round-cap escalation comment with the cap/round numbers (#254)", async () => {
+    // Unit-level: assert postRoundCapEscalation is called with the right args.
+    const calls: Array<{ repo: string; epicRef: string; round: number; cap: number }> = [];
+    const tmux = makeTmuxStub();
+    const adapter = makeAdapterStub({ kind: "done" });
+    const { deps, continuationIds } = withContinuations({
+      tmux: tmux.ops,
+      getAdapter: () => adapter,
+      reviewRoundCap: 1,
+      postRoundCapEscalation: async (opts) => {
+        calls.push(opts);
+      },
+    });
+    const id0 = await start(deps);
+
+    // Round 0 parks; request changes → round 1.
+    await awaitParked(id0);
+    await engine.signal(id0, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettled(id0)).toBe("completed");
+
+    // Round 1 parks; one more CHANGES_REQUESTED hits the cap (1+1 > 1).
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1);
+    await engine.signal(id1, RESUME_EVENT, CHANGES_REQUESTED);
+
+    // Wait for the execution to fully settle so the post-park side effects are done.
+    await awaitCappedSettled(id1);
+    expect(getWorkflow(db, id1)?.state).toBe("waiting-human");
+    // The cap path must have called postRoundCapEscalation exactly once.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      repo: INPUT.repo,
+      epicRef: INPUT.epicRef,
+      round: 2,
+      cap: 1,
+    });
+  });
+
+  test("records a workflow.round-cap event in the events table (#254)", async () => {
+    // Unit-level: assert the event row is written so the Activity view can render it.
+    const tmux = makeTmuxStub();
+    const adapter = makeAdapterStub({ kind: "done" });
+    const { deps, continuationIds } = withContinuations({
+      tmux: tmux.ops,
+      getAdapter: () => adapter,
+      reviewRoundCap: 1,
+      postRoundCapEscalation: async () => {},
+    });
+    const id0 = await start(deps);
+
+    await awaitParked(id0);
+    await engine.signal(id0, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettled(id0)).toBe("completed");
+
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1);
+    await engine.signal(id1, RESUME_EVENT, CHANGES_REQUESTED);
+
+    await awaitCappedSettled(id1);
+    expect(hasEventOfType(db, id1, ROUND_CAP_EVENT)).toBe(true);
+  });
+
+  test("integration: round-cap park dispatches Epic comment and writes round-cap event via real workflow path (#254)", async () => {
+    // Integration criterion: drives a real round-cap park through `resumeOrFinalize`
+    // on the real path. Uses a commentStore (the test gh seam) to assert the
+    // comment is dispatched, and hasEventOfType to assert the event row is written.
+    const store = {
+      comments: [] as IssueComment[],
+      listIssueComments: async () => store.comments.map((c) => ({ ...c })),
+      postComment: async (_repo: string, _ref: string, body: string) => {
+        store.comments.push({
+          authorLogin: "agent-bot",
+          body,
+          url: `https://x/#issuecomment-${store.comments.length + 1}`,
+        });
+      },
+    };
+
+    const tmux = makeTmuxStub();
+    const adapter = makeAdapterStub({ kind: "done" });
+    const { deps, continuationIds } = withContinuations({
+      tmux: tmux.ops,
+      getAdapter: () => adapter,
+      reviewRoundCap: 1,
+      // Wire the real default factory so the comment reaches the commentStore seam.
+      postRoundCapEscalation: makeDefaultPostRoundCapEscalation({
+        db,
+        resolveRepoPath: () => repoPath,
+        github: store,
+      }),
+    });
+    const id0 = await start(deps);
+
+    await awaitParked(id0);
+    await engine.signal(id0, RESUME_EVENT, CHANGES_REQUESTED);
+    expect(await awaitSettled(id0)).toBe("completed");
+
+    const id1 = await awaitContinuation(continuationIds, 0);
+    await awaitParked(id1);
+    await engine.signal(id1, RESUME_EVENT, CHANGES_REQUESTED);
+
+    // Wait for the execution to fully settle so all post-park side effects are done.
+    await awaitCappedSettled(id1);
+
+    // Observable via real gh seam: Epic comment dispatched.
+    expect(store.comments).toHaveLength(1);
+    expect(store.comments[0]!.body).toContain("review round cap");
+    expect(store.comments[0]!.body).toContain("2/1");
+    expect(store.comments[0]!.body.startsWith(AGENT_COMMENT_MARKER)).toBe(true);
+
+    // Observable via events table: workflow.round-cap event row written.
+    expect(hasEventOfType(db, id1, ROUND_CAP_EVENT)).toBe(true);
   });
 });
 

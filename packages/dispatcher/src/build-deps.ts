@@ -58,6 +58,37 @@ ${body}`;
 }
 
 /**
+ * Format the round-cap escalation comment the dispatcher posts on the Epic when
+ * the review-round cap is hit. Starts with {@link AGENT_COMMENT_MARKER} so the
+ * poller's `classifyNewHumanReply` skips it (same reason as pause comments).
+ */
+export function formatRoundCapComment(opts: { round: number; cap: number }): string {
+  return `${AGENT_COMMENT_MARKER}
+🛑 **review round cap ${opts.round}/${opts.cap} reached** — agent stopped auto-addressing feedback; human review required.
+
+The agent has pushed all work to the branch. A maintainer should review the open feedback, address any remaining requests, and merge or close the PR.`;
+}
+
+/**
+ * Build the default `postRoundCapEscalation` surface — posts an idempotent comment
+ * on the Epic when the review-round cap is hit. Uses {@link postQuestionComment} for
+ * the idempotency guard (body comparison) so repeated parks don't spam the thread.
+ * Both file-mode and github-mode repos post the comment on the GitHub issue — the
+ * round-cap stall is a GitHub-visible event regardless of Epic-store mode.
+ * Extracted so the production path and the integration test share one implementation.
+ */
+export function makeDefaultPostRoundCapEscalation(deps: {
+  db: Database;
+  resolveRepoPath: (repo: string) => string;
+  github: Pick<EpicGateway, "listIssueComments" | "postComment">;
+}): NonNullable<ImplementationDeps["postRoundCapEscalation"]> {
+  return async ({ repo, epicRef, round, cap }) => {
+    const body = formatRoundCapComment({ round, cap });
+    await postQuestionComment({ github: deps.github, repo, epicRef, body });
+  };
+}
+
+/**
  * Post the agent-pause comment on the Epic **idempotently** (the #205 spam fix).
  *
  * Lists the Epic's comments, finds the *most recent* agent-comment (the
@@ -184,6 +215,11 @@ export type BuildImplementationDepsArgs = {
    * `gh`-backed comment poster ({@link formatPauseComment}); injectable for tests.
    */
   postQuestion?: ImplementationDeps["postQuestion"];
+  /**
+   * Surface the round-cap stall on the Epic when the review-round cap is hit.
+   * Defaults to {@link makeDefaultPostRoundCapEscalation}; injectable for tests.
+   */
+  postRoundCapEscalation?: ImplementationDeps["postRoundCapEscalation"];
   /** Resolve a repo's `complexity_ceiling` for the dispatch brief; defaults to 3 when omitted. */
   resolveComplexityCeiling?: ImplementationDeps["resolveComplexityCeiling"];
   /** Whether an Epic carries the `approved` label (#53); defaults to not-approved when omitted. */
@@ -266,6 +302,16 @@ export async function buildImplementationDeps(
     postQuestion:
       args.postQuestion ??
       makeDefaultPostQuestion({ db: args.db, resolveRepoPath: args.resolveRepoPath, github }),
+    // Default surface: comment the round-cap stall on the Epic via `gh` so the
+    // human sees it on GitHub (#254). Idempotent via the shared postQuestionComment
+    // body-comparison guard.
+    postRoundCapEscalation:
+      args.postRoundCapEscalation ??
+      makeDefaultPostRoundCapEscalation({
+        db: args.db,
+        resolveRepoPath: args.resolveRepoPath,
+        github,
+      }),
     resolveComplexityCeiling: args.resolveComplexityCeiling,
     // The repo's Epic-store mode selects which mode-commands reference the brief
     // mirrors into the worktree; read from `repo_config` (defaults to github).

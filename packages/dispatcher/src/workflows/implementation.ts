@@ -13,6 +13,7 @@ import {
   armWaitForSignal,
   consumeWaitForSignal,
   createWorkflowRecord,
+  recordEvent,
   updateWorkflow,
   type WorkflowState,
 } from "../workflow-record.ts";
@@ -68,6 +69,12 @@ export type ResumeReason = "answered-question" | "review-changes";
  * row (see `signalNameFor`), which is what the poller and dashboard read.
  */
 export const RESUME_EVENT = "resume";
+
+/**
+ * The `events` row type written when the review-round cap is hit. The Activity
+ * view renders it so the stall is visible in the Inspector, not just in GitHub.
+ */
+export const ROUND_CAP_EVENT = "workflow.round-cap";
 
 /** The durable, poller-facing signal name for a workflow's armed wait. */
 export function signalNameFor(epicRef: string, reason: ResumeReason): string {
@@ -263,6 +270,19 @@ export type ImplementationDeps = {
   verifyRoundCap?: number;
   /** The agent's gh account — restricts the plan-comment match to its comments. */
   agentLogin?: string;
+  /**
+   * Surface the round-cap stall on the Epic when the review-round cap is hit,
+   * so the human sees a GitHub comment instead of a silent state write. Receives
+   * the repo, epicRef, the capped `round` number, and the `cap` ceiling. Optional
+   * + injectable so tests need no `gh`; the default (wired by the dispatcher) is
+   * {@link makeDefaultPostRoundCapEscalation} which comments on the Epic idempotently.
+   */
+  postRoundCapEscalation?: (opts: {
+    repo: string;
+    epicRef: string;
+    round: number;
+    cap: number;
+  }) => Promise<void>;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
@@ -1215,6 +1235,28 @@ export function createImplementationWorkflow(
         // do not re-arm a wait (the poller stops watching) and do not re-enqueue.
         // Everything the agent has pushed stays on the branch / PR.
         updateWorkflow(deps.db, ctx.executionId, { state: "waiting-human" });
+        // Record the stall so the Activity/Inspector can render it.
+        recordEvent(deps.db, {
+          workflowId: ctx.executionId,
+          ts: Date.now(),
+          type: ROUND_CAP_EVENT,
+          payloadJson: JSON.stringify({ round: nextRound, cap: reviewRoundCap }),
+        });
+        // Surface the stall on the Epic so the human sees it on GitHub — mirrors
+        // the asked-question `postQuestion` call. Best-effort: the row is already
+        // durable, so a failed comment must not abort the park.
+        if (deps.postRoundCapEscalation) {
+          try {
+            await deps.postRoundCapEscalation({
+              repo: ctx.input.repo,
+              epicRef: ctx.input.epicRef,
+              round: nextRound,
+              cap: reviewRoundCap,
+            });
+          } catch (error) {
+            console.error(`[workflow] postRoundCapEscalation failed: ${(error as Error).message}`);
+          }
+        }
         return;
       }
     }
