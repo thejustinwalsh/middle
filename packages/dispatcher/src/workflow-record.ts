@@ -380,6 +380,17 @@ const TERMINAL_STATES = [
   "cancelled",
 ] as const satisfies readonly TerminalWorkflowState[];
 
+/**
+ * States excluded from the concurrency slot count. Extends {@link TERMINAL_STATES}
+ * with `waiting-human`: a parked epic holds a worktree but no live session, so
+ * it must not count against the per-repo or global cap and must not starve ready
+ * epics for the park duration. `waiting-human` is intentionally NOT in
+ * {@link TERMINAL_STATES} — that set has hook-correlation semantics (a terminal
+ * workflow no longer owns its session); a parked workflow can resume and still
+ * owns its session token.
+ */
+const SLOT_EXCLUDED_STATES = [...TERMINAL_STATES, "waiting-human"] as const;
+
 export type ActiveWorkflow = { id: string; sessionToken: string | null };
 
 /**
@@ -601,9 +612,9 @@ export type SlotUsageCounts = {
  * recommender would count repo B's agents against repo A's per-repo `max`.
  */
 export function countActiveImplementationSlots(db: Database, repo?: string): SlotUsageCounts {
-  const placeholders = TERMINAL_STATES.map(() => "?").join(", ");
+  const placeholders = SLOT_EXCLUDED_STATES.map(() => "?").join(", ");
   const repoClause = repo === undefined ? "" : " AND repo = ?";
-  const params = repo === undefined ? TERMINAL_STATES : [...TERMINAL_STATES, repo];
+  const params = repo === undefined ? SLOT_EXCLUDED_STATES : [...SLOT_EXCLUDED_STATES, repo];
   const rows = db
     .query(
       `SELECT adapter, count(*) AS n FROM workflows
