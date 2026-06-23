@@ -8,7 +8,7 @@ import type { ParsedState, ValidationResult } from "./schema.v1.ts";
 // rule 4 (#N reference shape), rule 5 (configured adapters), rule 7 (ISO 8601).
 
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
-const EPIC_REF_RE = /^#\d+\s+\S/;
+const EPIC_REF_RE = /^#\S+\s+\S/;
 // A Blocked blocker reference: an optional `<owner>/<repo>` prefix (a cross-repo
 // blocker, #225), then `#<n>`, optionally carrying a resolved-title or
 // `(stale blocker: <ref>)` annotation the recommender's resolution pass appends.
@@ -29,7 +29,7 @@ export function validate(state: ParsedState, config: RepoConfig): ValidationResu
   // Rule 4: all #N references match /#\d+/.
   for (const row of state.readyToDispatch) {
     if (!EPIC_REF_RE.test(row.epic)) {
-      errors.push(`Ready row epic is not a "#<n> <title>" reference: "${row.epic}"`);
+      errors.push(`Ready row epic is not a "#<ref> <title>" reference: "${row.epic}"`);
     }
   }
   for (const item of state.blocked) {

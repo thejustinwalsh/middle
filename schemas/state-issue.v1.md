@@ -101,12 +101,15 @@ Body PASSES iff:
 1. Both markers present
 2. All 7 sections in order
 3. Ready table has exact column header
-4. Numeric `#N` references match /#\d+/ — scoped to **Ready** row epics and
-   **Blocked** issue blockers. A Blocked blocker may carry an optional
+4. **Ready** row epic refs must match `/#\S+\s+\S/` — a `#` followed by a non-empty
+   stem (numeric in github mode: `#42 Title`; a file slug in file mode:
+   `#rollout-epic-store Title`) then a whitespace separator and at least one title
+   character. **Blocked** issue blocker refs keep the strictly-numeric check
+   `/#\d+/` (a Blocked blocker is always a GitHub issue number, with an optional
    `<owner>/<repo>` cross-repo prefix and an optional trailing `(<title>)` /
    `(stale blocker: <ref>)` annotation; a backticked or free-text non-issue blocker
-   is exempt. In-flight `<ref>` is exempt: it may be a file-mode Epic slug (see
-   In-flight above), so it is not constrained to /#\d+/.
+   is exempt from any ref check). In-flight `<ref>` is exempt from both checks: it
+   may be a file-mode Epic slug (see In-flight above).
 5. Adapter names are configured
 6. Empty sections use documented empty state
 7. Metadata `generated` parses as ISO 8601

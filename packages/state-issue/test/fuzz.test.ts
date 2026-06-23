@@ -79,9 +79,15 @@ class Rng {
 }
 
 function genReadyRow(rng: Rng, rank: number): ReadyRow {
+  // ~50% numeric (github mode: `#42 Title`) / ~50% file slug (file mode:
+  // `#epic-7-rollout Title`). Both forms must round-trip through parser and
+  // renderer byte-identically, and must pass validate() after RC-1.
+  const epicRef = rng.bool()
+    ? `#${rng.int(1, 9999)} ${rng.text(1, 40)}`
+    : `#epic-${rng.int(1, 999)}-rollout ${rng.text(1, 40)}`;
   return {
     rank,
-    epic: `#${rng.int(1, 9999)} ${rng.text(1, 40)}`,
+    epic: epicRef,
     adapter: rng.pick(ADAPTERS),
     subIssues: rng.int(1, 12),
     reason: rng.text(1, 60),

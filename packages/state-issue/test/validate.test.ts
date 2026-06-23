@@ -53,6 +53,32 @@ describe("validate", () => {
     expect(validate(ok, config)).toEqual({ ok: true });
   });
 
+  test("accepts a file-mode Epic slug as a Ready row epic ref", () => {
+    // File-mode repos use a slug like "#rollout-epic-store Roll out the Epic store"
+    // in the Ready table's Epic cell. Before RC-1, EPIC_REF_RE = /^#\d+\s+\S/ would
+    // reject these because the stem is not purely numeric.
+    const ok = {
+      ...fullState,
+      readyToDispatch: [
+        {
+          rank: 1,
+          epic: "#rollout-epic-store Roll out the Epic store",
+          adapter: "claude",
+          subIssues: 3,
+          reason: "next in sequence",
+        },
+        {
+          rank: 2,
+          epic: "#v1.2-auth-refactor Auth refactor v1.2",
+          adapter: "codex",
+          subIssues: 2,
+          reason: "unblocks dogfooding",
+        },
+      ],
+    };
+    expect(validate(ok, config)).toEqual({ ok: true });
+  });
+
   test("fails when generated is not ISO 8601", () => {
     expect(validate({ ...fullState, generated: "not-a-date" }, config).ok).toBe(false);
   });
