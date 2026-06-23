@@ -18,7 +18,11 @@ import {
   recordDivergenceState,
   worktreePathFor,
 } from "../src/reconcilers/pr-divergence.ts";
-import { createWorkflowRecord, listLiveImplementationWorkflows, updateWorkflow } from "../src/workflow-record.ts";
+import {
+  createWorkflowRecord,
+  listLiveImplementationWorkflows,
+  updateWorkflow,
+} from "../src/workflow-record.ts";
 
 let scratch: string;
 let db: Database;
@@ -551,7 +555,6 @@ describe("ghStderrIsNotFound", () => {
     });
   }
 });
-
 
 describe("listLiveImplementationWorkflows — live-worktree guard (#255)", () => {
   const LIVE_WORKTREE = "/home/agent/.middle/worktrees/o/r/issue-32";
