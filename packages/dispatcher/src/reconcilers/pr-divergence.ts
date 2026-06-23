@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { createWorktree, type WorktreeHandle } from "../worktree.ts";
+import { listLiveImplementationWorkflows } from "../workflow-record.ts";
 
 /**
  * Open-PR divergence reconciler (Epic #168). When one Epic PR merges to `main`,
@@ -912,6 +913,24 @@ export async function reconcileOpenPRs(
       if (divergence === "CLEAN" || divergence === "UNKNOWN") {
         passed++;
         continue;
+      }
+
+      // Live-worktree guard (#255): skip the rebase / merge if an agent owns
+      // this worktree right now. A pure DB read — no locks, no spawns. Both
+      // `running` and `launching` states actively own the worktree at the
+      // file-system level; a concurrent `git rebase` here would silently
+      // rewrite branch history mid-commit (the race that caused #182).
+      const liveEpicNumber = parseEpicFromHeadRef(pr.headRefName);
+      if (liveEpicNumber !== null) {
+        const liveWorktreePath = worktreePathFor(repo, liveEpicNumber, deps.worktreeRoot);
+        const liveWorkflows = listLiveImplementationWorkflows(deps.db);
+        if (liveWorkflows.some((w) => w.worktreePath === liveWorktreePath)) {
+          console.debug(
+            `[pr-divergence] ${repo} PR #${pr.prNumber}: skipping rebase — worktree owned by a live agent (${liveWorktreePath})`,
+          );
+          passed++;
+          continue;
+        }
       }
 
       // BEHIND or CONFLICTED — try rebase first.

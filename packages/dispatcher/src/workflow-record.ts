@@ -826,6 +826,38 @@ export function listRunningImplementationWorkflows(db: Database): RunningWorkflo
   }));
 }
 
+/**
+ * `implementation` workflows in a live state (`running` or `launching`) that own a
+ * worktree — the set the open-PR divergence reconciler checks before entering a
+ * worktree. Pure DB read, no locks. Used as a data-safety gate so the reconciler
+ * never runs `git rebase` / `git merge` inside a worktree an agent is mid-commit in.
+ *
+ * Rows missing `worktree_path` are excluded (no worktree to guard). Non-active states
+ * (`waiting-human`, `rate-limited`, terminal states) are excluded — only `running` and
+ * `launching` actually own the worktree at the file-system level.
+ */
+export function listLiveImplementationWorkflows(db: Database): RunningWorkflow[] {
+  const rows = db
+    .query(
+      `SELECT id, repo, epic_ref, worktree_path FROM workflows
+        WHERE kind = 'implementation' AND state IN ('running', 'launching')
+          AND worktree_path IS NOT NULL
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all() as {
+    id: string;
+    repo: string;
+    epic_ref: string;
+    worktree_path: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    repo: r.repo,
+    epicRef: r.epic_ref,
+    worktreePath: r.worktree_path,
+  }));
+}
+
 /** Fetch a workflow row by id, or null if it does not exist. */
 export function getWorkflow(db: Database, id: string): WorkflowRecord | null {
   const row = db.query("SELECT * FROM workflows WHERE id = ?").get(id) as WorkflowRow | null;
