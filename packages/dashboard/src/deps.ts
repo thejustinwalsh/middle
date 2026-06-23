@@ -93,10 +93,13 @@ export type DashboardDeps = {
   /**
    * Force-dispatch an Epic with a chosen adapter. `null` → no dispatch is wired
    * (standalone/read-only mode → the route 404s). Returns the daemon's status/body.
+   * `epicRef` is a non-empty string — a numeric Epic number ("7") in github mode
+   * or a file-mode slug ("rollout-epic-store"). The route passes the raw `:n` URL
+   * segment; callers must not assume it is numeric.
    */
   dispatchEpic?(
     repo: string,
-    epicNumber: number,
+    epicRef: string,
     adapter: string,
   ): Promise<{ status: number; body: string }>;
 

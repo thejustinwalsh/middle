@@ -25,7 +25,9 @@ function ProgressStrip({ closed, total }: { closed: number; total: number }) {
 
 /**
  * The dispatch-row — an adapter picker + the dispatch button. Gated when the
- * adapter has no free slot or the Epic is already in flight.
+ * adapter has no free slot or the Epic is already in flight. Works for both
+ * github-mode Epics (numeric ref) and file-mode Epics (slug ref) — the route
+ * accepts both forms since #240.
  */
 function DispatchControl({
   card,
@@ -34,7 +36,7 @@ function DispatchControl({
 }: {
   card: EpicCard;
   adapters: string[];
-  onDispatch: (repo: string, epicNumber: number, adapter: string) => void;
+  onDispatch: (repo: string, epicRef: string, adapter: string) => void;
 }) {
   const [adapter, setAdapter] = useState(
     card.dispatch.recommendedAdapter ?? adapters[0] ?? "claude",
@@ -43,11 +45,7 @@ function DispatchControl({
   // (it isn't a configured/dispatchable adapter, so the server would reject it anyway).
   const slot = card.dispatch.freeSlots.find((s) => s.adapter === adapter);
   const noSlot = slot ? !slot.available : true;
-  // A file-mode Epic (null number) has no numeric handle for the dashboard's
-  // numeric dispatch route; force-dispatch it from the CLI (`mm dispatch <slug>`).
-  // It's still browsable here — only the in-dashboard dispatch button is gated.
-  const isFileEpic = card.number === null;
-  const disabled = card.dispatch.inFlight || noSlot || isFileEpic;
+  const disabled = card.dispatch.inFlight || noSlot;
   return (
     <div className="flex items-center justify-end gap-1.5 pt-1">
       <Select value={adapter} onValueChange={setAdapter} disabled={card.dispatch.inFlight}>
@@ -74,18 +72,8 @@ function DispatchControl({
         aria-label={`Dispatch Epic ${card.ref}`}
         disabled={disabled}
         className="h-7 px-3 text-[12px] font-medium"
-        title={
-          isFileEpic
-            ? "file-mode Epic — dispatch from the CLI: mm dispatch " + card.ref
-            : card.dispatch.inFlight
-              ? "already in flight"
-              : noSlot
-                ? "no free slot"
-                : ""
-        }
-        onClick={() => {
-          if (card.number !== null) onDispatch(card.repo, card.number, adapter);
-        }}
+        title={card.dispatch.inFlight ? "already in flight" : noSlot ? "no free slot" : ""}
+        onClick={() => onDispatch(card.repo, card.ref, adapter)}
       >
         dispatch
       </Button>
@@ -99,7 +87,8 @@ function DispatchControl({
  * any), a high-value decision callout, and a force-dispatch control whose adapter
  * picker is drawn from `adapters` and defaults to the recommender's choice (an
  * empty `adapters` or `epics` simply renders empty/disabled). `onDispatch(repo,
- * epicNumber, adapter)` fires synchronously from the dispatch button; the
+ * epicRef, adapter)` fires synchronously from the dispatch button; `epicRef` is a
+ * numeric string or a file-mode slug — the server accepts both since #240. The
  * optional `onOpenInspector` receives a session id. The repo filter lives in
  * {@link App}; this component renders the chosen repo's cards.
  */
@@ -111,7 +100,7 @@ export function Epics({
 }: {
   epics: EpicCard[];
   adapters: string[];
-  onDispatch: (repo: string, epicNumber: number, adapter: string) => void;
+  onDispatch: (repo: string, epicRef: string, adapter: string) => void;
   onOpenInspector?: (session: string) => void;
 }) {
   return (

@@ -390,4 +390,74 @@ describe("HookServer control routes", () => {
     expect(h.status).toBe(200);
     expect(await h.json()).toEqual({ ok: true, port: server.port, version: "" });
   });
+
+  // ── Slug-aware dispatch (#240) ────────────────────────────────────────────
+
+  test("POST /control/dispatch accepts a file-mode slug as epicRef and routes it to startDispatch", async () => {
+    startWith(makeControl());
+    const res = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicRef: "rollout-epic-store",
+        adapter: "claude",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ workflowId: "wf-abc" });
+    // The slug passes through as-is; `startDispatch` receives the exact string.
+    expect(startCalls).toEqual([
+      { repo: "o/r", repoPath: "/abs/checkout", epicRef: "rollout-epic-store", adapter: "claude" },
+    ]);
+  });
+
+  test("POST /control/dispatch — slug that looks like a number is valid (file-mode slug, not a numeric Epic)", async () => {
+    // A slug like "2025-plan" starts with a digit but is not a bare integer — it
+    // must be accepted as-is via the `epicRef` string path (not the epicNumber path).
+    startWith(makeControl());
+    const res = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs/checkout",
+        epicRef: "2025-plan",
+        adapter: "claude",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(startCalls[0]).toMatchObject({ epicRef: "2025-plan" });
+  });
+
+  test("POST /control/dispatch — same Epic resolves for numeric epicNumber or string epicRef with same value", async () => {
+    // Round-trip parity: the CLI sends `epicRef: "7"` (a slug-from-number),
+    // the dashboard's numeric dispatch sent `epicNumber: 7`. Both must reach
+    // `startDispatch` with `epicRef: "7"`.
+    startWith(makeControl());
+    const viaRef = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs",
+        epicRef: "7",
+        adapter: "claude",
+      }),
+    });
+    expect(viaRef.status).toBe(200);
+    expect(startCalls[0]).toMatchObject({ epicRef: "7" });
+
+    startCalls = [];
+    const viaNum = await fetch(`${base}/control/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo: "o/r",
+        repoPath: "/abs",
+        epicNumber: 7,
+        adapter: "claude",
+      }),
+    });
+    expect(viaNum.status).toBe(200);
+    // Both reach startDispatch with identical epicRef — same Epic for same slug.
+    expect(startCalls[0]).toMatchObject({ epicRef: "7" });
+  });
 });

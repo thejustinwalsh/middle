@@ -66,16 +66,16 @@ test("dashboardHostExtras routes + the hook fetch fallback coexist on one port",
   db.close();
 });
 
-test("a dispatch POST reaches the host-context dispatch callback", async () => {
-  let dispatched: [string, number, string] | undefined;
+test("a dispatch POST reaches the host-context dispatch callback (numeric ref)", async () => {
+  let dispatched: [string, string, string] | undefined;
   const db = openAndMigrate(":memory:");
   const ctx = {
     db,
     config: makeConfig(),
     stateGateway: { readBody: async () => "", writeBody: async () => {} },
     runRecommender: async () => ({ status: 200, body: "ok" }),
-    dispatch: async (repo: string, n: number, adapter: string) => {
-      dispatched = [repo, n, adapter];
+    dispatch: async (repo: string, epicRef: string, adapter: string) => {
+      dispatched = [repo, epicRef, adapter];
       return { status: 200, body: JSON.stringify({ workflowId: "wf1" }) };
     },
     refreshEpics: async () => ({ status: 200, body: "ok" }),
@@ -94,7 +94,45 @@ test("a dispatch POST reaches the host-context dispatch callback", async () => {
   });
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ workflowId: "wf1" });
-  expect(dispatched).toEqual(["o/r", 7, "claude"]);
+  // The dispatch seam receives the ref as a string — "7" not 7 (route passes `:epicRef` as-is).
+  expect(dispatched).toEqual(["o/r", "7", "claude"]);
+
+  db.close();
+});
+
+test("a dispatch POST with a file-mode slug reaches the host-context dispatch callback (#240)", async () => {
+  let dispatched: [string, string, string] | undefined;
+  const db = openAndMigrate(":memory:");
+  const ctx = {
+    db,
+    config: makeConfig(),
+    stateGateway: { readBody: async () => "", writeBody: async () => {} },
+    runRecommender: async () => ({ status: 200, body: "ok" }),
+    dispatch: async (repo: string, epicRef: string, adapter: string) => {
+      dispatched = [repo, epicRef, adapter];
+      return { status: 200, body: JSON.stringify({ workflowId: "wf-slug" }) };
+    },
+    refreshEpics: async () => ({ status: 200, body: "ok" }),
+  } satisfies DaemonHostContext;
+
+  const hosted = dashboardHostExtras(ctx);
+  dispose = hosted.dispose;
+  server = new HookServer();
+  server.start(0, hosted.routes);
+  const base = `http://127.0.0.1:${server.port}`;
+
+  const res = await fetch(
+    `${base}/api/epics/${encodeURIComponent("o/r")}/${encodeURIComponent("rollout-epic-store")}/dispatch`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ adapter: "claude" }),
+    },
+  );
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ workflowId: "wf-slug" });
+  // The slug passes through intact.
+  expect(dispatched).toEqual(["o/r", "rollout-epic-store", "claude"]);
 
   db.close();
 });

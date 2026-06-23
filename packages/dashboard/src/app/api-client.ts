@@ -105,7 +105,11 @@ export const api = {
     const res = await fetch(`/api/epics/${enc(repo)}/refresh`, { method: "POST" });
     if (!res.ok) throw new ApiError(res.status, await errorDetail(res));
   },
-  dispatchEpic: (repo: string, epicNumber: number, adapter: string) =>
-    postJson<{ workflowId: string }>(`/api/epics/${enc(repo)}/${epicNumber}/dispatch`, { adapter }),
+  /** Force-dispatch an Epic. `epicRef` is a numeric string ("7") or a file-mode
+   *  slug ("rollout-epic-store") — the URL segment is passed through as-is. */
+  dispatchEpic: (repo: string, epicRef: string, adapter: string) =>
+    postJson<{ workflowId: string }>(`/api/epics/${enc(repo)}/${enc(epicRef)}/dispatch`, {
+      adapter,
+    }),
   runs: () => getJson<RunSummary[]>("/api/runs"),
 };

@@ -223,10 +223,14 @@ describe("createDbDeps.listEpics", () => {
     const deps = createDbDeps({
       db,
       config: makeConfig(),
-      dispatch: async (repo, n, adapter) => ({ status: 200, body: `${repo}:${n}:${adapter}` }),
+      dispatch: async (repo, epicRef, adapter) => ({
+        status: 200,
+        body: `${repo}:${epicRef}:${adapter}`,
+      }),
       refreshEpicsTrigger: async (repo) => ({ status: 200, body: repo }),
     });
-    expect(await deps.dispatchEpic!("o/r", 7, "claude")).toEqual({
+    // epicRef is a string — "7" not the number 7.
+    expect(await deps.dispatchEpic!("o/r", "7", "claude")).toEqual({
       status: 200,
       body: "o/r:7:claude",
     });

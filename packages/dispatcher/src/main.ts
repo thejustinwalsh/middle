@@ -80,10 +80,14 @@ export type DaemonHostContext = {
   config: MiddleConfig;
   stateGateway: StateGateway;
   runRecommender: (repo: string) => Promise<{ status: number; body: string }>;
-  /** Force-dispatch an Epic with a chosen adapter — same path as `mm dispatch`. */
+  /**
+   * Force-dispatch an Epic with a chosen adapter — same path as `mm dispatch`.
+   * `epicRef` is a numeric string ("7") in github mode or a file-mode slug
+   * ("rollout-epic-store"); callers must not assume it is an integer.
+   */
   dispatch: (
     repo: string,
-    epicNumber: number,
+    epicRef: string,
     adapter: string,
   ) => Promise<{ status: number; body: string }>;
   /** Refresh a repo's Epic browse cache from GitHub. */
@@ -444,11 +448,16 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     );
   }
 
-  /** Force-dispatch an Epic (the dashboard's button + a future API). Mirrors the
-   *  control-route gates: 400 (unknown repo/adapter), 429 (no slot), 409 (collision). */
+  /**
+   * Force-dispatch an Epic (the dashboard's button + `mm dispatch`). Accepts a
+   * numeric string or a file-mode slug — mirrors the control-route gates:
+   * 400 (unknown repo/adapter), 429 (no slot), 409 (collision).
+   * `epicRef` is the raw ref string from the caller (the dashboard route passes
+   * it through from the URL; `mm dispatch` passes it from the CLI arg).
+   */
   async function dispatchEpicManual(
     repo: string,
-    epicNumber: number,
+    epicRef: string,
     adapter: string,
   ): Promise<{ status: number; body: string }> {
     const normalizedRepo = repo.trim();
@@ -460,7 +469,8 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     if (reject !== null) {
       return { status: 400, body: JSON.stringify({ error: reject }) };
     }
-    const input = { repo: normalizedRepo, repoPath, epicRef: String(epicNumber), adapter };
+    const ref = epicRef.trim();
+    const input = { repo: normalizedRepo, repoPath, epicRef: ref, adapter };
     if (!slotAvailable(input)) {
       return {
         status: 429,
@@ -472,7 +482,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       return {
         status: 409,
         body: JSON.stringify({
-          error: `Epic #${epicNumber} in ${normalizedRepo} already has an active workflow`,
+          error: `Epic ${ref} in ${normalizedRepo} already has an active workflow`,
         }),
       };
     }
@@ -632,7 +642,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
               if (path === undefined) return { status: 404, body: `no checkout for ${repo}` };
               return recommenderTrigger({ repoPath: path });
             },
-            dispatch: (repo, epicNumber, adapter) => dispatchEpicManual(repo, epicNumber, adapter),
+            dispatch: (repo, epicRef, adapter) => dispatchEpicManual(repo, epicRef, adapter),
             refreshEpics: (repo) => refreshEpicsForRepo(repo),
           });
           extraRoutes = hosted.routes;
