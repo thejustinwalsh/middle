@@ -893,6 +893,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
         worktreePath
           ? pruneWorktreeAt(repoPaths.get(repo) ?? null, worktreePath)
           : Promise.resolve(),
+      // CI-pending escalation: post a comment on the Epic when APPROVED+pending
+      // CI has been stuck past the 48h threshold so operators know to check the runner.
+      postEpicComment: (repo, epicRef, body) => ghGitHub.postComment(repo, epicRef, body),
     },
     {
       // Checkbox-revert trigger (#101): each tick, over running workflows whose

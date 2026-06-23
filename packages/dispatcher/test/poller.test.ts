@@ -7,8 +7,10 @@ import { openAndMigrate } from "../src/db.ts";
 import { formatPauseComment } from "../src/build-deps.ts";
 import {
   AGENT_COMMENT_MARKER,
+  CI_PENDING_ESCALATION_WINDOW_MS,
   classifyNewHumanReply,
   classifyReviewOutcome,
+  isCiPendingEscalation,
   reasonFromSignalName,
   runPoller,
   type PollGateway,
@@ -291,7 +293,11 @@ describe("classifyReviewOutcome", () => {
       }),
       ARMED_AT,
     );
-    expect(v).toEqual({ outcome: "changes-requested", reviewId: 42, decision: "CHANGES_REQUESTED" });
+    expect(v).toEqual({
+      outcome: "changes-requested",
+      reviewId: 42,
+      decision: "CHANGES_REQUESTED",
+    });
   });
 
   test("a stale standing CHANGES_REQUESTED decision (no fresh review, no label) → null", () => {
@@ -575,6 +581,82 @@ describe("runPoller — GitHub rate-limit guards", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #262 — CI-forever-pending escalation
+// ---------------------------------------------------------------------------
+
+describe("isCiPendingEscalation — threshold check (#262)", () => {
+  test("below the 48h window → false (hold is too fresh to escalate)", () => {
+    // holdCreatedAt = ARMED_AT, now = ARMED_AT + 1h (well within the 48h window)
+    expect(isCiPendingEscalation(ARMED_AT, ARMED_AT + 60 * 60 * 1000)).toBe(false);
+  });
+
+  test("past the 48h window → true (escalate)", () => {
+    // holdCreatedAt = ARMED_AT, now = ARMED_AT + 49h (past threshold)
+    const past = ARMED_AT + CI_PENDING_ESCALATION_WINDOW_MS + 60_000;
+    expect(isCiPendingEscalation(ARMED_AT, past)).toBe(true);
+  });
+
+  test("exactly at the threshold boundary → false (not yet exceeded)", () => {
+    expect(isCiPendingEscalation(ARMED_AT, ARMED_AT + CI_PENDING_ESCALATION_WINDOW_MS)).toBe(false);
+  });
+});
+
+describe("runPoller — CI pending escalation integration (#262)", () => {
+  test("approved+pending PR past the threshold triggers escalation comment on the Epic", async () => {
+    const id = seedParked("review-changes");
+    const postedComments: Array<{ repo: string; ref: string; body: string }> = [];
+    const github = makeGateway({
+      pr: prSnapshot({ reviewDecision: "APPROVED", ci: "pending" }),
+    });
+    const { fired, fireSignal } = captureFires();
+
+    // Arm time = ARMED_AT; now = past the 48h escalation window
+    const past = ARMED_AT + CI_PENDING_ESCALATION_WINDOW_MS + 60_000;
+    await runPoller({
+      db,
+      github,
+      fireSignal,
+      now: () => past,
+      postEpicComment: async (repo, epicRef, body) => {
+        postedComments.push({ repo, ref: epicRef, body });
+      },
+    });
+
+    // The escalation comment must be posted on the Epic
+    expect(postedComments.length).toBe(1);
+    expect(postedComments[0]!.ref).toBe(String(EPIC));
+    expect(postedComments[0]!.body).toContain("APPROVED");
+    expect(postedComments[0]!.body).toContain("pending");
+    // The workflow is NOT resumed — escalation is a comment, not a signal fire
+    expect(fired.length).toBe(0);
+    // The wait remains armed for the next pass
+    expect(getWaitForSignal(db, id)).not.toBeNull();
+  });
+
+  test("approved+pending PR below the threshold does NOT post escalation comment", async () => {
+    seedParked("review-changes");
+    const postedComments: string[] = [];
+    const github = makeGateway({
+      pr: prSnapshot({ reviewDecision: "APPROVED", ci: "pending" }),
+    });
+    const { fired, fireSignal } = captureFires();
+
+    // Only 1 hour past arm time — well within the 48h window
+    await runPoller({
+      db,
+      github,
+      fireSignal,
+      now: () => ARMED_AT + 60 * 60 * 1000,
+      postEpicComment: async () => {
+        postedComments.push("posted");
+      },
+    });
+
+    expect(postedComments.length).toBe(0);
+    expect(fired.length).toBe(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // #263 — DISMISSED review verdict

@@ -151,6 +151,13 @@ export type PollerDeps = {
    * finalized, just without disk cleanup. Wired by the daemon; tests stub it.
    */
   removeWorktree?: (repo: string, worktreePath: string | null) => Promise<void>;
+  /**
+   * Post a comment on the Epic issue (best-effort). Used by the CI-pending
+   * escalation path to notify operators when a resolved+pending hold exceeds the
+   * {@link CI_PENDING_ESCALATION_WINDOW_MS} threshold. Optional: omitted → the
+   * escalation is logged to stderr only. Wired by the daemon; tests stub it.
+   */
+  postEpicComment?: (repo: string, epicRef: string, body: string) => Promise<void>;
 };
 
 /**
@@ -166,6 +173,29 @@ export const DEFAULT_RATE_LIMIT_BUFFER = 100;
  * risk); the remainder are picked up on the next tick.
  */
 export const DEFAULT_MAX_POLLS_PER_PASS = 25;
+
+/**
+ * How long a `resolved`+`pending` CI hold must persist before the poller posts
+ * an escalation comment on the Epic. Defaults to 48 hours — long enough to
+ * absorb slow CI queues but short enough that a stuck runner doesn't silently
+ * strand a fully-approved PR indefinitely.
+ *
+ * The check is a per-pass threshold comparison against `waitfor_signals.created_at`
+ * (the arm time), which is a conservative proxy for "how long has this been
+ * pending": the hold first became visible at most one poller tick before arm.
+ */
+export const CI_PENDING_ESCALATION_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Returns `true` when an `APPROVED`+`pending` CI hold first appeared at
+ * `holdCreatedAt` and the current clock time `now` has exceeded the escalation
+ * window. Used by {@link runPoller} to trigger an Epic comment when CI is stuck.
+ *
+ * Exported so the threshold logic is directly unit-testable without a full DB.
+ */
+export function isCiPendingEscalation(holdCreatedAt: number, now: number): boolean {
+  return now - holdCreatedAt > CI_PENDING_ESCALATION_WINDOW_MS;
+}
 
 /**
  * Slack window applied to the fresh-review filter in {@link classifyReviewVerdict}.
@@ -297,7 +327,7 @@ function classifyReviewVerdict(
     if (latest.state === "DISMISSED") {
       // A reviewer dismissed their own review. Re-evaluate the PR's overall
       // decision: if it is no longer CHANGES_REQUESTED, the dismiss cleared the
-      // last blocker and the PR is effectively approved — emit \`resolved\`.
+      // last blocker and the PR is effectively approved — emit `resolved`.
       // If CHANGES_REQUESTED remains, other blocking reviews are still standing;
       // return null so the epic stays parked, but log explicitly so the dismiss
       // is visible in daemon logs and not silently swallowed.
@@ -387,7 +417,45 @@ export async function runPoller(deps: PollerDeps): Promise<number> {
         const pr = await deps.github.findPrForEpic(wait.repo, epicRef);
         if (!pr) continue;
         const verdict = classifyReviewOutcome(pr, wait.createdAt);
-        if (!verdict) continue;
+        if (!verdict) {
+          // A null verdict means nothing is actionable this pass.
+          // Special case: APPROVED + forever-pending CI. The review loop is
+          // satisfied (the PR earned approval) but CI never finished reporting.
+          // After the escalation window, notify the operator via an Epic comment
+          // so the stuck runner is visible rather than a silent indefinite park.
+          //
+          // Guard: `classifyReviewVerdict` (review-only, no CI gate) must confirm
+          // the PR is resolved — distinguishes a genuine APPROVED+pending hold
+          // from a not-yet-reviewed PR whose CI just hasn't finished yet.
+          if ((pr.ci ?? "none") === "pending") {
+            const reviewVerdict = classifyReviewVerdict(pr, wait.createdAt);
+            if (
+              reviewVerdict?.outcome === "resolved" &&
+              isCiPendingEscalation(wait.createdAt, now)
+            ) {
+              const days = Math.floor((now - wait.createdAt) / (24 * 60 * 60 * 1000));
+              const msg =
+                `<!-- middle:agent-comment -->\n` +
+                `⚠️ **PR is APPROVED but CI has been pending for ${days} day${days === 1 ? "" : "s"}** — ` +
+                `check the runner. The merge is blocked until CI reports a final status.`;
+              try {
+                if (deps.postEpicComment) {
+                  await deps.postEpicComment(wait.repo, epicRef, msg);
+                }
+                console.error(
+                  `[poller] CI-pending escalation for ${wait.repo}#${epicRef}: ` +
+                    `APPROVED but CI pending ${days}d — posted Epic comment`,
+                );
+              } catch (commentError) {
+                console.error(
+                  `[poller] CI-pending escalation comment failed for ${wait.repo}#${epicRef}: ` +
+                    `${(commentError as Error).message}`,
+                );
+              }
+            }
+          }
+          continue;
+        }
         await deps.fireSignal(wait.workflowId, {
           reason,
           outcome: verdict.outcome,
