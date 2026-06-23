@@ -298,12 +298,13 @@ function ensurePromptFile(
   epicRef: string,
   complexityCeiling: number,
   approved: boolean,
+  mode: "github" | "file",
 ): void {
   const middleDir = join(worktreePath, ".middle");
   const promptPath = join(middleDir, "prompt.md");
   if (existsSync(promptPath)) return;
   mkdirSync(middleDir, { recursive: true });
-  writeFileSync(promptPath, defaultDispatchBrief(epicRef, complexityCeiling, approved));
+  writeFileSync(promptPath, defaultDispatchBrief(epicRef, complexityCeiling, approved, mode));
 }
 
 /** The skill whose mode-specific command reference the dispatch brief mirrors. */
@@ -334,11 +335,16 @@ function mirrorModeCommands(worktreePath: string, mode: "github" | "file"): void
  * carries the `approved` label, the brief authorizes the agent to proceed past a
  * complexity overrun with a best-judgment call instead of pausing (build spec →
  * "Complexity and architectural forks"; #53).
+ *
+ * The `mode` is the Epic store mode (`"github"` or `"file"`); it appears in the
+ * operator-notes section so the agent knows which mode-specific commands
+ * reference file to read from `.middle/skills/implementing-github-issues/references/`.
  */
-function defaultDispatchBrief(
+export function defaultDispatchBrief(
   epicRef: string,
   complexityCeiling: number,
   approved: boolean,
+  mode: "github" | "file",
 ): string {
   const complexityRule = approved
     ? `- This Epic carries the \`approved\` label: a human has reviewed its scope and
@@ -349,6 +355,9 @@ function defaultDispatchBrief(
   decision needing more than ${complexityCeiling} candidate forks (the complexity
   ceiling) to resolve. To pause, write \`.middle/blocked.json\` and exit; for a
   complexity overrun include \`"kind": "complexity"\` in it.`;
+  const refsPath = `.middle/skills/implementing-github-issues/references/`;
+  const modeNote = `- This dispatch runs in **${mode} mode**. The mode-specific command reference is
+  the single file in \`${refsPath}\` — read it before issuing any gh/git commands.`;
   return `# middle dispatch brief — Epic #${epicRef}
 
 You are running autonomously under middle. There is no human watching in real
@@ -362,7 +371,7 @@ ${complexityRule}
   and the reviewer's brief posted on both the Epic and the PR. Then stop.
 
 ## Operator notes for this dispatch
-(none)
+${modeNote}
 `;
 }
 
@@ -466,8 +475,10 @@ review pass now, following the \`implementing-github-issues\` skill's
 3. Run the **internal clean-eyes review loop** over the batched diff (a review
    subagent), looping until it surfaces nothing new, to catch adjacent edges
    before re-review.
-4. **Push once** — one push for the whole pass, not per fix.
-5. Reply in-thread to each addressed comment, **re-request review**, then stop.
+4. **Push once** — one push for the whole pass, not per fix. Do NOT post
+   \`@coderabbitai review\` after pushing — a push auto-triggers CodeRabbit.
+   Only post \`@coderabbitai resume\` if CodeRabbit's own notice says it paused.
+5. Reply in-thread to each addressed comment, then stop.
    The workflow re-parks for the next verdict.
 
 This is review round ${resume.round} of ${reviewRoundCap}. After ${reviewRoundCap} rounds without an
@@ -803,6 +814,17 @@ export function createImplementationWorkflow(
       // Resolving the per-repo ceiling / `approved` label touches `gh`, so it's
       // gated on that and made failure-safe — a flaky label read must fall back to
       // safe defaults, never fail the whole dispatch.
+      // Resolve mode first — needed both for the dispatch brief and for mirroring
+      // the mode-specific commands reference. Default to "github" on any error.
+      let mode: "github" | "file" = "github";
+      try {
+        if (deps.resolveEpicStoreMode) {
+          mode = await deps.resolveEpicStoreMode(ctx.input.repo);
+        }
+      } catch (error) {
+        console.error(`${tag} mode-commands mirror skipped: ${(error as Error).message}`);
+      }
+
       console.error(`${tag} ensuring .middle/prompt.md exists in worktree`);
       if (!existsSync(join(handle.path, ".middle", "prompt.md"))) {
         let complexityCeiling = DEFAULT_COMPLEXITY_CEILING;
@@ -819,16 +841,13 @@ export function createImplementationWorkflow(
             `${tag} brief-context resolution failed, using defaults (ceiling=${DEFAULT_COMPLEXITY_CEILING}, approved=false): ${(error as Error).message}`,
           );
         }
-        ensurePromptFile(handle.path, ctx.input.epicRef, complexityCeiling, approved);
+        ensurePromptFile(handle.path, ctx.input.epicRef, complexityCeiling, approved, mode);
       }
 
       // Mirror the run's mode-specific commands reference into the worktree so the
       // implementer skill reads only the incantations for this Epic's store. Always
       // run (not gated on the prompt.md write above) and failure-safe.
       try {
-        const mode = deps.resolveEpicStoreMode
-          ? await deps.resolveEpicStoreMode(ctx.input.repo)
-          : "github";
         mirrorModeCommands(handle.path, mode);
       } catch (error) {
         console.error(`${tag} mode-commands mirror skipped: ${(error as Error).message}`);
