@@ -5,6 +5,7 @@ import {
   consumeWaitForSignal,
   finalizeParkedWorkflow,
   loadPollableWaits,
+  recordEvent,
   type TerminalWorkflowState,
 } from "./workflow-record.ts";
 
@@ -80,10 +81,39 @@ export type EngineRecoveryResult = {
  * Must run AFTER the workflows are registered (recover may re-enqueue/resume, which
  * needs the workflow definition) and BEFORE the poller starts (so it never fires a
  * resume at an exec recover hasn't re-armed yet).
+ *
+ * When `db` is supplied, writes a `daemon.recovered` event for each `waiting-human`
+ * workflow that survives the restart, giving the Inspector an audit trail of the
+ * recovery (#260). Callers that don't supply `db` (e.g. tests using a plain
+ * `new Engine(...)` without a middle DB) continue to work unchanged.
  */
-export async function recoverEngine(engine: Engine): Promise<EngineRecoveryResult> {
+export async function recoverEngine(engine: Engine, db?: Database): Promise<EngineRecoveryResult> {
   const cleared = engine.cleanup(0, [...MID_DRIVE_STATES]);
+  // Snapshot the waiting-human workflows BEFORE recover() so we know which ones
+  // survived the restart and were eligible for re-arm. `loadPollableWaits` returns
+  // only workflows in `waiting-human` state with an armed `waitfor_signals` row.
+  const waitingBefore = db ? loadPollableWaits(db) : [];
   const recovered = await engine.recover();
+  // Record a daemon.recovered event for each waiting-human workflow so the Inspector
+  // timeline shows the restart boundary. Best-effort: a recording failure must not
+  // prevent the daemon from booting.
+  if (db && waitingBefore.length > 0) {
+    const now = Date.now();
+    for (const wait of waitingBefore) {
+      try {
+        recordEvent(db, {
+          workflowId: wait.workflowId,
+          ts: now,
+          type: "daemon.recovered",
+          payloadJson: JSON.stringify({ workflowId: wait.workflowId }),
+        });
+      } catch (err) {
+        console.error(
+          `[recover] recording daemon.recovered for ${wait.workflowId} failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
   return { cleared, recovered };
 }
 
@@ -131,6 +161,19 @@ export async function reconcileOrphanedSignals(
     // still `waiting-human`, so a row another path already advanced is skipped (false).
     if (!finalizeParkedWorkflow(deps.db, wait.workflowId, finalState)) continue;
     consumeWaitForSignal(deps.db, wait.workflowId);
+    // Record the orphan finalization so the Inspector timeline shows the audit trail.
+    try {
+      recordEvent(deps.db, {
+        workflowId: wait.workflowId,
+        ts: Date.now(),
+        type: "daemon.orphan-finalized",
+        payloadJson: JSON.stringify({ finalState }),
+      });
+    } catch (err) {
+      console.error(
+        `[recover] recording daemon.orphan-finalized for ${wait.workflowId} failed: ${(err as Error).message}`,
+      );
+    }
     const orphan: OrphanedSignal = {
       workflowId: wait.workflowId,
       repo: wait.repo,

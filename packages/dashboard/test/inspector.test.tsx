@@ -97,4 +97,66 @@ describe("Inspector (Sheet)", () => {
     expect(document.body.querySelector('a[href^="file://"]')).toBeNull();
     await unmount();
   });
+
+  // ── #260: gate.failed and recovery event rendering ──────────────────────────
+
+  test("gate.failed renders in the verification section with gate name and exit code", async () => {
+    const { unmount } = await renderDom(
+      <Inspector
+        panel={panel()}
+        events={[
+          {
+            ts: 1000,
+            type: "gate.failed",
+            payload: { gateName: "bun test", exitCode: 1, stderrExcerpt: "2 tests failed" },
+          },
+        ]}
+      />,
+    );
+    const text = document.body.textContent ?? "";
+    // Should appear in the verification section with name + code.
+    expect(text).toContain("gate.failed");
+    expect(text).toContain("bun test");
+    expect(text).toContain("exit 1");
+    await unmount();
+  });
+
+  test("daemon.recovered renders in the timeline with its audit label", async () => {
+    const { unmount } = await renderDom(
+      <Inspector
+        panel={panel()}
+        events={[
+          {
+            ts: 1000,
+            type: "daemon.recovered",
+            payload: { workflowId: "wf-123" },
+          },
+        ]}
+      />,
+    );
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("daemon.recovered");
+    expect(text).toContain("daemon restarted");
+    await unmount();
+  });
+
+  test("daemon.orphan-finalized renders in the timeline with finalState", async () => {
+    const { unmount } = await renderDom(
+      <Inspector
+        panel={panel()}
+        events={[
+          {
+            ts: 1000,
+            type: "daemon.orphan-finalized",
+            payload: { finalState: "failed" },
+          },
+        ]}
+      />,
+    );
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("daemon.orphan-finalized");
+    expect(text).toContain("orphaned signal finalized");
+    expect(text).toContain("failed");
+    await unmount();
+  });
 });

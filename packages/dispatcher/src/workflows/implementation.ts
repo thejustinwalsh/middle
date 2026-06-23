@@ -264,8 +264,15 @@ export type ImplementationDeps = {
    * `loadVerifyConfig` + `runGates` in the worktree; optional, so a repo with no
    * `verify.toml` (or a gate-free unit test) skips the enforcement. This is the
    * first point gates run in a live dispatch (the per-push trigger is #101).
+   *
+   * The optional `workflowId` is passed so the implementation can record
+   * `gate.failed` events per failing gate (#260 — Inspector verification section).
+   * Implementations that don't need it (tests) can ignore the second argument.
    */
-  runVerifyGates?: (worktree: string) => Promise<{ ok: boolean; report: string }>;
+  runVerifyGates?: (
+    worktree: string,
+    workflowId?: string,
+  ) => Promise<{ ok: boolean; report: string }>;
   /** Max verify-fix nudges on a `done` before parking in waiting-human (default 3). */
   verifyRoundCap?: number;
   /** The agent's gh account — restricts the plan-comment match to its comments. */
@@ -722,7 +729,7 @@ export function createImplementationWorkflow(
   }): Promise<DriveOutcome> {
     const runVerify = deps.runVerifyGates!;
     for (let rounds = 0; ; rounds += 1) {
-      const verify = await runVerify(args.worktree);
+      const verify = await runVerify(args.worktree, args.workflowId);
       if (verify.ok) {
         console.error(`${args.tag} verify-on-stop: all gates pass — done stands`);
         return { kind: "done" };
