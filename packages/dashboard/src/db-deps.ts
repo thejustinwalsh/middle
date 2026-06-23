@@ -66,10 +66,14 @@ export type DbDepsOptions = {
   githubQuota?: () => Promise<GithubQuota>;
   /** The channel-keyed SSE bus for `/events/*`, when live. */
   events?: DashboardEventBus;
-  /** Force-dispatch seam (the daemon wires it; standalone leaves it absent → 404). */
+  /**
+   * Force-dispatch seam (the daemon wires it; standalone leaves it absent → 404).
+   * `epicRef` is a numeric string ("7") in github mode or a slug ("rollout-epic-store")
+   * in file mode — the route passes it through as-is from the URL.
+   */
   dispatch?: (
     repo: string,
-    epicNumber: number,
+    epicRef: string,
     adapter: string,
   ) => Promise<{ status: number; body: string }>;
   /** Epic-cache refresh seam (daemon-wired). */

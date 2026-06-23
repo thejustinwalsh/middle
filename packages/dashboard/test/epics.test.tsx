@@ -48,7 +48,7 @@ describe("Epics", () => {
     expect(out).toContain("No open Epics for this repo.");
   });
 
-  test("a file-mode Epic renders a file:// slug link and disables in-dashboard dispatch (#200)", () => {
+  test("a file-mode Epic renders a file:// slug link with an enabled dispatch button (#240)", () => {
     const out = html(
       card({ number: null, ref: "rollout-epic-store", title: "Roll out the store" }),
     );
@@ -58,10 +58,11 @@ describe("Epics", () => {
     expect(out).toContain("Roll out the store");
     // No phantom `#null`.
     expect(out).not.toContain("#null");
-    // Force-dispatch is CLI-only for a file Epic — the button is disabled and
-    // points at the working path.
-    expect(out).toContain('disabled=""');
-    expect(out).toContain("mm dispatch rollout-epic-store");
+    // Since #240 the route accepts slugs — the dispatch button is now enabled for
+    // file-mode Epics when a slot is available (the `isFileEpic` gate is removed).
+    expect(out).not.toContain('disabled=""');
+    // No stale "mm dispatch <slug>" CLI-only tooltip.
+    expect(out).not.toContain("mm dispatch rollout-epic-store");
   });
 
   test("disables dispatch when in flight", () => {

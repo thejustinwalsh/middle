@@ -149,11 +149,14 @@ async function handleEpics(
     });
   }
 
-  // POST /api/epics/:repo/:n/dispatch — force-dispatch an Epic with a chosen adapter.
+  // POST /api/epics/:repo/:epicRef/dispatch — force-dispatch an Epic with a chosen adapter.
+  // `:epicRef` is a numeric issue number ("7") in github mode or a slug
+  // ("rollout-epic-store") in file mode. The segment is passed through as-is; the
+  // production wiring (dispatchEpicManual in main.ts) resolves both forms.
   if (tail.length === 3 && tail[2] === "dispatch" && method === "POST") {
-    const epicNumber = Number(tail[1]);
-    if (!Number.isSafeInteger(epicNumber) || epicNumber < 1) {
-      return badRequest("epic number must be a positive integer");
+    const epicRef = tail[1]!.trim();
+    if (epicRef === "") {
+      return badRequest("epic ref must be a non-empty string");
     }
     const body = await readJson(req);
     if (typeof body.adapter !== "string") {
@@ -164,7 +167,7 @@ async function handleEpics(
       return badRequest("adapter must be a non-empty string");
     }
     if (!deps.dispatchEpic) return notFound("manual dispatch not wired in this dashboard mode");
-    const result = await deps.dispatchEpic(repo, epicNumber, adapter);
+    const result = await deps.dispatchEpic(repo, epicRef, adapter);
     return new Response(result.body, {
       status: result.status,
       headers: { "content-type": "application/json" },

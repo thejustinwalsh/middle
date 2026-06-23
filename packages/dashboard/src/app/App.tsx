@@ -320,9 +320,9 @@ export function App() {
   }, [view, epicRepo, refreshEpics]);
 
   const dispatchEpic = useCallback(
-    (repo: string, epicNumber: number, adapter: string) =>
+    (repo: string, epicRef: string, adapter: string) =>
       guard("epics", async () => {
-        await api.dispatchEpic(repo, epicNumber, adapter);
+        await api.dispatchEpic(repo, epicRef, adapter);
         await Promise.all([refreshEpics(repo), refreshTop()]);
       }),
     [guard, refreshEpics, refreshTop],
