@@ -25,6 +25,13 @@ export const BOOTSTRAP_SKILLS_DIR = join(import.meta.dir, "..", "bootstrap-asset
 export type SkillsSyncDirs = {
   canonicalDir: string;
   mirrorDir: string;
+  /**
+   * Top-level skill dir names to skip when deciding whether a mirror-only entry
+   * is stale. Use this for skills that live only in the mirror (e.g. a
+   * host-local `excalidraw-diagram` not tracked in canonical) so that a sync
+   * pass doesn't delete them.
+   */
+  excludeNames?: Set<string>;
 };
 
 export type SkillsSyncResult = {
@@ -60,13 +67,22 @@ function listFilesRecursive(dir: string): string[] {
 /**
  * Enumerate every (relative) skill file across both trees — the union of files
  * present in the canonical skill dirs and their mirror counterparts. A file
- * present only in the mirror is a stale copy that sync must delete.
+ * present only in the mirror is a stale copy that sync must delete, unless its
+ * top-level skill name is in `excludeNames` (those are mirror-local skills that
+ * have no canonical counterpart and must never be touched by sync).
  */
-function unionSkillFiles(canonicalDir: string, mirrorDir: string): string[] {
+function unionSkillFiles(
+  canonicalDir: string,
+  mirrorDir: string,
+  excludeNames?: Set<string>,
+): string[] {
   // Union the skill dirs from BOTH trees. A skill dir present only in the mirror
   // (its canonical counterpart was removed) is stale; it must still be enumerated
   // so sync can delete it — otherwise the orphan silently breaks byte-identity.
-  const skills = new Set([...listSkillDirs(canonicalDir), ...listSkillDirs(mirrorDir)]);
+  // Mirror-only names in `excludeNames` are skipped entirely.
+  const canonicalSkills = listSkillDirs(canonicalDir);
+  const mirrorSkills = listSkillDirs(mirrorDir).filter((s) => !excludeNames?.has(s));
+  const skills = new Set([...canonicalSkills, ...mirrorSkills]);
   const seen = new Set<string>();
   for (const skill of skills) {
     for (const rel of listFilesRecursive(join(canonicalDir, skill))) {
@@ -86,11 +102,13 @@ function readOrNull(path: string): Buffer | null {
 
 /**
  * Compare the two trees without touching either. Returns the set of skill files
- * that differ — present on one side only, or differing bytes.
+ * that differ — present on one side only, or differing bytes. Skills named in
+ * `excludeNames` are skipped: a mirror-only skill in the exclusion set is never
+ * reported as stale.
  */
 export function diffSkills(dirs: SkillsSyncDirs): SkillsSyncResult {
   const changed: string[] = [];
-  for (const rel of unionSkillFiles(dirs.canonicalDir, dirs.mirrorDir)) {
+  for (const rel of unionSkillFiles(dirs.canonicalDir, dirs.mirrorDir, dirs.excludeNames)) {
     const src = readOrNull(join(dirs.canonicalDir, rel));
     const dst = readOrNull(join(dirs.mirrorDir, rel));
     if (src === null || dst === null || !src.equals(dst)) changed.push(rel);
