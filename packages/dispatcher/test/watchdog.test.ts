@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptState } from "@middle/core";
@@ -776,5 +776,113 @@ describe("notification failsafe — fast-fail backstop", () => {
     expect(getWorkflow(db, id)!.state).toBe("running");
     expect(capturedPayload(id)?.kind).toBe("permission");
     expect(tmux.sent).toHaveLength(1);
+  });
+});
+
+// ── #257: triggerCompensation + pruneWorktree wiring ──────────────────────────
+
+describe("watchdog — worktree pruning on idle-kill (#257)", () => {
+  test("idle-kill of a running row with a worktree_path prunes the worktree directory", async () => {
+    // Simulate a post-restart 'running' row: the daemon restarted, recoverEngine
+    // dropped the bunqueue execution, but the worktree directory is still on disk.
+    const worktreeDir = join(scratch, "wt-pruned");
+    mkdirSync(worktreeDir, { recursive: true });
+    const id = seed({
+      state: "running",
+      sessionName: "middle-99",
+      worktreePath: worktreeDir,
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const pruned: string[] = [];
+    await runWatchdog(
+      baseDeps({
+        tmux: makeTmux(true).ops,
+        pruneWorktree: (_wid, wt) => {
+          pruned.push(wt);
+          // Simulate what pruneWorktreeAt does: remove the directory.
+          rmSync(wt, { recursive: true, force: true });
+        },
+      }),
+    );
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("idle-timeout");
+    expect(pruned).toContain(worktreeDir);
+    expect(existsSync(worktreeDir)).toBe(false);
+  });
+
+  test("idle-kill of a running row WITHOUT a worktree_path does NOT call pruneWorktree", async () => {
+    const id = seed({
+      state: "running",
+      sessionName: "middle-99",
+      worktreePath: null,
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const pruned: string[] = [];
+    await runWatchdog(
+      baseDeps({
+        tmux: makeTmux(true).ops,
+        pruneWorktree: (_wid, wt) => {
+          pruned.push(wt);
+        },
+      }),
+    );
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(pruned).toHaveLength(0);
+  });
+
+  test("tmux-dead kill of a running row with a worktree_path prunes the worktree", async () => {
+    const worktreeDir = join(scratch, "wt-dead-session");
+    mkdirSync(worktreeDir, { recursive: true });
+    const id = seed({
+      state: "running",
+      sessionName: "middle-dead",
+      worktreePath: worktreeDir,
+      updatedAt: NOW,
+    });
+    const pruned: string[] = [];
+    const tmux = makeTmux(false); // session is dead
+    await runWatchdog(
+      baseDeps({
+        tmux: tmux.ops,
+        pruneWorktree: (_wid, wt) => {
+          pruned.push(wt);
+          rmSync(wt, { recursive: true, force: true });
+        },
+      }),
+    );
+    expect(getWorkflow(db, id)!.state).toBe("failed");
+    expect(failureReason(id)).toBe("tmux session disappeared");
+    expect(pruned).toContain(worktreeDir);
+    expect(existsSync(worktreeDir)).toBe(false);
+  });
+
+  test("blocked-sentinel self-heal does NOT prune the worktree (resume needs it)", async () => {
+    const worktreeDir = join(scratch, "wt-blocked");
+    mkdirSync(worktreeDir, { recursive: true });
+    const blocked = join(worktreeDir, "blocked.json");
+    writeFileSync(blocked, JSON.stringify({ question: "which window?" }));
+    const id = seed({
+      state: "running",
+      sessionName: "middle-blocked",
+      worktreePath: worktreeDir,
+      lastHeartbeat: NOW - 20 * MIN,
+      updatedAt: NOW - 20 * MIN,
+    });
+    const pruned: string[] = [];
+    await runWatchdog(
+      baseDeps({
+        tmux: makeTmux(true).ops,
+        blockedSentinelPath: () => blocked,
+        pruneWorktree: (_wid, wt) => {
+          pruned.push(wt);
+        },
+      }),
+    );
+    // The blocked self-heal path must NOT prune — the resume needs the worktree.
+    expect(getWorkflow(db, id)!.state).toBe("running");
+    expect(pruned).toHaveLength(0);
+    expect(existsSync(worktreeDir)).toBe(true);
   });
 });
