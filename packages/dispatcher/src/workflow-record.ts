@@ -226,6 +226,13 @@ export type WorkflowPatch = {
    * skip freshness checks while a human is driving — see this package's CLAUDE.md.
    */
   controlledBy?: "middle" | "human";
+  /**
+   * A short machine-readable token recording WHY a run ended abnormally.
+   * Null / absent for normal completions; written before throwing so the
+   * dashboard Activity view can render a human label + tooltip. Known values:
+   * `"session-ended-before-Stop"`, `"Stop-hook-timed-out"`.
+   */
+  endReason?: string;
 };
 
 const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
@@ -236,6 +243,7 @@ const PATCH_COLUMNS: Record<keyof WorkflowPatch, string> = {
   sessionId: "session_id",
   transcriptPath: "transcript_path",
   controlledBy: "controlled_by",
+  endReason: "end_reason",
 };
 
 /**

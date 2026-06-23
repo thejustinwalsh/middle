@@ -606,9 +606,11 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
         pollMs: deps.livenessPollMs,
       });
       if (wait.via === "session-ended") {
+        updateWorkflow(deps.db, ctx.executionId, { endReason: "session-ended-before-Stop" });
         throw new Error("recommender session ended before Stop hook");
       }
       if (wait.via === "timeout") {
+        updateWorkflow(deps.db, ctx.executionId, { endReason: "Stop-hook-timed-out" });
         throw new Error(`recommender Stop hook timed out after ${agentTimeout}ms`);
       }
       // END SESSION — the turn is over; free the dedicated slot.

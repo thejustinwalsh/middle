@@ -209,6 +209,15 @@ export type RunSummary = {
   hasTranscript: boolean;
   /** recommender → state-issue URL; documentation → PR URL; else null. */
   outputLink: string | null;
+  /**
+   * The specific reason the run ended abnormally, or null for normal completions.
+   * Known values emitted by the dispatcher: `"session-ended-before-Stop"` (the
+   * tmux session died before the Stop hook fired) and `"Stop-hook-timed-out"` (the
+   * Stop hook did not respond within the configured timeout). The Activity view
+   * renders human-readable labels and tooltips for these two; unknown values show
+   * the raw token in a neutral chip.
+   */
+  endReason: string | null;
 };
 
 /** Per-repo config the Settings view edits. */

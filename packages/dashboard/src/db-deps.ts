@@ -108,7 +108,7 @@ const TERMINAL_STATES = ["completed", "compensated", "failed", "cancelled"] as c
 const NON_IMPL_KINDS = ["recommender", "documentation"] as const;
 /** Columns the Activity read projects (a subset distinct from WORKFLOW_COLUMNS). */
 const RUN_COLUMNS =
-  "id, repo, state, session_name, created_at, updated_at, transcript_path, pr_number";
+  "id, repo, state, session_name, created_at, updated_at, transcript_path, pr_number, end_reason";
 
 /** A runner's progress string: `sub-issue m/n` when known, else the state. */
 function progressOf(row: WorkflowRow): string {
@@ -404,6 +404,7 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
           updated_at: number;
           transcript_path: string | null;
           pr_number: number | null;
+          end_reason: string | null;
         }[];
         for (const r of rows) {
           const active = !(TERMINAL_STATES as readonly string[]).includes(r.state);
@@ -419,6 +420,7 @@ export function createDbDeps(opts: DbDepsOptions): DashboardDeps {
             active,
             hasTranscript: r.transcript_path !== null,
             outputLink: runOutputLink(kind, r.repo, r.pr_number),
+            endReason: r.end_reason,
           });
         }
       }
