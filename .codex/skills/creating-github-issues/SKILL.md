@@ -8,6 +8,8 @@ allowed-tools: Bash(gh:*), Bash(git:status), Read, Grep, Glob
 
 End-to-end workflow for taking a planning artifact (spec, brainstorm, build doc) and producing a set of well-formed GitHub issues with consistent titles, complete acceptance criteria, proper labels, and correct parent/sub-issue hierarchy. The output is the seed set of work that downstream skills (`implementing-github-issues`, `recommending-github-issues`) operate on.
 
+**Two modes.** Everything below is **GitHub mode** (the default): each Epic is a GitHub issue and sub-issues are native GitHub sub-issues, created with `gh`. If the repo runs in **file mode** (`epic_store = "file"`), an Epic is instead a Markdown file under `planning/epics/` and there is **no `gh issue create`** — see the **"File-mode addendum"** section at the end and `references/file-mode-commands.md`. The principles (read the source fully, mandatory acceptance criteria, hierarchy by default, integration rubric) are identical in both modes; only the authoring mechanics differ.
+
 ## Core principles
 
 **Issues are inputs to other skills, not implementation plans.** An issue captures *what* and *why*; the implementer's plan (in their PR's `planning/issues/<num>/plan.md`) captures *how*. Don't pre-decide implementation in the issue body; the implementer needs room to research and adapt.
@@ -94,11 +96,7 @@ Note:
 - **Recent issue titles** — the project's naming convention (verb-led? scope-prefixed? conventional-commit style?). Match it.
 - **Label families** — `phase:N`, `area:X`, `priority:N` style. Conform.
 
-If `.middle/config.toml` exists in the repo, read it for the controlled vocabulary middle expects:
-- `agent:claude`, `agent:codex` — adapter overrides
-- `approved` — bypasses the complexity ceiling
-- `agent-queue:state`, `agent-queue:eligible` — middle internals (don't apply to new issues)
-- `needs-design`, `blocked`, `wontfix` — recommender exclusion signals (use deliberately)
+If `.middle/config.toml` exists in the repo, read it for the controlled vocabulary middle expects. For what each middle label means, who applies it, and what middle does in response, see the [label vocabulary](https://github.com/thejustinwalsh/middle/blob/main/docs/vocabulary.md) — the single source of truth. The dispatch-decision labels (`agent:claude`/`agent:codex`, `approved`, `agent-queue:state`/`agent-queue:eligible`, `needs-design`/`blocked`/`wontfix`) are applied by the operator or middle, **not** by this skill.
 
 If a label the plan requires doesn't exist yet, create it (`gh label create <name> --color <hex> --description "<purpose>"`) — label creation is reversible and on the build path. Inventing a label *not* called for by the plan or the user is the thing to avoid.
 
@@ -188,10 +186,12 @@ The bar for category 3 is high. "I'm not 100% sure how big this is" is category 
 
 For each parent:
 
+**Required label:** every parent issue **must** include `epic` in its label set. The recommender (`recommending-github-issues`) uses `epic` as the discriminator for what to treat as an Epic when reading `gh issue list`. A parent without `epic` is invisible to the recommender — it won't show up in Ready, Needs human input, Blocked, *or* Excluded. It just vanishes from the queue. Children are recognized by their attachment to the parent (via `sub_issues_summary`); only the parent needs `epic`.
+
 ```bash
 gh issue create \
   --title "<verb-led, scoped, ≤72 chars>" \
-  --label "<comma,separated,labels>" \
+  --label "epic,<other,labels>" \
   --body "$(cat <<'EOF'
 ## Context
 <1-3 sentences pointing to the spec section this comes from. Link to the spec
@@ -444,17 +444,10 @@ If you genuinely can't write concrete criteria for an item, that's a Phase 5 unk
 
 Apply labels the plan and the repo's vocabulary call for. Create a label the plan requires but the repo lacks (`gh label create ...`) — that's on the build path. Do NOT invent labels the plan and user never asked for.
 
-Middle's controlled labels (applied by this skill when the plan calls for them):
-- `phase:N` — phase grouping for build specs
-- `bootstrap` — pre-dogfooding work
-- `dogfood` — work that flows through middle once dogfooding starts
-- `housekeeping` — infrastructure / repo hygiene
+For what each label means and who applies it, see the [label vocabulary](https://github.com/thejustinwalsh/middle/blob/main/docs/vocabulary.md) — the single source of truth. Which labels *this skill* applies vs. which the operator/middle apply:
 
-Middle's controlled labels (applied manually by the user, NOT by this skill — they're dispatch decisions, not metadata about the work):
-- `agent:claude`, `agent:codex` — adapter override
-- `approved` — bypasses complexity ceiling
-- `agent-queue:state`, `agent-queue:eligible` — middle internals
-- `needs-design`, `blocked`, `wontfix` — exclusion signals
+- **This skill applies, when the plan calls for them:** `phase:N`, `bootstrap`, `dogfood`, `housekeeping` (grouping metadata about the work).
+- **The operator or middle apply, NOT this skill** (they're dispatch decisions, not metadata): `agent:claude`/`agent:codex`, `approved`, `agent-queue:state`/`agent-queue:eligible`, `needs-design`/`blocked`/`wontfix`.
 
 ## Red flags — STOP and self-correct
 
@@ -480,6 +473,8 @@ Middle's controlled labels (applied manually by the user, NOT by this skill — 
 | "I'll @-mention people to assign work" | This skill files unassigned issues. The user (or the recommender) decides assignment. |
 | "Some of these block others — I'll set blockers as I file" | Pass 1 files content with no `#N` cross-refs. The Phase 9 second pass wires every `Related:` / blocker line once all numbers exist. Filing in dependency order is fragile; a second pass isn't. |
 | "I'll use `-f sub_issue_id=...`" | `-f` is string; the endpoint rejects it. Always `-F` (integer) with the child's database ID. |
+| "I'll file this as `needs-design` to be safe" | `needs-design` is the most expensive label in middle's vocabulary — it removes the issue from auto-dispatch entirely until a maintainer un-labels it. Reserve it for the **single** case where you can name ≥2 specific candidate approaches AND say why building each one in a worktree (`superpowers:using-git-worktrees` + a fork-A / fork-B POC per `implementing-github-issues` § "Architectural forks") wouldn't decide between them. If the body has implementation verbs ("wire X to Y", "scan Z for W") with concrete file paths, it's `enhancement`, not `needs-design`. Filing more work ≠ needs-design; covering yourself ≠ needs-design. |
+| "I forgot the `epic` label on the parent" | Middle's recommender uses `epic` as the discriminator for what to treat as an Epic. A parent issue **without** `epic` is invisible to the recommender — it won't appear in Ready, Needs human input, Blocked, or even Excluded. It just vanishes. Every parent issue (Phase 6) MUST carry `epic` in its label set. The children inherit ranking via `sub_issues_summary`; they don't need `epic` themselves. |
 
 ## Common mistakes
 
@@ -506,6 +501,89 @@ Middle's controlled labels (applied manually by the user, NOT by this skill — 
 **Acceptance criteria that restate the title.** Title: "Implement parseStateIssue". Criterion: "parseStateIssue is implemented." Not a criterion. A criterion describes observable behavior or output.
 
 **Titles that only make sense next to the spec.** The recommender ranks from the title alone. "Phase 1, task 3" is useless; "Add SQLite migrations and WAL-mode db wrapper" is rankable.
+
+## File-mode addendum — authoring an Epic file
+
+When the repo runs in **file mode** (`epic_store = "file"` in its `.middle/<repo>.toml`),
+you do **not** call `gh issue create`. There are no GitHub issues for Epic data; each
+Epic is a single Markdown file at `planning/epics/<slug>.md`, and its sub-issues are
+`<!-- middle:sub-issue id=N -->` blocks *inside* that file. PRs, reviews, and CI are
+still GitHub-native — but issue creation is not part of file mode at all.
+
+Everything above still applies — read the source end to end, write mandatory acceptance
+criteria, default to hierarchy, run the integration rubric — but the output is a set of
+Epic files, one per Epic, instead of a parent issue + child sub-issues. See
+`references/file-mode-commands.md` for the step-by-step.
+
+### The Epic file structure (mirror these marker names exactly)
+
+```markdown
+<!-- middle:epic v1 -->
+# <Epic title>
+
+<!-- middle:meta
+slug: <slug>
+adapter: claude
+complexity_ceiling: 3
+approved: false
+labels: [phase:10, dogfood]
+blocked-by: [other-epic-slug]
+-->
+
+## Context
+
+<1-3 paragraphs: what this Epic delivers, where in the spec it comes from. Same
+content you'd put in a GitHub-mode parent's Context.>
+
+## Acceptance criteria
+
+- [ ] <Epic-level, concrete, verifiable criterion>
+- [ ] <…>
+
+## Sub-issues
+
+<!-- middle:sub-issue id=1 -->
+- [ ] **1 — <verb-led title>**
+  <prose body: what this phase is, why it matters>
+  *Acceptance:* <concrete, verifiable criteria for this sub-issue>
+<!-- /middle:sub-issue -->
+
+<!-- middle:sub-issue id=2 -->
+- [ ] **2 — <verb-led title>**
+  <prose body>
+  *Blocked by:* 1
+<!-- /middle:sub-issue -->
+
+<!-- middle:conversation -->
+<!-- /middle:conversation -->
+```
+
+### The pieces
+
+- **`<!-- middle:epic v1 -->`** — the document marker. Exact bytes; first line of the file.
+- **`# <title>`** — the H1, the Epic's title (the most-read line; same title rules as above).
+- **`<!-- middle:meta … -->`** — YAML-lite, one key per line. The keys:
+  - `slug` (required) — the canonical Epic reference; must equal the filename stem.
+  - `adapter` (optional) — `claude` / `codex` adapter override (the file-mode peer of an `agent:<name>` label).
+  - `labels` (optional) — display labels, informational only (no GitHub side-effect in file mode).
+  - `blocked-by` (optional) — a list of other Epic slugs this one waits on (cross-Epic deps the recommender's graph builder reads).
+  - `complexity_ceiling` (optional) — per-Epic override of the repo default.
+  - `approved` (optional) — the file-mode stand-in for the `approved` label.
+- **`## Context` / `## Acceptance criteria` / `## Sub-issues`** — strict spelling and order; these headings are parsed.
+- **`<!-- middle:sub-issue id=N -->` … `<!-- /middle:sub-issue -->`** — one block per phase. The `id` is stable and per-Epic; the `- [ ]` checkbox starts unchecked (the implementer flips it with a provenance suffix when the phase lands).
+- **`<!-- middle:conversation --><!-- /middle:conversation -->`** — an empty conversation section. Leave it empty; the dispatcher (via its renderer) is the sole writer of conversation entries — never seed plan/question/dispatch-event content here by hand.
+
+### What's the same, what's different
+
+| Concern | GitHub mode | file mode |
+|---|---|---|
+| Epic | a GitHub issue | `planning/epics/<slug>.md` |
+| Sub-issue | native GitHub sub-issue | `<!-- middle:sub-issue id=N -->` block in the file |
+| Creation command | `gh issue create` + `sub_issues` REST attach | author the file — **no `gh issue create`** |
+| Adapter pin | `agent:<name>` label | `adapter:` in `<!-- middle:meta -->` |
+| Cross-Epic blocker | issue-graph relationship | `blocked-by: [slug]` in meta |
+| Acceptance criteria | mandatory | mandatory (same rubric) |
+| PRs / reviews / CI | GitHub-native | GitHub-native (unchanged) |
 
 ## Related skills
 
