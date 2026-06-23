@@ -5,5 +5,3 @@
 -- NULL means a normal terminal state (completed / cancelled) or a failed/
 -- compensated row where no specific reason was recorded.
 ALTER TABLE workflows ADD COLUMN end_reason TEXT;
-
-INSERT INTO schema_version VALUES (12);
