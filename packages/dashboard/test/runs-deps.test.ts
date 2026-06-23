@@ -23,10 +23,11 @@ function seedRun(o: {
   sessionName?: string | null;
   transcriptPath?: string | null;
   prNumber?: number | null;
+  endReason?: string | null;
 }): void {
   db.run(
-    `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at, session_name, transcript_path, pr_number)
-     VALUES (?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO workflows (id, kind, repo, adapter, state, created_at, updated_at, session_name, transcript_path, pr_number, end_reason)
+     VALUES (?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?, ?)`,
     [
       o.id,
       o.kind,
@@ -37,6 +38,7 @@ function seedRun(o: {
       o.sessionName ?? null,
       o.transcriptPath ?? null,
       o.prNumber ?? null,
+      o.endReason ?? null,
     ],
   );
 }
@@ -107,5 +109,31 @@ describe("createDbDeps.listRuns", () => {
       seedRun({ id: `rec${i}`, kind: "recommender", repo: "o/r", createdAt: i });
     const runs = await createDbDeps({ db, config: makeConfig() }).listRuns();
     expect(runs.filter((r) => r.kind === "recommender")).toHaveLength(20);
+  });
+
+  test("projects endReason: null for normal runs, token for abnormal ones", async () => {
+    seedRun({ id: "rec-ok", kind: "recommender", repo: "o/r", createdAt: 10 });
+    seedRun({
+      id: "rec-dead",
+      kind: "recommender",
+      repo: "o/r",
+      state: "compensated",
+      createdAt: 20,
+      endReason: "session-ended-before-Stop",
+    });
+    seedRun({
+      id: "rec-timeout",
+      kind: "recommender",
+      repo: "o/r",
+      state: "compensated",
+      createdAt: 30,
+      endReason: "Stop-hook-timed-out",
+    });
+    const runs = await createDbDeps({ db, config: makeConfig() }).listRuns();
+    expect(runs.find((r) => r.workflowId === "rec-ok")!.endReason).toBeNull();
+    expect(runs.find((r) => r.workflowId === "rec-dead")!.endReason).toBe(
+      "session-ended-before-Stop",
+    );
+    expect(runs.find((r) => r.workflowId === "rec-timeout")!.endReason).toBe("Stop-hook-timed-out");
   });
 });

@@ -22,6 +22,32 @@ function toneVariant(t: "active" | "ok" | "bad"): BadgeProps["variant"] {
   return t === "ok" ? "success" : t === "bad" ? "destructive" : "default";
 }
 
+/**
+ * Human-readable label and tooltip for a known end reason. Returns null when
+ * `endReason` is null (normal completion — no chip shown). Unknown reason tokens
+ * fall through to a neutral chip showing the raw token.
+ */
+function endReasonMeta(
+  endReason: string | null,
+): { label: string; tooltip: string } | null {
+  if (!endReason) return null;
+  if (endReason === "session-ended-before-Stop") {
+    return {
+      label: "Session ended before Stop",
+      tooltip: "the agent session closed before the Stop hook fired",
+    };
+  }
+  if (endReason === "Stop-hook-timed-out") {
+    return {
+      label: "Stop hook timed out",
+      tooltip: "the Stop hook did not respond within the configured timeout",
+    };
+  }
+  // Unknown future reason — show the raw token neutrally; never alarm the operator
+  // for a reason they might not recognise (it may be informational, not an error).
+  return { label: endReason, tooltip: endReason };
+}
+
 function RunRow({
   run,
   now,
@@ -31,6 +57,7 @@ function RunRow({
   now?: number;
   onOpenInspector?: (session: string) => void;
 }) {
+  const reasonMeta = endReasonMeta(run.endReason);
   return (
     <li className="run-row" data-run={run.workflowId}>
       <Button
@@ -41,6 +68,15 @@ function RunRow({
         <Badge variant={toneVariant(tone(run))} className={`run-state ${tone(run)}`}>
           {run.state}
         </Badge>
+        {reasonMeta ? (
+          <Badge
+            variant="outline"
+            className="run-reason"
+            title={reasonMeta.tooltip}
+          >
+            {reasonMeta.label}
+          </Badge>
+        ) : null}
         <span className="run-repo">{run.repo}</span>
         <span className="run-when">
           {ago(run.startedAt, now)} ago · {Math.max(0, Math.round(run.durationMs / 1000))}s

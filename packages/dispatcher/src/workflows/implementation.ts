@@ -607,6 +607,8 @@ export function createImplementationWorkflow(
     worktree: string;
     timeoutMs: number;
     classifyAt: (payload: HookPayload) => StopClassification;
+    /** Workflow DB id; when provided, writes `end_reason` before throwing on abnormal end. */
+    workflowId?: string;
   }): Promise<StopClassification> {
     const probeStatus = deps.tmux.status;
     const waitResult = await awaitStopOrSessionEnd({
@@ -624,8 +626,14 @@ export function createImplementationWorkflow(
       console.error(`${args.tag} ${waitResult.via} with blocked.json present — parking for resume`);
       return args.classifyAt({ reason: waitResult.via } as HookPayload);
     }
-    // A dead/hung session with no sentinel is a genuine failure (unchanged):
-    // throw so the outer catch kills the session and the saga compensates.
+    // A dead/hung session with no sentinel is a genuine failure: record the
+    // specific reason in the workflow row (for the dashboard Activity view)
+    // before throwing so the saga's compensation doesn't clobber it.
+    if (args.workflowId) {
+      const endReason =
+        waitResult.via === "timeout" ? "Stop-hook-timed-out" : "session-ended-before-Stop";
+      updateWorkflow(deps.db, args.workflowId, { endReason });
+    }
     throw new Error(
       waitResult.via === "timeout"
         ? `Stop wait timed out after ${args.timeoutMs}ms`
@@ -646,6 +654,7 @@ export function createImplementationWorkflow(
     repo: string;
     epicRef: string;
     classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
+    workflowId?: string;
   }): Promise<DriveOutcome> {
     const readiness = deps.epicPrReadiness!;
     for (let nudges = 0; ; nudges += 1) {
@@ -667,6 +676,7 @@ export function createImplementationWorkflow(
         worktree: args.worktree,
         timeoutMs: nudgeStopTimeout,
         classifyAt: args.classifyAt,
+        workflowId: args.workflowId,
       });
       if (classification.kind !== "bare-stop") return classification;
     }
@@ -688,6 +698,7 @@ export function createImplementationWorkflow(
     repo: string;
     epicRef: string;
     classifyAt: (payload: Awaited<ReturnType<SessionGate["awaitStop"]>>) => StopClassification;
+    workflowId?: string;
   }): Promise<DriveOutcome> {
     const runVerify = deps.runVerifyGates!;
     for (let rounds = 0; ; rounds += 1) {
@@ -717,6 +728,7 @@ export function createImplementationWorkflow(
         worktree: args.worktree,
         timeoutMs: nudgeStopTimeout,
         classifyAt: args.classifyAt,
+        workflowId: args.workflowId,
       });
       // A re-stop means the agent "finished" its fix attempt — re-run the gates
       // (loop) rather than completing on the stale failure. A `done` loops
@@ -735,6 +747,7 @@ export function createImplementationWorkflow(
             repo: args.repo,
             epicRef: args.epicRef,
             classifyAt: args.classifyAt,
+            workflowId: args.workflowId,
           });
           if (settled.kind !== "done") return settled;
         }
@@ -961,6 +974,7 @@ export function createImplementationWorkflow(
         worktree: handle.path,
         timeoutMs: stopTimeout,
         classifyAt,
+        workflowId: ctx.executionId,
       });
       console.error(`${tag} Stop received — classification=${classification.kind}`);
       // Positive done-signal (#80): a bare-stop is NOT completion on its own —
@@ -975,6 +989,7 @@ export function createImplementationWorkflow(
           repo: ctx.input.repo,
           epicRef: ctx.input.epicRef,
           classifyAt,
+          workflowId: ctx.executionId,
         });
       }
       // Plan-comment guard (skill enforcement #1): a `done` only truly completes
@@ -1006,6 +1021,7 @@ export function createImplementationWorkflow(
           repo: ctx.input.repo,
           epicRef: ctx.input.epicRef,
           classifyAt,
+          workflowId: ctx.executionId,
         });
       }
       // END SESSION — the turn is over; free the slot before parking/finalizing.

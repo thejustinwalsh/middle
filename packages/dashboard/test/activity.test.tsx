@@ -15,6 +15,7 @@ const run = (over: Partial<RunSummary> = {}): RunSummary => ({
   active: false,
   hasTranscript: true,
   outputLink: "https://github.com/o/r/issues/84",
+  endReason: null,
   ...over,
 });
 const html = (runs: RunSummary[]) =>
@@ -51,5 +52,44 @@ describe("Activity", () => {
     expect(html([run({ state: "completed", active: false })])).toContain("run-state ok");
     expect(html([run({ state: "compensated", active: false })])).toContain("run-state bad");
     expect(html([run({ state: "running", active: true })])).toContain("run-state active");
+  });
+
+  test("renders human label and tooltip for session-ended-before-Stop", () => {
+    const out = html([
+      run({
+        state: "compensated",
+        active: false,
+        endReason: "session-ended-before-Stop",
+      }),
+    ]);
+    expect(out).toContain("Session ended before Stop");
+    expect(out).toContain("agent session closed before the Stop hook fired");
+  });
+
+  test("renders human label and tooltip for Stop-hook-timed-out", () => {
+    const out = html([
+      run({
+        state: "compensated",
+        active: false,
+        endReason: "Stop-hook-timed-out",
+      }),
+    ]);
+    expect(out).toContain("Stop hook timed out");
+    expect(out).toContain("Stop hook did not respond within the configured timeout");
+  });
+
+  test("omits end-reason label when endReason is null (normal completion)", () => {
+    const out = html([run({ state: "completed", active: false, endReason: null })]);
+    // No spurious reason badge on a clean run
+    expect(out).not.toContain("run-reason");
+  });
+
+  test("renders end-reason label for an unknown reason without crashing", () => {
+    const out = html([
+      run({ state: "failed", active: false, endReason: "some-future-reason" }),
+    ]);
+    // Unknown reasons show the raw string in a neutral chip — no scary alarm
+    expect(out).toContain("run-reason");
+    expect(out).toContain("some-future-reason");
   });
 });
