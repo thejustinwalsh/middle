@@ -54,9 +54,13 @@ describe("collectMetrics", () => {
       { repo: "o/r", kind: "implementation", state: "waiting-human", count: 1 },
       { repo: "o/r", kind: "recommender", state: "completed", count: 1 },
     ]);
-    // active = non-terminal implementation slots (the recommender row is excluded).
-    expect(m.slots).toEqual({ total: 3, perAdapter: { claude: 2, codex: 1 } });
-    expect(m.totals).toEqual({ all: 4, active: 3, waitingHuman: 1 });
+    // active = implementation workflows holding a dispatch slot. waiting-human rows
+    // are excluded from the slot count (#252): a parked epic holds a worktree but
+    // no live session, so it must not count against the concurrency cap.
+    expect(m.slots).toEqual({ total: 2, perAdapter: { claude: 2 } });
+    // totals.active mirrors slots.total (the slot count after waiting-human exclusion).
+    // totals.waitingHuman counts the parked row independently so operators can see it.
+    expect(m.totals).toEqual({ all: 4, active: 2, waitingHuman: 1 });
   });
 
   test("a completed implementation frees its slot but stays counted in totals", () => {
