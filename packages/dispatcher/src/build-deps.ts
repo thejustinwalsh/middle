@@ -11,9 +11,12 @@ import { readEpicStoreConfig } from "./repo-config.ts";
 import type { SessionGate } from "./hook-server.ts";
 import { AGENT_COMMENT_MARKER } from "./poller.ts";
 import { killSession, newSession, sendEnter, sendText, status } from "./tmux.ts";
-import { findActiveWorkflowBySession, getWorkflow } from "./workflow-record.ts";
+import { findActiveWorkflowBySession, getWorkflow, recordEvent } from "./workflow-record.ts";
 import type { ImplementationDeps, ImplementationInput } from "./workflows/implementation.ts";
 import { createWorktree, destroyWorktree } from "./worktree.ts";
+
+/** Max bytes for the `stderrExcerpt` in a `gate.failed` event payload. */
+const GATE_STDERR_EXCERPT_MAX = 2000;
 
 /** The slice of {@link EpicGateway} the deps factory reads. */
 type DepsGitHub = Pick<
@@ -329,8 +332,10 @@ export async function buildImplementationDeps(
     nudgeStopTimeoutMs: args.nudgeStopTimeoutMs,
     // Verify-on-stop: run the worktree's verify.toml gates when the agent claims
     // `done`. A missing/malformed verify.toml → skip (ok), so the enforcement is
-    // opt-in per repo (middle's own repo has one).
-    runVerifyGates: async (worktree: string) => {
+    // opt-in per repo (middle's own repo has one). When `workflowId` is supplied
+    // (always in production), each failing gate lands a `gate.failed` event in the
+    // events table so the Inspector verification section is populated (#260).
+    runVerifyGates: async (worktree: string, workflowId?: string) => {
       let gates;
       try {
         gates = loadVerifyConfig(verifyConfigPath(worktree)).gates;
@@ -341,6 +346,30 @@ export async function buildImplementationDeps(
         return { ok: true, report: "" };
       }
       const report = await runGates(gates, { cwd: worktree });
+      if (!report.ok && workflowId) {
+        const now = Date.now();
+        for (const result of report.results) {
+          if (!result.passed) {
+            const stderrExcerpt = result.stderr.slice(0, GATE_STDERR_EXCERPT_MAX);
+            try {
+              recordEvent(args.db, {
+                workflowId,
+                ts: now,
+                type: "gate.failed",
+                payloadJson: JSON.stringify({
+                  gateName: result.name,
+                  exitCode: result.exitCode,
+                  stderrExcerpt,
+                }),
+              });
+            } catch (err) {
+              console.error(
+                `[verify-on-stop] recording gate.failed for ${result.name} failed: ${(err as Error).message}`,
+              );
+            }
+          }
+        }
+      }
       return { ok: report.ok, report: report.ok ? "" : formatGateFailures(report) };
     },
   };

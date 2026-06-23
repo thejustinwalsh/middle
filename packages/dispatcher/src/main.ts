@@ -755,7 +755,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // watchdog's domain — then re-arm parked `waiting` executions so the poller can
   // resume them. Runs AFTER the registers (recover needs the definitions) and
   // BEFORE the poller (so it never signals an exec recover hasn't re-armed).
-  const recovery = await recoverEngine(engine);
+  const recovery = await recoverEngine(engine, db);
   if (recovery.cleared > 0 || recovery.recovered.total > 0) {
     console.log(
       `[recover] dropped ${recovery.cleared} mid-drive exec(s); re-armed ${recovery.recovered.waiting} parked / ${recovery.recovered.total} total`,
@@ -800,6 +800,14 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     db,
     tmux: { status, killSession, capturePane, sendText, sendEnter },
     getAdapter,
+    // Wire worktree cleanup: when the watchdog fails a `running` row that has
+    // a worktree_path, prune the stale directory so daemon restarts mid-epic
+    // don't accumulate leaked worktrees (#257).
+    pruneWorktree: (workflowId, worktreePath) => {
+      const row = getWorkflow(db, workflowId);
+      const repoPath = row ? (repoPaths.get(row.repo) ?? null) : null;
+      return pruneWorktreeAt(repoPath, worktreePath);
+    },
   });
 
   // Open-PR divergence reconciler (Epic #168). Sweep every known managed repo

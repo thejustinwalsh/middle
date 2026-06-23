@@ -14,6 +14,30 @@ function isVerificationEvent(type: string): boolean {
 }
 
 /**
+ * Render the inline detail line for specific known event types (#260).
+ * Returns null for event types without a dedicated inline detail — the caller
+ * falls back to showing the type only. A generic payload renderer belongs to
+ * W5 (#256); this is scoped to the three new event types from this issue.
+ */
+function renderEventDetail(type: string, payload: unknown): string | null {
+  if (type === "gate.failed" && payload !== null && typeof payload === "object") {
+    const p = payload as { gateName?: unknown; exitCode?: unknown };
+    const name = typeof p.gateName === "string" ? p.gateName : "";
+    const code = p.exitCode !== null && p.exitCode !== undefined ? String(p.exitCode) : "killed";
+    return name ? `${name} (exit ${code})` : null;
+  }
+  if (type === "daemon.recovered" && payload !== null && typeof payload === "object") {
+    return "daemon restarted — workflow re-armed";
+  }
+  if (type === "daemon.orphan-finalized" && payload !== null && typeof payload === "object") {
+    const p = payload as { finalState?: unknown };
+    const state = typeof p.finalState === "string" ? p.finalState : "";
+    return state ? `orphaned signal finalized → ${state}` : "orphaned signal finalized";
+  }
+  return null;
+}
+
+/**
  * The Issue Inspector drawer, rendered as a shadcn `Sheet` (Radix Dialog) instead
  * of a fixed-position `<aside>`. Surfaces a session's per-runner `panel` (workflow
  * state, `controlled_by`, tmux session + liveness, last heartbeat, context
@@ -147,11 +171,15 @@ export function Inspector({
             <p className="empty">No verification events recorded yet.</p>
           ) : (
             <ul>
-              {verification.map((e, i) => (
-                <li key={`${e.ts}-${i}`}>
-                  {e.type} · {ago(e.ts, now)} ago
-                </li>
-              ))}
+              {verification.map((e, i) => {
+                const detail = renderEventDetail(e.type, e.payload);
+                return (
+                  <li key={`${e.ts}-${i}`}>
+                    {e.type}
+                    {detail ? ` — ${detail}` : ""} · {ago(e.ts, now)} ago
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
@@ -162,12 +190,16 @@ export function Inspector({
             <p className="empty">No events yet.</p>
           ) : (
             <ol>
-              {events.map((e, i) => (
-                <li key={`${e.ts}-${i}`}>
-                  <span className="ev-type">{e.type}</span>{" "}
-                  <span className="ev-ago">{ago(e.ts, now)} ago</span>
-                </li>
-              ))}
+              {events.map((e, i) => {
+                const detail = renderEventDetail(e.type, e.payload);
+                return (
+                  <li key={`${e.ts}-${i}`}>
+                    <span className="ev-type">{e.type}</span>
+                    {detail ? <span className="ev-detail"> — {detail}</span> : null}{" "}
+                    <span className="ev-ago">{ago(e.ts, now)} ago</span>
+                  </li>
+                );
+              })}
             </ol>
           )}
         </section>
