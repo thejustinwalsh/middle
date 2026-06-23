@@ -80,6 +80,15 @@ export type WatchdogDeps = {
   notificationKillGraceMs?: number;
   /** Engine-side rollback hook; invoked when the watchdog fails a workflow. */
   triggerCompensation?: (workflowId: string, reason: string) => void;
+  /**
+   * Worktree cleanup hook; invoked when the watchdog fails a `running` workflow
+   * that has a `worktree_path` set. Called after the failure is recorded so
+   * a cleanup error never prevents the failure decision from landing. Best-effort:
+   * a stale worktree directory is disk noise, not a correctness bug.
+   * In production, wired to look up the workflow's repo and call
+   * `pruneWorktreeAt(repoPath, worktreePath)` (from `worktree.ts`).
+   */
+  pruneWorktree?: (workflowId: string, worktreePath: string) => void | Promise<void>;
   /** Override the blocked-sentinel path resolver (tests). */
   blockedSentinelPath?: (worktreePath: string) => string;
 };
@@ -151,7 +160,13 @@ function transcriptActivityMs(
   }
 }
 
-function failWorkflow(deps: WatchdogDeps, id: string, reason: string, now: number): void {
+function failWorkflow(
+  deps: WatchdogDeps,
+  id: string,
+  reason: string,
+  now: number,
+  worktreePath?: string | null,
+): void {
   updateWorkflow(deps.db, id, { state: "failed" });
   recordEvent(deps.db, {
     workflowId: id,
@@ -160,6 +175,17 @@ function failWorkflow(deps: WatchdogDeps, id: string, reason: string, now: numbe
     payloadJson: JSON.stringify({ reason }),
   });
   deps.triggerCompensation?.(id, reason);
+  // Best-effort worktree cleanup for `running` rows: a stale worktree from a
+  // mid-epic daemon restart leaks disk indefinitely without this. Fire-and-forget
+  // after the failure is already recorded — a cleanup error must never prevent
+  // the failure decision from landing.
+  if (worktreePath && deps.pruneWorktree) {
+    Promise.resolve(deps.pruneWorktree(id, worktreePath)).catch((err: unknown) => {
+      console.error(
+        `[watchdog] pruneWorktree failed for ${worktreePath}: ${(err as Error).message}`,
+      );
+    });
+  }
 }
 
 /**
@@ -220,7 +246,7 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
       }
       if (status && !status.alive) {
         await safeKillSession(deps.tmux, row.session_name);
-        failWorkflow(deps, row.id, "tmux session disappeared", now);
+        failWorkflow(deps, row.id, "tmux session disappeared", now, row.worktree_path);
         acted++;
         continue;
       }
@@ -239,7 +265,7 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
       !hasEventOfType(deps.db, row.id, "turn.started")
     ) {
       if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
-      failWorkflow(deps, row.id, "prompt-not-accepted", now);
+      failWorkflow(deps, row.id, "prompt-not-accepted", now, row.worktree_path);
       acted++;
       continue;
     }
@@ -284,7 +310,7 @@ export async function runWatchdog(deps: WatchdogDeps): Promise<number> {
           continue;
         }
         if (row.session_name) await safeKillSession(deps.tmux, row.session_name);
-        failWorkflow(deps, row.id, "idle-timeout", now);
+        failWorkflow(deps, row.id, "idle-timeout", now, row.worktree_path);
         acted++;
         continue;
       }
@@ -517,6 +543,7 @@ export async function reconcileNotifications(deps: WatchdogDeps): Promise<number
         row.id,
         `notification-block:${latestNotificationKind(deps.db, row.id)}`,
         now,
+        row.worktree_path,
       );
       acted++;
     }
