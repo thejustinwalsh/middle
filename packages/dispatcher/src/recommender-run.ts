@@ -184,6 +184,62 @@ export async function resolveRecommenderOptions(
   };
 }
 
+/**
+ * The return value of {@link createRecommenderSurfaceProblemDeduper}: a
+ * `surface` function that deduplicates identical problem strings per-repo, and
+ * a `reset` that clears the dedup state so a fixed-then-recurred problem
+ * surfaces again on its next occurrence.
+ */
+export type RecommenderSurfaceProblemDeduper = {
+  /**
+   * Call instead of the raw `surfaceProblem` sink. If the same `problem`
+   * string was already surfaced for `opts.repo` and has not been reset since,
+   * this is a no-op. Otherwise delegates to the underlying `surfaceProblem`
+   * and, **only on success**, records the string so the next identical call
+   * is suppressed. A throwing delegate (e.g. a failed `gh` post) is NOT
+   * recorded — the next attempt must be allowed through.
+   */
+  surface: (opts: { repo: string; stateIssue: number; problem: string }) => Promise<void>;
+  /**
+   * Clear the last-surfaced record for `repo`. Call this after a clean run
+   * so that if the same problem recurs later it surfaces again rather than
+   * being silently suppressed forever.
+   */
+  reset: (repo: string) => void;
+};
+
+/**
+ * Wrap a `surfaceProblem` sink with per-repo deduplication so the recommender
+ * does not post an identical problem comment on every interval when the state
+ * issue stays broken.
+ *
+ * The dedup memory lives in the closure (`Map<repo, lastProblem>`) and is
+ * daemon-lifetime — one call to this factory near the existing
+ * `parseFailureSurfacer` in `main.ts` is enough. The `reset` method is wired
+ * to `RecommenderDeps.onSurfacerReset` so a clean run clears the record and a
+ * later recurrence re-posts.
+ *
+ * Mirrors {@link createParseFailureSurfacer} from `auto-dispatch.ts` but
+ * deduplicates ALL problem strings, not only "does not parse" messages.
+ */
+export function createRecommenderSurfaceProblemDeduper(
+  surfaceProblem: (opts: { repo: string; stateIssue: number; problem: string }) => Promise<void>,
+): RecommenderSurfaceProblemDeduper {
+  const lastSurfaced = new Map<string, string>();
+  return {
+    async surface(opts) {
+      if (lastSurfaced.get(opts.repo) === opts.problem) return;
+      // Record only AFTER a successful post — a failed delegate (throws) must
+      // not suppress the next attempt (same invariant as parseFailureSurfacer).
+      await surfaceProblem(opts);
+      lastSurfaced.set(opts.repo, opts.problem);
+    },
+    reset(repo) {
+      lastSurfaced.delete(repo);
+    },
+  };
+}
+
 /** Default human surface: comment the problem on the state issue via `gh`. */
 export async function ghSurfaceProblem(opts: {
   repo: string;

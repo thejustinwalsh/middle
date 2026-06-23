@@ -162,6 +162,16 @@ export type RecommenderDeps = {
    * this UNWIRED — `trigger-auto-dispatch` then dispatches nothing by construction.
    */
   triggerAutoDispatch?: (opts: { repo: string; stateIssue: number }) => Promise<void>;
+  /**
+   * Called from `cleanup-worktree` when `verify-state-issue-parses` passed
+   * (`verify.ok === true`) — signals that this run was clean, so the
+   * recommender-surfacer dedup state can be reset. If the same problem recurs
+   * after a clean run it should re-post, not stay silently suppressed.
+   *
+   * Wired to `recommenderSurfacer.reset` in `main.ts`; left absent in the
+   * standalone runner (no long-lived dedup state to reset there).
+   */
+  onSurfacerReset?: (repo: string) => void;
 };
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 90_000;
@@ -749,6 +759,11 @@ export function createRecommenderWorkflow(deps: RecommenderDeps): Workflow<Recom
     const verify = ctx.steps["verify-state-issue-parses"] as VerifyResult | undefined;
     const finalState = verify && !verify.ok ? "failed" : "completed";
     updateWorkflow(deps.db, ctx.executionId, { state: finalState });
+    // A clean run resets the surfacer dedup state so a problem that recurs
+    // after being fixed re-posts rather than staying silently suppressed.
+    if (verify?.ok === true) {
+      deps.onSurfacerReset?.(ctx.input.repo);
+    }
   }
 
   return (

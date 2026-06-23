@@ -25,7 +25,11 @@ import { collectMetrics } from "./metrics.ts";
 import type { RecommenderTrigger } from "./hook-server.ts";
 import { DbHookStore } from "./hook-store.ts";
 import { addRateLimitObserver, clearRateLimitObservers, getRateLimitState } from "./rate-limits.ts";
-import { ghSurfaceProblem, resolveRecommenderOptions } from "./recommender-run.ts";
+import {
+  createRecommenderSurfaceProblemDeduper,
+  ghSurfaceProblem,
+  resolveRecommenderOptions,
+} from "./recommender-run.ts";
 import { ghPollGateway } from "./poller-gateway.ts";
 import { startPoller } from "./poller-cron.ts";
 import { ghReconcilerGateway, gitOps, reconcileOpenPRs } from "./reconcilers/pr-divergence.ts";
@@ -350,6 +354,12 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   // `… does not parse …`; surface it on the state issue (once per distinct
   // message) instead of dying in stderr and silently stalling the loop (#180).
   const parseFailureSurfacer = createParseFailureSurfacer(ghSurfaceProblem);
+
+  // Deduplicate recommender surfaceProblem posts so an identically-broken state
+  // issue does not accumulate one comment per interval (#237). The deduper wraps
+  // the raw `gh issue comment` sink; `reset` is wired to `onSurfacerReset` so a
+  // clean run clears the record and a later recurrence re-posts.
+  const recommenderSurfacer = createRecommenderSurfaceProblemDeduper(ghSurfaceProblem);
 
   /** Run one auto-dispatch pass for a repo, building deps from its merged config. */
   async function runAutoDispatch(repo: string): Promise<void> {
@@ -676,7 +686,10 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       // Routed too: the resolve-blockers step resolves a cross-repo blocker against
       // the *blocker's* repo, so the router keys each lookup on that repo (#225).
       epicGateway: routingEpicGateway,
-      surfaceProblem: ghSurfaceProblem,
+      // Deduped: identical problem strings are suppressed per-repo (#237).
+      surfaceProblem: recommenderSurfacer.surface,
+      // A clean run resets the dedup so a later recurrence re-posts.
+      onSurfacerReset: recommenderSurfacer.reset,
       triggerAutoDispatch: async ({ repo }) => scheduleAutoDispatch(repo),
       gatherContext: (repo) => {
         const cfg = loadRepoConfig(repo);
