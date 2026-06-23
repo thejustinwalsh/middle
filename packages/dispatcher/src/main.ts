@@ -106,8 +106,23 @@ export type RunDaemonOptions = {
   };
 };
 
-/** Workflow states that free a dispatch slot — a transition into one re-runs auto-dispatch. */
-const SLOT_FREEING_STATES = new Set(["completed", "compensated", "failed", "cancelled"]);
+/**
+ * Workflow states that free a dispatch slot — a transition into one re-runs
+ * auto-dispatch so the next ready epic takes the freed headroom.
+ *
+ * `waiting-human` is included because a park ends the live session: the agent
+ * is gone, only a worktree sits on disk, and the slot must become available to
+ * the next ready epic immediately rather than for the park's entire duration.
+ * `countActiveImplementationSlots` correspondingly excludes `waiting-human` rows
+ * from its count so the freed slot is reflected to the auto-dispatch loop.
+ */
+const SLOT_FREEING_STATES = new Set([
+  "completed",
+  "compensated",
+  "failed",
+  "cancelled",
+  "waiting-human",
+]);
 /** Debounce window coalescing a burst of triggers (terminal transitions, etc.) into one pass. */
 const AUTO_DISPATCH_DEBOUNCE_MS = 250;
 /** Epic-cache refresh cadence (constant, like POLLER/WATCHDOG; config-ification deferred). */
