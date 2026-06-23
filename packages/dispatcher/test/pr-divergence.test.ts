@@ -18,6 +18,7 @@ import {
   recordDivergenceState,
   worktreePathFor,
 } from "../src/reconcilers/pr-divergence.ts";
+import { createWorkflowRecord, listLiveImplementationWorkflows, updateWorkflow } from "../src/workflow-record.ts";
 
 let scratch: string;
 let db: Database;
@@ -549,4 +550,102 @@ describe("ghStderrIsNotFound", () => {
       expect(ghStderrIsNotFound(stderr)).toBe(false);
     });
   }
+});
+
+
+describe("listLiveImplementationWorkflows — live-worktree guard (#255)", () => {
+  const LIVE_WORKTREE = "/home/agent/.middle/worktrees/o/r/issue-32";
+
+  test("returns running + launching rows that have a worktree_path", () => {
+    // running row with worktree
+    createWorkflowRecord(db, {
+      id: "wf-running",
+      kind: "implementation",
+      repo: REPO,
+      epicRef: "32",
+      adapter: "github",
+    });
+    updateWorkflow(db, "wf-running", { state: "running", worktreePath: LIVE_WORKTREE });
+
+    // launching row with worktree
+    createWorkflowRecord(db, {
+      id: "wf-launching",
+      kind: "implementation",
+      repo: REPO,
+      epicRef: "40",
+      adapter: "github",
+    });
+    updateWorkflow(db, "wf-launching", {
+      state: "launching",
+      worktreePath: "/home/agent/.middle/worktrees/o/r/issue-40",
+    });
+
+    const live = listLiveImplementationWorkflows(db);
+    expect(live.map((w) => w.id).sort()).toEqual(["wf-launching", "wf-running"]);
+  });
+
+  test("excludes terminal states (completed, compensated, failed, cancelled)", () => {
+    for (const [id, state] of [
+      ["wf-completed", "completed"],
+      ["wf-compensated", "compensated"],
+      ["wf-failed", "failed"],
+      ["wf-cancelled", "cancelled"],
+    ] as const) {
+      createWorkflowRecord(db, {
+        id,
+        kind: "implementation",
+        repo: REPO,
+        epicRef: "99",
+        adapter: "github",
+      });
+      updateWorkflow(db, id, { state, worktreePath: LIVE_WORKTREE });
+    }
+    expect(listLiveImplementationWorkflows(db)).toHaveLength(0);
+  });
+
+  test("excludes waiting-human and rate-limited (non-active states)", () => {
+    for (const [id, state] of [
+      ["wf-waiting-human", "waiting-human"],
+      ["wf-rate-limited", "rate-limited"],
+    ] as const) {
+      createWorkflowRecord(db, {
+        id,
+        kind: "implementation",
+        repo: REPO,
+        epicRef: "10",
+        adapter: "github",
+      });
+      updateWorkflow(db, id, { state, worktreePath: LIVE_WORKTREE });
+    }
+    expect(listLiveImplementationWorkflows(db)).toHaveLength(0);
+  });
+
+  test("excludes rows without a worktree_path", () => {
+    createWorkflowRecord(db, {
+      id: "wf-no-worktree",
+      kind: "implementation",
+      repo: REPO,
+      epicRef: "50",
+      adapter: "github",
+    });
+    updateWorkflow(db, "wf-no-worktree", { state: "running" });
+    expect(listLiveImplementationWorkflows(db)).toHaveLength(0);
+  });
+
+  test("excludes non-implementation kinds (recommender, documentation)", () => {
+    for (const [id, kind] of [
+      ["wf-recommender", "recommender"],
+      ["wf-documentation", "documentation"],
+    ] as const) {
+      createWorkflowRecord(db, {
+        id,
+        kind,
+        repo: REPO,
+        epicRef: null,
+        adapter: "github",
+      });
+      updateWorkflow(db, id, { state: "running", worktreePath: LIVE_WORKTREE });
+    }
+    expect(listLiveImplementationWorkflows(db)).toHaveLength(0);
+  });
 });
