@@ -49,24 +49,63 @@ middle shells out to a few tools. `mm doctor` checks all of them for you.
 
 ---
 
-## Setup (your first day)
+## Install & keep it updated
+
+### One-command install
+
+Clone the repo and run the setup script (or its `package.json` alias):
 
 ```bash
 git clone https://github.com/thejustinwalsh/middle.git
 cd middle
-bun install
-
-# expose the `mm` CLI on your PATH (one-time)
-cd packages/cli && bun link && cd ../..
-
-# "did you get that memo?" — verify bun / tmux / claude / git / gh + gh auth
-mm doctor
-
-# verify everything works — drive the file-mode dispatch loop end to end
-mm verify-file-mode
+sh scripts/install.sh    # or: bun run setup
 ```
 
-Once `mm doctor` passes, `mm start` runs the dispatcher. To have middle come up on boot and restart on crash, run it under systemd/launchd — see **[`docs/daemon-as-a-service.md`](docs/daemon-as-a-service.md)**. Beyond `mm doctor`'s toolchain checks, `mm verify-file-mode` proves the dispatch loop itself runs end to end — see [Live-smoke verification](docs/dogfooding.md#live-smoke-verification) for what it covers and the opt-in `--live` real-GitHub smoke.
+This installs all workspace dependencies, links `mm` into `~/.bun/bin`, and verifies the
+install by printing `mm version`. If `~/.bun/bin` is not on your `PATH`, the script prints
+the exact line to add to your shell profile.
+
+### PATH (if mm is not found after install)
+
+Add this to your `~/.bashrc`, `~/.zshrc`, or `~/.profile`:
+
+```sh
+export PATH="${PATH}:${HOME}/.bun/bin"
+```
+
+Then open a new terminal and run `mm version` to confirm.
+
+### Keeping mm current
+
+Because `bun link` creates a symlink directly into the repo source and Bun runs TypeScript
+natively, `git pull` already updates `mm` — no rebuild needed.
+
+To update:
+
+```bash
+mm update          # verifies the tree is clean and on main, then pulls + reinstalls
+# or manually:
+git pull && bun install
+```
+
+`mm update` refuses if your checkout is dirty or on a non-`main` branch — it is linked to
+your dev checkout and may have local changes. The refusal message includes the manual steps.
+
+To check what version you are running:
+
+```bash
+mm version         # prints: mm 0.0.0 (abc1234, main)
+```
+
+### Verify the toolchain
+
+```bash
+mm doctor             # checks bun / tmux / claude / git / gh + gh auth
+mm verify-file-mode   # drives the file-mode dispatch loop end to end (add --live for a real-GitHub smoke)
+```
+
+Once `mm doctor` passes, `mm start` runs the dispatcher. To have middle come up on boot and
+restart on crash, run it under systemd/launchd — see **[`docs/daemon-as-a-service.md`](docs/daemon-as-a-service.md)**. Beyond `mm doctor`'s toolchain checks, `mm verify-file-mode` proves the dispatch loop itself runs end to end — see [Live-smoke verification](docs/dogfooding.md#live-smoke-verification) for what it covers and the opt-in `--live` real-GitHub smoke.
 
 Configuration is optional — middle ships with working defaults. To override, drop a `~/.middle/config.toml` (defaults shown):
 

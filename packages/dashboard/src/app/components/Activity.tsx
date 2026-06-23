@@ -27,9 +27,7 @@ function toneVariant(t: "active" | "ok" | "bad"): BadgeProps["variant"] {
  * `endReason` is null (normal completion — no chip shown). Unknown reason tokens
  * fall through to a neutral chip showing the raw token.
  */
-function endReasonMeta(
-  endReason: string | null,
-): { label: string; tooltip: string } | null {
+function endReasonMeta(endReason: string | null): { label: string; tooltip: string } | null {
   if (!endReason) return null;
   if (endReason === "session-ended-before-Stop") {
     return {
@@ -69,11 +67,7 @@ function RunRow({
           {run.state}
         </Badge>
         {reasonMeta ? (
-          <Badge
-            variant="outline"
-            className="run-reason"
-            title={reasonMeta.tooltip}
-          >
+          <Badge variant="outline" className="run-reason" title={reasonMeta.tooltip}>
             {reasonMeta.label}
           </Badge>
         ) : null}

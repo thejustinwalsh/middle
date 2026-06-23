@@ -9,7 +9,7 @@
  * Public surface:
  * - the `mm` CLI: `init`, `uninit`, `start`, `stop`, `status`, `doctor`,
  *   `dispatch`, `pause`, `resume`, `config`, `run-recommender`, `docs`,
- *   `audit-issues`, `verify-file-mode`, `version`
+ *   `audit-issues`, `verify-file-mode`, `version`, `update`
  *
  * Where things live:
  * - `commands/` — one `run*` function per subcommand
@@ -91,7 +91,9 @@ import { runStartCommand } from "./commands/start.ts";
 import { runStatus } from "./commands/status.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninit } from "./commands/uninit.ts";
+import { runUpdate } from "./commands/update.ts";
 import { runVerifyFileMode } from "./commands/verify-file-mode.ts";
+import { formatVersion, resolveCliRoot, resolveGitProvenance } from "./commands/version.ts";
 
 const VERSION = "0.0.0";
 
@@ -302,10 +304,21 @@ program
 
 program
   .command("version")
-  .description("Print the mm version")
-  .action(() => {
-    console.log(VERSION);
+  .description("Print the mm version (with git sha+branch when installed from a git checkout)")
+  .action(async () => {
+    const root = await resolveCliRoot(import.meta.dir);
+    const provenance = root !== null ? await resolveGitProvenance(root) : null;
+    console.log(formatVersion(VERSION, provenance));
     process.exit(0);
+  });
+
+program
+  .command("update")
+  .description(
+    "Pull the latest commits and re-install dependencies (only when on main with a clean tree)",
+  )
+  .action(async () => {
+    process.exit(await runUpdate());
   });
 
 program.parseAsync(process.argv);

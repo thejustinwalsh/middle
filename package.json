@@ -15,6 +15,7 @@
     "lint": "oxlint --fix --deny-warnings",
     "mm": "bun packages/cli/src/index.ts",
     "sync-skills": "bun scripts/sync-skills.ts",
+    "setup": "sh scripts/install.sh",
     "prepare": "git config core.hooksPath scripts/hooks 2>/dev/null && echo 'middle: enabled repo git hooks (core.hooksPath=scripts/hooks)' || true"
   },
   "devDependencies": {
