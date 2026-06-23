@@ -69,7 +69,7 @@ function stateWith(rows: ReadyRow[]): ParsedState {
     blocked: [],
     inFlight: [],
     excluded: [],
-    rateLimits: { claude: "AVAILABLE", github: "UNKNOWN" },
+    rateLimits: { claude: "AVAILABLE", codex: "AVAILABLE", github: "UNKNOWN" },
     slotUsage: {
       adapters: [{ adapter: "claude", used: 0, max: 2 }],
       total: { used: 0, max: 2 },
