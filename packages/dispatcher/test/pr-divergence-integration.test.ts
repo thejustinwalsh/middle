@@ -17,6 +17,7 @@ import {
   tryMergeMainNewWorkAsBase,
   tryRebaseOntoMain,
 } from "../src/reconcilers/pr-divergence.ts";
+import { createWorkflowRecord, updateWorkflow } from "../src/workflow-record.ts";
 
 /**
  * Integration tests for the rebase / merge helpers exercised against real `git`
@@ -995,5 +996,157 @@ describe("reconcileOpenPRs — end-to-end against the fixture repo", () => {
       "o/r",
     );
     expect(r).toEqual({ reconciled: 0, passed: 0, failed: 0, skippedForBudget: false });
+  });
+
+  // ── Live-worktree guard (#255) ──────────────────────────────────────────────
+  test("live-worktree guard (#255): reconciler SKIPS rebase when a running workflow owns the worktree", async () => {
+    // Set up the fixture: main advances so the feature branch is BEHIND.
+    await writeAndCommit(work, "main-guard.txt", "main\n", "main: add file for guard test");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    // Capture the feature branch HEAD before the reconcile run.
+    const headBefore = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // Seed a `running` workflow that owns the fixture worktree path.
+    // The path is what `worktreePathFor("o/r", 32, scratch)` resolves to —
+    // the same path `aliasFixtureUnderRoot` placed the symlink at.
+    const liveWorktreePath = join(scratch, "o/r", "issue-32");
+    createWorkflowRecord(db, {
+      id: "wf-live-agent",
+      kind: "implementation",
+      repo: "o/r",
+      epicRef: "32",
+      adapter: "github",
+    });
+    updateWorkflow(db, "wf-live-agent", { state: "running", worktreePath: liveWorktreePath });
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 400, headRefName: "middle-issue-32" }],
+      headRefs: { 400: "middle-issue-32" },
+      mergeability: {
+        400: { mergeStateStatus: "BEHIND", mergeable: "MERGEABLE" },
+      },
+    });
+
+    const baseDeps = deps();
+    // Use scratch as worktreeRoot so `worktreePathFor("o/r", 32, scratch)` == liveWorktreePath.
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+        worktreeRoot: scratch,
+      },
+      "o/r",
+    );
+
+    // The reconciler must skip the live worktree — counted as `passed`, not `reconciled`.
+    expect(r).toEqual({ reconciled: 0, passed: 1, failed: 0, skippedForBudget: false });
+
+    // No git mutation: the worktree HEAD must not have moved (no rebase happened).
+    const headAfter = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    expect(headAfter).toBe(headBefore);
+
+    // No comments posted on the PR (success comment would mean a rebase ran).
+    expect(fixture.calls.postComment).toEqual([]);
+    expect(fixture.calls.convertPrToDraft).toEqual([]);
+  });
+
+  test("live-worktree guard (#255): terminal workflow row does NOT skip — reconciler runs normally", async () => {
+    // Main advances so the feature branch is BEHIND.
+    await writeAndCommit(work, "main-terminal.txt", "main\n", "main: add file for terminal test");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const liveWorktreePath = join(scratch, "o/r", "issue-32");
+    // Seed a COMPLETED workflow (terminal state) — reconciler should NOT skip.
+    createWorkflowRecord(db, {
+      id: "wf-terminal-agent",
+      kind: "implementation",
+      repo: "o/r",
+      epicRef: "32",
+      adapter: "github",
+    });
+    updateWorkflow(db, "wf-terminal-agent", {
+      state: "completed",
+      worktreePath: liveWorktreePath,
+    });
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 401, headRefName: "middle-issue-32" }],
+      headRefs: { 401: "middle-issue-32" },
+      mergeability: {
+        401: { mergeStateStatus: "BEHIND", mergeable: "MERGEABLE" },
+      },
+    });
+
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+        worktreeRoot: scratch,
+      },
+      "o/r",
+    );
+
+    // Terminal workflow → NOT skipped, rebase ran and succeeded.
+    expect(r).toEqual({ reconciled: 1, passed: 0, failed: 0, skippedForBudget: false });
+    expect(fixture.calls.postComment.length).toBe(1);
+    expect(fixture.calls.postComment[0]?.body).toContain("(rebased)");
+  });
+
+  test("live-worktree guard (#255): launching workflow also skips (not just running)", async () => {
+    await writeAndCommit(work, "main-launching.txt", "main\n", "main: add file for launching test");
+    await git(work, ["push", "origin", "main"]);
+    await aliasFixtureUnderRoot("o/r", 32);
+
+    const headBefore = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    const liveWorktreePath = join(scratch, "o/r", "issue-32");
+
+    // A `launching` workflow (agent is being spun up, worktree owned).
+    createWorkflowRecord(db, {
+      id: "wf-launching-agent",
+      kind: "implementation",
+      repo: "o/r",
+      epicRef: "32",
+      adapter: "github",
+    });
+    updateWorkflow(db, "wf-launching-agent", {
+      state: "launching",
+      worktreePath: liveWorktreePath,
+    });
+
+    const fixture = makeOrchestratorGateway({
+      openPrs: [{ prNumber: 402, headRefName: "middle-issue-32" }],
+      headRefs: { 402: "middle-issue-32" },
+      mergeability: {
+        402: { mergeStateStatus: "BEHIND", mergeable: "MERGEABLE" },
+      },
+    });
+
+    const baseDeps = deps();
+    const r = await reconcileOpenPRs(
+      {
+        ...baseDeps,
+        db,
+        github: fixture.gateway,
+        enqueueEpic: async () => {},
+        getRateLimit: async () => ({ remaining: 5000, resetAt: 0 }),
+        worktreeRoot: scratch,
+      },
+      "o/r",
+    );
+
+    expect(r).toEqual({ reconciled: 0, passed: 1, failed: 0, skippedForBudget: false });
+    const headAfter = (await git(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+    expect(headAfter).toBe(headBefore);
+    expect(fixture.calls.postComment).toEqual([]);
   });
 });
