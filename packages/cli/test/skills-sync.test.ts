@@ -94,6 +94,63 @@ describe("diffSkills / check mode", () => {
   });
 });
 
+describe("excludeNames — protects named skills from deletion", () => {
+  test("diffSkills flags a stale mirror-only skill dir absent an excludeNames set", () => {
+    // Seed the mirror with a skill the canonical doesn't have.
+    mkdirSync(join(mirror, "skill-extra"), { recursive: true });
+    writeFileSync(join(mirror, "skill-extra/SKILL.md"), "extra\n");
+    // Also populate the canonical so diffSkills has something to union.
+    mkdirSync(join(canonical, "skill-a"), { recursive: true });
+    writeFileSync(join(canonical, "skill-a/SKILL.md"), "alpha\n");
+    const result = diffSkills({ canonicalDir: canonical, mirrorDir: mirror });
+    expect(result.inSync).toBe(false);
+    expect(result.changed).toContain("skill-extra/SKILL.md");
+  });
+
+  test("diffSkills does NOT flag a mirror-only skill dir named in excludeNames", () => {
+    // "skill-extra" exists only in the mirror — but is in the exclusion set.
+    mkdirSync(join(mirror, "skill-extra"), { recursive: true });
+    writeFileSync(join(mirror, "skill-extra/SKILL.md"), "extra\n");
+    mkdirSync(join(canonical, "skill-a"), { recursive: true });
+    writeFileSync(join(canonical, "skill-a/SKILL.md"), "alpha\n");
+    const result = diffSkills({
+      canonicalDir: canonical,
+      mirrorDir: mirror,
+      excludeNames: new Set(["skill-extra"]),
+    });
+    expect(result.changed).not.toContain("skill-extra/SKILL.md");
+  });
+
+  test("syncSkills does not delete a mirror-only skill dir named in excludeNames", () => {
+    // Sync an initial state.
+    syncSkills({ canonicalDir: canonical, mirrorDir: mirror, check: false });
+    // Add an extra skill to the mirror that has no canonical counterpart.
+    mkdirSync(join(mirror, "skill-extra"), { recursive: true });
+    writeFileSync(join(mirror, "skill-extra/SKILL.md"), "extra\n");
+    // Sync again with the exclusion — skill-extra must survive.
+    syncSkills({
+      canonicalDir: canonical,
+      mirrorDir: mirror,
+      check: false,
+      excludeNames: new Set(["skill-extra"]),
+    });
+    expect(readFileSync(join(mirror, "skill-extra/SKILL.md"), "utf8")).toBe("extra\n");
+  });
+
+  test("syncSkills still reports a stale file IN a non-excluded skill as changed", () => {
+    syncSkills({ canonicalDir: canonical, mirrorDir: mirror, check: false });
+    writeFileSync(join(mirror, "skill-a/SKILL.md"), "EDITED\n");
+    const result = syncSkills({
+      canonicalDir: canonical,
+      mirrorDir: mirror,
+      check: false,
+      excludeNames: new Set(["skill-extra"]),
+    });
+    expect(result.inSync).toBe(false);
+    expect(result.changed).toContain("skill-a/SKILL.md");
+  });
+});
+
 describe("default repo paths", () => {
   test("the shipped canonical and mirror are in sync", () => {
     const result = diffSkills({
