@@ -253,6 +253,7 @@ describe("classifyReviewOutcome", () => {
   });
 
   test("only stale reviews and no actionable label → null (nothing changed)", () => {
+    // Review is 6 minutes before arm — outside the 5-minute slack window.
     const v = classifyReviewOutcome(
       prSnapshot({
         reviews: [
@@ -260,7 +261,7 @@ describe("classifyReviewOutcome", () => {
             id: 1,
             state: "CHANGES_REQUESTED",
             authorLogin: "x",
-            submittedAt: ARMED_AT - 5,
+            submittedAt: ARMED_AT - 6 * 60 * 1000,
             body: "old",
           },
         ],
@@ -268,6 +269,29 @@ describe("classifyReviewOutcome", () => {
       ARMED_AT,
     );
     expect(v).toBeNull();
+  });
+
+  test("CHANGES_REQUESTED review posted just before arm (within slack) is treated as fresh", () => {
+    // CodeRabbit can post within seconds of a push; the drive pipeline takes
+    // 30-120s to arm, so the review can land before the arm timestamp. The
+    // 5-minute slack window catches these fast reviews so the PR doesn't sit
+    // in waiting-human forever.
+    const v = classifyReviewOutcome(
+      prSnapshot({
+        reviewDecision: "CHANGES_REQUESTED",
+        reviews: [
+          {
+            id: 42,
+            state: "CHANGES_REQUESTED",
+            authorLogin: "coderabbitai[bot]",
+            submittedAt: ARMED_AT - 10_000, // 10 seconds before arm, within 5-min slack
+            body: "Actionable comments posted: 3",
+          },
+        ],
+      }),
+      ARMED_AT,
+    );
+    expect(v).toEqual({ outcome: "changes-requested", reviewId: 42, decision: "CHANGES_REQUESTED" });
   });
 
   test("a stale standing CHANGES_REQUESTED decision (no fresh review, no label) → null", () => {
