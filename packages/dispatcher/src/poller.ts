@@ -294,6 +294,22 @@ function classifyReviewVerdict(
     if (latest.state === "CHANGES_REQUESTED" || (m && Number(m[1]) > 0)) {
       return { outcome: "changes-requested", reviewId: latest.id, decision: "CHANGES_REQUESTED" };
     }
+    if (latest.state === "DISMISSED") {
+      // A reviewer dismissed their own review. Re-evaluate the PR's overall
+      // decision: if it is no longer CHANGES_REQUESTED, the dismiss cleared the
+      // last blocker and the PR is effectively approved — emit \`resolved\`.
+      // If CHANGES_REQUESTED remains, other blocking reviews are still standing;
+      // return null so the epic stays parked, but log explicitly so the dismiss
+      // is visible in daemon logs and not silently swallowed.
+      if (snapshot.reviewDecision !== "CHANGES_REQUESTED") {
+        return { outcome: "resolved", reviewId: latest.id, decision: snapshot.reviewDecision };
+      }
+      console.error(
+        `[poller] review ${latest.id} by ${latest.authorLogin} DISMISSED but PR decision ` +
+          `is still CHANGES_REQUESTED — other blocking reviews remain; staying parked`,
+      );
+      return null;
+    }
   }
   // No fresh verdict from a review this round — fall back to standing state.
   if (snapshot.reviewDecision === "APPROVED") {
