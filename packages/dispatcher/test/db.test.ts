@@ -62,8 +62,8 @@ describe("runMigrations", () => {
 
   test("applies every migration and reports the latest version", () => {
     const db = openDb(dbPath);
-    expect(runMigrations(db)).toBe(11);
-    expect(currentSchemaVersion(db)).toBe(11);
+    expect(runMigrations(db)).toBe(12);
+    expect(currentSchemaVersion(db)).toBe(12);
     db.close();
   });
 
@@ -86,8 +86,8 @@ describe("runMigrations", () => {
   test("is idempotent — running twice leaves version at the latest and does not throw", () => {
     const db = openDb(dbPath);
     runMigrations(db);
-    expect(runMigrations(db)).toBe(11);
-    expect(currentSchemaVersion(db)).toBe(11);
+    expect(runMigrations(db)).toBe(12);
+    expect(currentSchemaVersion(db)).toBe(12);
     db.close();
   });
 
@@ -161,7 +161,7 @@ describe("runMigrations", () => {
       db.run(`INSERT INTO events (workflow_id, ts, type) VALUES ('w1', 2, 'session.started')`);
 
       // Now apply the remaining migrations (003 rebuild, then 004, 005, 006) over the seeded data.
-      expect(runMigrations(db, realDir)).toBe(11);
+      expect(runMigrations(db, realDir)).toBe(12);
 
       // The row survived the rebuild...
       expect(
@@ -187,9 +187,12 @@ describe("runMigrations", () => {
     const realDir = join(import.meta.dir, "..", "src", "db", "migrations");
     const through010 = mkdtempSync(join(tmpdir(), "middle-mig-"));
     try {
-      // Copy every migration EXCEPT 011 → migrate to v10, the pre-index world.
+      // Copy migrations 001–010 only → migrate to v10, the pre-index world. Both
+      // 011 (the unique index this test exercises) and everything after it must be
+      // withheld, so the seeded duplicate state below is legal at this point.
       for (const name of readdirSync(realDir)) {
-        if (name.endsWith(".sql") && !name.startsWith("011_")) {
+        const match = /^(\d+)_/.exec(name);
+        if (name.endsWith(".sql") && match && Number(match[1]) <= 10) {
           cpSync(join(realDir, name), join(through010, name));
         }
       }
@@ -205,7 +208,7 @@ describe("runMigrations", () => {
       );
 
       // Applying the real dir (which adds 011) must NOT throw, and must converge.
-      expect(runMigrations(db, realDir)).toBe(11);
+      expect(runMigrations(db, realDir)).toBe(12);
 
       // The lowest-rowid row (acme/a) keeps the path; the loser was nulled out.
       const rows = db.query("SELECT repo, checkout_path FROM repo_config ORDER BY repo").all() as {
@@ -233,7 +236,7 @@ describe("runMigrations", () => {
 describe("openAndMigrate", () => {
   test("opens, migrates, and returns a ready database", () => {
     const db = openAndMigrate(dbPath);
-    expect(currentSchemaVersion(db)).toBe(11);
+    expect(currentSchemaVersion(db)).toBe(12);
     db.close();
   });
 });
