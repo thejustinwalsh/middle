@@ -84,10 +84,10 @@ type EnqueueCall = { repo: string; epicRef: string; adapter: string };
  * Build `AutoDispatchDeps` wired to the real `getSlotState` (uses the real DB),
  * a fixed ready-state, and a stub enqueue that records calls.
  */
-function makeDeps(opts: {
-  readyEpics: ReadyRow[];
-  enqueued?: EnqueueCall[];
-}): { deps: AutoDispatchDeps; enqueued: EnqueueCall[] } {
+function makeDeps(opts: { readyEpics: ReadyRow[]; enqueued?: EnqueueCall[] }): {
+  deps: AutoDispatchDeps;
+  enqueued: EnqueueCall[];
+} {
   const enqueued: EnqueueCall[] = opts.enqueued ?? [];
   const deps: AutoDispatchDeps = {
     repo: REPO,
