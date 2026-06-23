@@ -27,6 +27,7 @@ import {
   type RecommenderInput,
   sessionNameFor,
 } from "../src/workflows/recommender.ts";
+import { createRecommenderSurfaceProblemDeduper } from "../src/recommender-run.ts";
 import { createWorktree, destroyWorktree, listWorktrees } from "../src/worktree.ts";
 import type { EpicGateway } from "../src/github.ts";
 
@@ -964,5 +965,66 @@ describe("recommender workflow — daemon path (resolveRunSettings, #135 fix)", 
     // The guard fails the run (and compensation rolls the worktree back) rather
     // than silently producing a half-run — exactly the failure mode we're fixing.
     expect(["failed", "compensated"]).toContain(getWorkflow(db, id)!.state);
+  });
+});
+
+describe("recommender workflow — #237 idempotent surfaceProblem (deduper)", () => {
+  // These tests exercise createRecommenderSurfaceProblemDeduper (from
+  // recommender-run.ts) integrated with the recommender workflow harness. The
+  // deduper wraps the stub recorder so the workflow sees a deduplicated surface
+  // function, exactly as main.ts wires production.
+
+  test("surfaceProblem is not called again when the same error recurs on a second run", async () => {
+    // Two consecutive broken runs with identically-malformed bodies. Without the
+    // deduper the recorder would accumulate two identical entries (one per run).
+    // With the deduper, the second call is suppressed and length stays 1.
+    const recorder: string[] = [];
+    const stub = async (o: { repo: string; stateIssue: number; problem: string }) => {
+      recorder.push(o.problem);
+    };
+    const deduper = createRecommenderSurfaceProblemDeduper(stub);
+
+    // First run — broken body → surfaces once
+    const h1 = makeHarness({ bodies: [validBody(), "not a state issue body"] });
+    h1.deps.surfaceProblem = deduper.surface;
+    await runToEnd(h1.deps);
+    expect(recorder).toHaveLength(1);
+
+    // Second run — same broken body → must NOT surface again (same problem, same repo)
+    const h2 = makeHarness({ bodies: [validBody(), "not a state issue body"] });
+    h2.deps.surfaceProblem = deduper.surface;
+    await runToEnd(h2.deps);
+    expect(recorder).toHaveLength(1); // still 1, not 2
+  });
+
+  test("surfaceProblem re-fires after a clean run resets the dedup state", async () => {
+    // Lifecycle: problem → surfaced; clean run → reset; same problem → re-surfaced.
+    // Total posts across the two bad runs = 2 (not 1 due to the reset in between).
+    const recorder: string[] = [];
+    const stub = async (o: { repo: string; stateIssue: number; problem: string }) => {
+      recorder.push(o.problem);
+    };
+    const deduper = createRecommenderSurfaceProblemDeduper(stub);
+
+    // Run 1 — broken: surfaces problem
+    const h1 = makeHarness({ bodies: [validBody(), "not a state issue body"] });
+    h1.deps.surfaceProblem = deduper.surface;
+    h1.deps.onSurfacerReset = deduper.reset;
+    await runToEnd(h1.deps);
+    expect(recorder).toHaveLength(1);
+
+    // Run 2 — clean (valid body): verify.ok === true → cleanupWorktree calls onSurfacerReset
+    const h2 = makeHarness({ bodies: [validBody(), validBody()] });
+    h2.deps.surfaceProblem = deduper.surface;
+    h2.deps.onSurfacerReset = deduper.reset;
+    await runToEnd(h2.deps);
+    expect(recorder).toHaveLength(1); // clean run itself does not surface
+
+    // Run 3 — broken again: reset cleared dedup → surfaces again
+    const h3 = makeHarness({ bodies: [validBody(), "not a state issue body"] });
+    h3.deps.surfaceProblem = deduper.surface;
+    h3.deps.onSurfacerReset = deduper.reset;
+    await runToEnd(h3.deps);
+    expect(recorder).toHaveLength(2); // re-surfaced because reset happened
   });
 });
