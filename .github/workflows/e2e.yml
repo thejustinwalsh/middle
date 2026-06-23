@@ -23,7 +23,26 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
+      # Resolve the dashboard's pinned Playwright version FROM the package dir (so
+      # bunx uses the local `@playwright/test`, not a bunx-fetched newer copy — see
+      # packages/dashboard/CLAUDE.md) and key the browser cache on it: browser builds
+      # are version-specific, so the key must move when the pin moves (#247).
+      - name: Resolve Playwright version
+        id: pw
+        working-directory: packages/dashboard
+        run: echo "version=$(bunx playwright --version | awk '{print $NF}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+      # Install FROM the package dir so bunx resolves the pinned version and provisions
+      # the matching browser build (a root-level bunx downloads a newer Playwright and
+      # installs the wrong build, leaving the headless shell the tests launch missing —
+      # #247). On a cache hit the browser download is skipped; --with-deps still
+      # refreshes the apt system libs, which aren't cached.
       - name: Install Chromium
+        working-directory: packages/dashboard
         run: bunx playwright install --with-deps chromium
       - name: Run dashboard Playwright smoke
         working-directory: packages/dashboard
