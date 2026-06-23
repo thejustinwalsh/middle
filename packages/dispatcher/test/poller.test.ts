@@ -574,3 +574,101 @@ describe("runPoller — GitHub rate-limit guards", () => {
     expect(fired.length).toBe(2);
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// #263 — DISMISSED review verdict
+// ---------------------------------------------------------------------------
+
+describe("classifyReviewOutcome — DISMISSED verdict (#263)", () => {
+  test("freshest review DISMISSED + reviewDecision no longer CHANGES_REQUESTED → resolved", () => {
+    // The reviewer dismissed their CHANGES_REQUESTED; decision flipped to APPROVED
+    const v = classifyReviewOutcome(
+      prSnapshot({
+        reviewDecision: "APPROVED",
+        reviews: [
+          {
+            id: 11,
+            state: "DISMISSED",
+            authorLogin: "human",
+            submittedAt: ARMED_AT + 10,
+            body: "",
+          },
+        ],
+      }),
+      ARMED_AT,
+    );
+    expect(v).toEqual({ outcome: "resolved", reviewId: 11, decision: "APPROVED" });
+  });
+
+  test("freshest review DISMISSED + reviewDecision still CHANGES_REQUESTED → null (other blockers remain)", () => {
+    // The dismiss didn't clear all blockers — another CHANGES_REQUESTED review is standing
+    const v = classifyReviewOutcome(
+      prSnapshot({
+        reviewDecision: "CHANGES_REQUESTED",
+        reviews: [
+          {
+            id: 12,
+            state: "DISMISSED",
+            authorLogin: "human",
+            submittedAt: ARMED_AT + 10,
+            body: "",
+          },
+        ],
+      }),
+      ARMED_AT,
+    );
+    expect(v).toBeNull();
+  });
+});
+
+describe("runPoller — DISMISSED review integration (#263)", () => {
+  test("DISMISSED clears last blocker (reviewDecision=APPROVED) → poller fires resolved", async () => {
+    seedParked("review-changes");
+    const github = makeGateway({
+      pr: prSnapshot({
+        reviewDecision: "APPROVED",
+        reviews: [
+          {
+            id: 11,
+            state: "DISMISSED",
+            authorLogin: "human",
+            submittedAt: ARMED_AT + 10,
+            body: "",
+          },
+        ],
+      }),
+    });
+    const { fired, fireSignal } = captureFires();
+    expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(1);
+    expect(fired[0]!.payload).toMatchObject({
+      reason: "review-changes",
+      outcome: "resolved",
+      reviewId: 11,
+    });
+    // The wait is marked fired so a second pass does not re-fire it.
+    expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(0);
+    expect(fired.length).toBe(1);
+  });
+
+  test("DISMISSED with other blockers (reviewDecision=CHANGES_REQUESTED) → poller does NOT fire", async () => {
+    seedParked("review-changes");
+    const github = makeGateway({
+      pr: prSnapshot({
+        reviewDecision: "CHANGES_REQUESTED",
+        reviews: [
+          {
+            id: 12,
+            state: "DISMISSED",
+            authorLogin: "human",
+            submittedAt: ARMED_AT + 10,
+            body: "",
+          },
+        ],
+      }),
+    });
+    const { fired, fireSignal } = captureFires();
+    expect(await runPoller({ db, github, fireSignal, now: () => ARMED_AT + 5000 })).toBe(0);
+    expect(fired.length).toBe(0);
+  });
+});
