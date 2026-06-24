@@ -3,6 +3,7 @@ import {
   type CheckboxRevertPassDeps,
   runCheckboxRevertPass,
 } from "./gates/checkbox-revert-pass.ts";
+import { runParkEscalation } from "./park-escalation.ts";
 import { type PollerDeps, reconcileMergedParks, runPoller } from "./poller.ts";
 
 /**
@@ -56,6 +57,14 @@ export type StartPollerOptions = {
    * Epic PR triggers an immediate sibling-sweep. Omitted → no reconciliation.
    */
   reconcilers?: ReconcilerHooks;
+  /**
+   * Staleness threshold (ms) for the park-escalation pass (#253) — a `waiting-human`
+   * park armed longer than this with no fired signal is escalated on its Epic
+   * (worktree preserved). Omitted → the pass's default (7 days). The pass always
+   * runs (it reuses the poller's own `postEpicComment` seam); this only tunes the
+   * threshold.
+   */
+  parkStalenessMs?: number;
 };
 
 /**
@@ -92,6 +101,21 @@ export async function startPoller(
         });
       } catch (error) {
         console.error(`[reconcile] pass failed: ${(error as Error).message}`);
+      }
+      try {
+        // Staleness escalation (#253): nudge a too-long-parked Epic on GitHub and
+        // preserve its worktree — the non-destructive counterpart to the 90-day
+        // `waitFor` backstop. Reuses the poller's `postEpicComment` + clock.
+        // `parkStalenessMs` may be NaN/undefined from config parsing — runParkEscalation
+        // sanitizes it (non-finite/non-positive → default), so we pass it through raw.
+        await runParkEscalation({
+          db: deps.db,
+          postEpicComment: deps.postEpicComment,
+          now: deps.now,
+          thresholdMs: opts.parkStalenessMs,
+        });
+      } catch (error) {
+        console.error(`[park-escalation] pass failed: ${(error as Error).message}`);
       }
       if (opts.reconcilers?.perTickSweep) {
         try {
