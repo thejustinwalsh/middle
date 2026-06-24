@@ -19,7 +19,11 @@ import {
   markSignalFired,
   updateWorkflow,
 } from "../src/workflow-record.ts";
-import { signalNameFor, type ResumeReason } from "../src/workflows/implementation.ts";
+import {
+  signalNameFor,
+  WAITFOR_TIMEOUT_MS,
+  type ResumeReason,
+} from "../src/workflows/implementation.ts";
 
 let scratch: string;
 let db: Database;
@@ -170,6 +174,23 @@ describe("runParkEscalation — idempotency & filtering", () => {
       postEpicComment: post,
       now: () => ARMED_AT + 2 * 24 * 60 * 60 * 1000,
       thresholdMs: 24 * 60 * 60 * 1000,
+    });
+    expect(n).toBe(1);
+    expect(posted).toHaveLength(1);
+  });
+
+  test("a threshold above the 90-day ceiling is clamped so escalation still fires", async () => {
+    // A park armed exactly the ceiling ago, with a misconfigured threshold of 2×
+    // the ceiling. Un-clamped, 90d < 180d → it would NEVER escalate; clamped below
+    // WAITFOR_TIMEOUT_MS, 90d > (ceiling - 1) → it escalates. This is the invariant
+    // that escalation always fires before a park is considered ceiling-stale.
+    seedParked("answered-question");
+    const { posted, post } = capturePoster();
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => ARMED_AT + WAITFOR_TIMEOUT_MS,
+      thresholdMs: WAITFOR_TIMEOUT_MS * 2,
     });
     expect(n).toBe(1);
     expect(posted).toHaveLength(1);
