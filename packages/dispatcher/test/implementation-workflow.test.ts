@@ -31,6 +31,7 @@ import {
   RESUME_EVENT,
   ROUND_CAP_EVENT,
   signalNameFor,
+  WAITFOR_TIMEOUT_MS,
   type ImplementationDeps,
 } from "../src/workflows/implementation.ts";
 import { makeDefaultPostQuestion, makeDefaultPostRoundCapEscalation } from "../src/build-deps.ts";
@@ -292,6 +293,16 @@ async function runToEnd(deps: ImplementationDeps): Promise<string> {
   await awaitSettled(id);
   return id;
 }
+
+describe("implementation workflow — waitFor timeout ceiling (#253)", () => {
+  test("WAITFOR_TIMEOUT_MS is the 90-day non-destructive ceiling, not the old 7-day", () => {
+    // The timeout fires saga compensation (cleanupWorktree destroys the worktree),
+    // so it must sit far past any human-review cadence — park duration is decoupled
+    // from worktree destruction (#253). 7 days silently deleted long-parked work.
+    expect(WAITFOR_TIMEOUT_MS).toBe(90 * 24 * 3600 * 1000);
+    expect(WAITFOR_TIMEOUT_MS).toBeGreaterThan(7 * 24 * 3600 * 1000);
+  });
+});
 
 describe("implementation workflow — terminal stops fall through the waitFor", () => {
   test("a 'failed' classifyStop ends 'failed', destroys the worktree, leaks no session", async () => {

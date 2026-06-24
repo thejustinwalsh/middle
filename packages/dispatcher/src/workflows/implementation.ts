@@ -143,8 +143,33 @@ export async function awaitStopOrSessionEnd(opts: {
   }
 }
 
-/** The `waitFor` timeout — a parked workflow waits up to a week for its signal. */
-const WAITFOR_TIMEOUT_MS = 7 * 24 * 3600 * 1000;
+/**
+ * The documented **non-destructive** park ceiling (90 days) — a deliberately
+ * generous upper bound on how long an Epic may sit `waiting-human`, far past any
+ * human-review cadence.
+ *
+ * It is intentionally **not** wired as bunqueue's `.waitFor({ timeout })` (#253).
+ * bunqueue's waitFor timeout, when it elapses, runs the saga's compensate handler
+ * (`cleanupWorktree`) — which kills the session and **destroys the worktree**
+ * (branch, `plan.md`, `decisions.md`, all accumulated work). At the old 7-day
+ * value that destruction fired inside a normal slow-review / blocker-chain /
+ * vacation cadence, silently deleting a long-parked Epic's work. Two facts make
+ * "just raise the timeout to 90 days" the wrong fix:
+ *  1. **Any** finite bunqueue waitFor timeout is *destructive* (it compensates),
+ *     so it can never satisfy "the worktree is preserved at the ceiling".
+ *  2. 90 days (7.78e9 ms) overflows `setTimeout`'s 32-bit limit (~24.85 days),
+ *     so bunqueue's `scheduleTimeoutCheck` clamps it to 1 ms and the parked
+ *     execution busy-loops a `wf:step` roughly every millisecond.
+ *
+ * So the park is left **timeout-free** (see the `.waitFor` call — no `timeout:`),
+ * and this ceiling is enforced *non-destructively* by the staleness-escalation
+ * pass (`runParkEscalation`): a park that goes unanswered past the escalation
+ * threshold (default 7 days) is surfaced on its Epic with the worktree fully
+ * preserved. The constant remains the single source of truth for the documented
+ * ceiling — `runParkEscalation` clamps its threshold below it so escalation
+ * always fires before a park is considered ceiling-stale.
+ */
+export const WAITFOR_TIMEOUT_MS = 90 * 24 * 3600 * 1000;
 
 /** The tmux surface the workflow drives — structural so tests can stub it. */
 export type TmuxOps = {
@@ -1312,8 +1337,14 @@ export function createImplementationWorkflow(
       .path("terminal", (w) => w.step("record-terminal", recordTerminal))
       // Single top-level `waitFor`: parks park-worthy stops until the poller
       // fires RESUME_EVENT; terminal stops pre-seeded the signal and fall
-      // through. Same timeout budget as the drive step.
-      .waitFor(RESUME_EVENT, { timeout: WAITFOR_TIMEOUT_MS })
+      // through. Deliberately **timeout-free** (#253): a bunqueue waitFor timeout
+      // fires destructive saga compensation (`cleanupWorktree` destroys the
+      // worktree), so any finite timeout would silently delete a long-parked
+      // Epic's work — and 90 days overflows setTimeout's 32-bit limit into a
+      // busy-loop anyway. The non-destructive 90-day ceiling (WAITFOR_TIMEOUT_MS)
+      // is enforced by `runParkEscalation`, which surfaces a stale park on its
+      // Epic with the worktree preserved instead of compensating it away.
+      .waitFor(RESUME_EVENT)
       .step("resume-or-finalize", resumeOrFinalize, {
         retry: 1,
         timeout: launchTimeout + stopTimeout + 60_000,
