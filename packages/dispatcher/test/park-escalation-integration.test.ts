@@ -16,12 +16,7 @@ import { Engine } from "bunqueue/workflow";
 import type { AgentAdapter, HookPayload, StopClassification } from "@middle/core";
 import { openAndMigrate } from "../src/db.ts";
 import type { SessionGate } from "../src/hook-server.ts";
-import type {
-  EpicPrLifecycle,
-  PollGateway,
-  PrSnapshot,
-  RateLimitStatus,
-} from "../src/poller.ts";
+import type { EpicPrLifecycle, PollGateway, PrSnapshot, RateLimitStatus } from "../src/poller.ts";
 import { startPoller } from "../src/poller-cron.ts";
 import { DEFAULT_PARK_STALENESS_MS, PARK_ESCALATED_EVENT } from "../src/park-escalation.ts";
 import { getWorkflow, hasEventOfType } from "../src/workflow-record.ts";
@@ -97,7 +92,10 @@ function makeAdapter(): AgentAdapter {
     readyEvent: "session.started",
     async installHooks(opts) {
       mkdirSync(join(opts.worktree, ".middle"), { recursive: true });
-      writeFileSync(join(opts.worktree, ".middle", "blocked.json"), JSON.stringify({ question: "?" }));
+      writeFileSync(
+        join(opts.worktree, ".middle", "blocked.json"),
+        JSON.stringify({ question: "?" }),
+      );
     },
     buildLaunchCommand: () => ({ argv: ["true"], env: {} }),
     buildPromptText: () => "@.middle/prompt.md",

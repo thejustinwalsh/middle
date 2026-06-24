@@ -179,6 +179,82 @@ describe("runParkEscalation — idempotency & filtering", () => {
     expect(posted).toHaveLength(1);
   });
 
+  // Threshold sanitization (#253 review): a misconfigured threshold must self-heal
+  // to the default, never silently halt escalation (NaN) nor bulk-escalate (<= 0).
+  test("a NaN threshold falls back to the default (does not silently halt escalation)", async () => {
+    seedParked("answered-question");
+    const { posted, post } = capturePoster();
+    // Default would escalate at STALE_NOW (8 days). NaN must not pass through —
+    // `now - armedAt > NaN` is always false, which would silently suppress.
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => STALE_NOW,
+      thresholdMs: Number.NaN,
+    });
+    expect(n).toBe(1);
+    expect(posted).toHaveLength(1);
+  });
+
+  test("a NaN threshold does not escalate a park younger than the default", async () => {
+    seedParked("answered-question");
+    const { posted, post } = capturePoster();
+    // The companion test above (NaN at STALE_NOW → 1) proves NaN didn't leak; this
+    // one pins the *other* edge — a 1-hour-old park stays fresh under the fallback,
+    // confirming NaN became the 7-day default and not 0 (which escalates instantly).
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => ARMED_AT + 60 * 60 * 1000,
+      thresholdMs: Number.NaN,
+    });
+    expect(n).toBe(0);
+    expect(posted).toHaveLength(0);
+  });
+
+  test("a negative threshold falls back to the default (does not bulk-escalate)", async () => {
+    seedParked("answered-question");
+    const { posted, post } = capturePoster();
+    // A fresh, 1-hour-old park: a negative threshold would make `now - armedAt > neg`
+    // true → immediate escalation. Falling back to the 7-day default keeps it fresh.
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => ARMED_AT + 60 * 60 * 1000,
+      thresholdMs: -1000,
+    });
+    expect(n).toBe(0);
+    expect(posted).toHaveLength(0);
+  });
+
+  test("a zero threshold falls back to the default (does not bulk-escalate)", async () => {
+    seedParked("answered-question");
+    const { posted, post } = capturePoster();
+    // threshold 0 → every park instantly stale (`now - armedAt > 0`). Must default.
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => ARMED_AT + 60 * 60 * 1000,
+      thresholdMs: 0,
+    });
+    expect(n).toBe(0);
+    expect(posted).toHaveLength(0);
+  });
+
+  test("an infinite threshold falls back to the default (does not silently halt)", async () => {
+    seedParked("answered-question");
+    const { posted, post } = capturePoster();
+    // Infinity would never let a park go stale. Falls back to the default → escalates.
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => STALE_NOW,
+      thresholdMs: Number.POSITIVE_INFINITY,
+    });
+    expect(n).toBe(1);
+    expect(posted).toHaveLength(1);
+  });
+
   test("a threshold above the 90-day ceiling is clamped so escalation still fires", async () => {
     // A park armed exactly the ceiling ago, with a misconfigured threshold of 2×
     // the ceiling. Un-clamped, 90d < 180d → it would NEVER escalate; clamped below
@@ -239,5 +315,36 @@ describe("runParkEscalation — resilience & no-seam", () => {
     });
     expect(n).toBe(2);
     expect(posted).toHaveLength(2);
+  });
+
+  // A misconfigured cap must self-heal to the default — never to a value that
+  // silently suppresses escalations: `slice(0, NaN)` is `[]`, `slice(0, -1)` drops
+  // one. Same sanitization class as thresholdMs, the sibling input one line over.
+  test("a NaN maxPerPass falls back to the default (does not halt all escalation)", async () => {
+    for (let i = 0; i < 3; i++) seedParked("answered-question", { epic: 200 + i });
+    const { posted, post } = capturePoster();
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => STALE_NOW,
+      maxPerPass: Number.NaN,
+    });
+    // Default cap is 10 ≥ 3, so all three escalate. A leaked NaN would slice to [].
+    expect(n).toBe(3);
+    expect(posted).toHaveLength(3);
+  });
+
+  test("a non-positive maxPerPass falls back to the default (does not drop parks)", async () => {
+    for (let i = 0; i < 3; i++) seedParked("answered-question", { epic: 300 + i });
+    const { posted, post } = capturePoster();
+    const n = await runParkEscalation({
+      db,
+      postEpicComment: post,
+      now: () => STALE_NOW,
+      maxPerPass: 0,
+    });
+    // 0 would escalate nothing, -1 would drop the last — both wrong. Defaults to 10.
+    expect(n).toBe(3);
+    expect(posted).toHaveLength(3);
   });
 });

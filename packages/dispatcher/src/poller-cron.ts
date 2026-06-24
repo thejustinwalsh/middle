@@ -106,6 +106,8 @@ export async function startPoller(
         // Staleness escalation (#253): nudge a too-long-parked Epic on GitHub and
         // preserve its worktree — the non-destructive counterpart to the 90-day
         // `waitFor` backstop. Reuses the poller's `postEpicComment` + clock.
+        // `parkStalenessMs` may be NaN/undefined from config parsing — runParkEscalation
+        // sanitizes it (non-finite/non-positive → default), so we pass it through raw.
         await runParkEscalation({
           db: deps.db,
           postEpicComment: deps.postEpicComment,

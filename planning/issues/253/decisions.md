@@ -53,20 +53,27 @@ loader keeps one definition of "a parked, armed, unanswered wait" and gives the
 arm time (`created_at`) as the staleness proxy, mirroring the CI-pending
 escalation's threshold-vs-arm-time pattern.
 
-## Event recorded only after a successful post (idempotent, retry-safe)
+## Event recorded only after a successful post (at-least-once, retry-safe)
 **File(s):** `packages/dispatcher/src/park-escalation.ts`
 **Date:** 2026-06-23
 
-**Decision:** `park.escalated` is the idempotency key (post exactly once), but it
-is recorded **only after** a successful `postEpicComment`. An absent poster seam or
-a failed comment records nothing.
+**Decision:** `park.escalated` is the dedupe key, recorded **only after** a
+successful `postEpicComment`. An absent poster seam or a failed comment records
+nothing. The guarantee is therefore **at-least-once delivery with event-based
+deduplication**, not exactly-once: the `park.escalated` event prevents duplicate
+*processing* on every later steady-state pass, but because it is written after the
+external post, a crash or DB failure in the window between a successful post and
+the `recordEvent` write can replay the escalation on the next tick (a second
+comment). We accept that rare double-comment as the correct trade — the failure we
+refuse is the opposite one (a never-delivered escalation), which is the silent
+class issue #253 exists to kill.
 
 **Why:** Recording the marker before/without a successful post would silently
-suppress an escalation that never reached GitHub — the exact silent-failure class
-#253 is about. Recording after the post means a transient `gh` failure simply
-retries next tick. The comment carries `AGENT_COMMENT_MARKER` so the
-answered-question poller never mistakes middle's own escalation for the human's
-reply (`classifyNewHumanReply` filters `startsWith(marker)`).
+suppress an escalation that never reached GitHub. Recording after the post means a
+transient `gh` failure simply retries next tick. The comment carries
+`AGENT_COMMENT_MARKER` so the answered-question poller never mistakes middle's own
+escalation for the human's reply (`classifyNewHumanReply` filters
+`startsWith(marker)`).
 
 ## Hung off the existing poller cron, not a new cron
 **File(s):** `packages/dispatcher/src/poller-cron.ts`

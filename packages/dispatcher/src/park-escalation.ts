@@ -27,8 +27,11 @@ import { hasEventOfType, loadPollableWaits, recordEvent } from "./workflow-recor
 
 /**
  * The `events` row type recorded when a stale park is escalated. Doubles as the
- * **idempotency key**: a row with this event has already been escalated and is
- * skipped on every later pass, so the Epic gets exactly one comment per park.
+ * **dedupe key**: a row with this event has already been escalated and is skipped
+ * on every later steady-state pass. Because the event is written *after* a
+ * successful post (see {@link runParkEscalation}), the contract is at-least-once
+ * with event-based dedup — one comment per park in the normal case, with a rare
+ * replay possible only if the daemon dies between the post and the event write.
  */
 export const PARK_ESCALATED_EVENT = "park.escalated";
 
@@ -65,9 +68,19 @@ export type ParkEscalationDeps = {
   postEpicComment?: (repo: string, epicRef: string, body: string) => Promise<void>;
   /** Injectable clock (default `Date.now`). */
   now?: () => number;
-  /** Staleness threshold (default {@link DEFAULT_PARK_STALENESS_MS}). */
+  /**
+   * Staleness threshold (default {@link DEFAULT_PARK_STALENESS_MS}). A non-finite
+   * (NaN/±Infinity) or non-positive value is treated as unset and falls back to
+   * the default — a misconfigured threshold can neither silently halt escalation
+   * nor bulk-escalate every park. Honored values are clamped below the 90-day
+   * {@link WAITFOR_TIMEOUT_MS} ceiling.
+   */
   thresholdMs?: number;
-  /** Cap on escalations per pass (default {@link DEFAULT_MAX_ESCALATIONS_PER_PASS}). */
+  /**
+   * Cap on escalations per pass (default {@link DEFAULT_MAX_ESCALATIONS_PER_PASS}).
+   * A non-finite or `< 1` value is treated as unset and falls back to the default —
+   * a bad cap must never silently suppress escalations (`slice(0, NaN)` is `[]`).
+   */
   maxPerPass?: number;
 };
 
@@ -108,23 +121,47 @@ function escalationComment(days: number, signalName: string): string {
  * One staleness-escalation pass over every armed, not-yet-fired `waiting-human`
  * wait. For each whose arm time exceeds the threshold and that has not already
  * been escalated, post one Epic comment and record one {@link PARK_ESCALATED_EVENT}
- * — **the worktree is never touched**. Idempotent (the event is the dedupe key),
- * capped per pass, and per-park failure-isolated so one bad write doesn't abort
- * the rest. Returns the number of parks escalated this pass.
+ * — **the worktree is never touched**. At-least-once with event-based dedup (the
+ * event is the dedupe key), capped per pass, and per-park failure-isolated so one
+ * bad write doesn't abort the rest. Returns the number of parks escalated this pass.
  *
  * The event is recorded **only after a successful post**: an absent `postEpicComment`
- * or a failed comment leaves the park un-escalated so the next pass retries,
- * rather than burning the idempotency marker on an escalation that never reached
- * GitHub.
+ * or a failed comment leaves the park un-escalated so the next pass retries, rather
+ * than burning the dedupe marker on an escalation that never reached GitHub. The
+ * trade is deliberate — a crash in the narrow window between the post and the event
+ * write can replay one comment next tick; that rare double-post is preferable to a
+ * silently-dropped escalation.
  */
 export async function runParkEscalation(deps: ParkEscalationDeps): Promise<number> {
   const now = (deps.now ?? Date.now)();
+  // Sanitize the requested threshold at this single chokepoint so every caller
+  // (poller-cron config, tests, future seams) is protected. A non-finite value
+  // (NaN/±Infinity — the common shape of a mis-parsed env/config number) or a
+  // non-positive one is a misconfiguration with two opposite silent-failure
+  // modes: `now - armedAt > NaN` is always false (escalation silently *stops*
+  // firing — no park is ever marked stale), while a `<= 0` threshold makes every
+  // armed park instantly stale (bulk escalation on the next pass). Both are the
+  // exact silent-failure class #253 exists to kill, so we self-heal to the safe
+  // default rather than honoring the bad value. (`??` alone can't: it defaults
+  // only on null/undefined, passing NaN straight through.)
+  const requested = deps.thresholdMs ?? DEFAULT_PARK_STALENESS_MS;
+  const sanitized =
+    Number.isFinite(requested) && requested > 0 ? requested : DEFAULT_PARK_STALENESS_MS;
   // Clamp below the documented ceiling: a threshold at/above WAITFOR_TIMEOUT_MS
   // would never let escalation fire before a park is "ceiling-stale", defeating
   // the whole non-destructive-surfacing purpose. `- 1` keeps the bound strict.
-  const requested = deps.thresholdMs ?? DEFAULT_PARK_STALENESS_MS;
-  const thresholdMs = Math.min(requested, WAITFOR_TIMEOUT_MS - 1);
-  const maxPerPass = deps.maxPerPass ?? DEFAULT_MAX_ESCALATIONS_PER_PASS;
+  const thresholdMs = Math.min(sanitized, WAITFOR_TIMEOUT_MS - 1);
+  // Sanitize the per-pass cap the same way, and for the same reason — it's the
+  // sibling numeric input one line down, with an identically silent failure mode:
+  // `stale.slice(0, NaN)` is `[]` (every escalation silently halts) and
+  // `slice(0, -1)` silently drops the last stale park each pass. A non-finite or
+  // `< 1` cap is a misconfiguration → fall back to the default, never to a value
+  // that suppresses escalations.
+  const requestedCap = deps.maxPerPass ?? DEFAULT_MAX_ESCALATIONS_PER_PASS;
+  const maxPerPass =
+    Number.isFinite(requestedCap) && requestedCap >= 1
+      ? requestedCap
+      : DEFAULT_MAX_ESCALATIONS_PER_PASS;
 
   const stale = loadPollableWaits(deps.db).filter(
     (w) =>
