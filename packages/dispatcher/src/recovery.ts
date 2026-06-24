@@ -74,8 +74,10 @@ export type EngineRecoveryResult = {
  * Recover the daemon's persistent workflow engine on boot. Drops mid-drive
  * (`running`/`compensating`) executions — their recovery is the watchdog's domain
  * (#116 out of scope; see {@link MID_DRIVE_STATES}) — then runs `engine.recover()` so
- * parked `waiting` executions have their `waitFor` timeout timers re-armed (and any whose
- * resume signal arrived while the daemon was down are resumed). `engine.cleanup(0, …)`
+ * parked `waiting` executions are re-armed (any whose resume signal arrived while the
+ * daemon was down are resumed; any with a `waitFor` *timeout* have their timer
+ * rescheduled — though the implementation workflow's `waitFor` is deliberately
+ * timeout-free since #253, so there is no timer to re-arm for it). `engine.cleanup(0, …)`
  * deletes execs whose `updated_at` predates this boot, i.e. every pre-restart row.
  *
  * Must run AFTER the workflows are registered (recover may re-enqueue/resume, which
